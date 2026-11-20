@@ -437,8 +437,12 @@ fn run() -> Result<()> {
     }
     let addr = target.addr;
     // `@e3` stands for a node of the last `snapshot --refs` of this host.
-    let mut args: Vec<String> = std::env::args().collect();
-    if args.iter().skip(1).any(|arg| refs::is_ref(arg)) {
+    let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if args
+        .iter()
+        .skip(1)
+        .any(|arg| arg.to_str().is_some_and(refs::is_ref))
+    {
         refs::resolve(&gpui_agent::runtime_root(), addr, &mut args[1..]).map_err(|e| anyhow!(e))?;
         cli = Cli::parse_from(args);
     }
