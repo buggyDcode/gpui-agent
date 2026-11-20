@@ -417,6 +417,15 @@ pub fn finish_inline_screenshot(resp: &mut Response, scratch: bool) {
         .as_ref()
         .is_some_and(|result| result.get("blob").is_some());
     if has_blob {
+        // The host saw the scratch path as a name the client chose and
+        // kept the file; it is ours to remove.
+        if scratch {
+            if let Some(serde_json::Value::Object(map)) = resp.result.as_mut() {
+                if let Some(serde_json::Value::String(path)) = map.remove("path") {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
         return;
     }
     if let Err(error) = attach_screenshot_blob(resp, scratch) {
@@ -1522,5 +1531,23 @@ mod tests {
             elapsed < std::time::Duration::from_millis(200),
             "headless in_viewport must fail closed without waiting out the timeout: {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn a_mailbox_reply_that_already_has_a_blob_loses_its_scratch_file() {
+        let dir = std::env::temp_dir().join(format!("gpui-agent-scratch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("scratch.png");
+        std::fs::write(&file, crate::TEST_PNG).unwrap();
+        let mut resp = Response::ok("1");
+        resp.result = Some(serde_json::json!({
+            "path": file.to_string_lossy(),
+            "blob": {"blob": "b", "bytes": 1, "chunks": 1},
+        }));
+        finish_inline_screenshot(&mut resp, true);
+        assert!(!file.exists());
+        let result = resp.result.unwrap();
+        assert!(result.get("path").is_none() && result.get("blob").is_some());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
