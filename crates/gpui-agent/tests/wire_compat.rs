@@ -159,3 +159,74 @@ fn legacy_clients_still_parse() {
     let req: Request = serde_json::from_str(r#"{"v":2,"id":"1","op":"keybinding.list"}"#).unwrap();
     assert!(matches!(req.op, Op::Keybindings));
 }
+
+#[test]
+fn added_ops_keep_their_wire_names_and_omit_unset_fields() {
+    use gpui_agent::{Op, Request, SwipeDirection, SystemAction};
+    let line = |op: Op| serde_json::to_string(&Request::new("1", op)).unwrap();
+    assert_eq!(
+        line(Op::Press {
+            target: Some("save".into()),
+            x: None,
+            y: None,
+            expect_fingerprint: None,
+        }),
+        r#"{"v":2,"id":"1","op":"press","target":"save"}"#
+    );
+    assert_eq!(
+        line(Op::Swipe {
+            target: None,
+            direction: SwipeDirection::Up,
+            distance: None,
+        }),
+        r#"{"v":2,"id":"1","op":"swipe","direction":"up"}"#
+    );
+    assert_eq!(
+        line(Op::System {
+            action: SystemAction::KeyboardHide,
+            value: None,
+        }),
+        r#"{"v":2,"id":"1","op":"system","action":"keyboard_hide"}"#
+    );
+    // A screenshot without `inline` is byte-identical to the 0.1 request.
+    assert_eq!(
+        line(Op::screenshot("a.png")),
+        r#"{"v":2,"id":"1","op":"screenshot","path":"a.png"}"#
+    );
+}
+
+#[test]
+fn hello_from_a_0_1_host_still_parses_and_new_fields_are_omitted_when_unset() {
+    let old = r#"{"protocol":2,"app":"x","platform":"mobile","os":"android","ready":true,"auth":"required"}"#;
+    let hello: gpui_agent::HelloInfo = serde_json::from_str(old).unwrap();
+    assert!(hello.framework.is_none() && hello.device.is_none() && hello.features.is_empty());
+    let again = serde_json::to_string(&hello).unwrap();
+    assert!(!again.contains("framework") && !again.contains("device"));
+}
+
+#[test]
+fn gesture_ops_fall_back_to_the_invoke_names_0_1_hosts_knew() {
+    use gpui_agent::Op;
+    let legacy = Op::Scroll {
+        target: Some("list".into()),
+        x: None,
+        y: None,
+        dx: 0.0,
+        dy: 120.0,
+    }
+    .legacy_invoke()
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&legacy).unwrap(),
+        serde_json::json!({"op":"invoke","name":"scroll","args":{"target":"list","dx":0.0,"dy":120.0}})
+    );
+    // Ops no 0.1 host had are never rewritten.
+    assert!(
+        Op::Paste {
+            target: "a".into(),
+            text: "b".into()
+        }
+        .legacy_invoke()
+        .is_none()
+    );
+}
