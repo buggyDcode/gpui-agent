@@ -100,6 +100,9 @@ gpui-agent press @e1
 
 An argument spelled exactly like a ref (`@e1`) is always read as one, text to type included.
 
+`scripts/conformance.py` runs the checks every host must pass, whatever its platform,
+against the host at `--addr`: `python3 scripts/conformance.py --addr 127.0.0.1:17421`.
+
 When a host does not answer, two commands say why:
 
 ```bash
