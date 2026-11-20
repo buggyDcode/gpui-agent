@@ -458,12 +458,7 @@ impl AgentClient {
             }
             let result = match shared_deadline {
                 Some(deadline) => self.roundtrip_wire(id, op, deadline),
-                None => self.roundtrip_wire_with_reply_timeout(
-                    id,
-                    op,
-                    connect_deadline,
-                    timeout,
-                ),
+                None => self.roundtrip_wire_with_reply_timeout(id, op, connect_deadline, timeout),
             };
             match result {
                 Ok(resp) => return Ok(resp),
@@ -704,11 +699,12 @@ impl AgentClient {
                 }
             }
         }
-        let result = self
-            .session
-            .as_mut()
-            .expect("session")
-            .exchange_pipeline(start_id, ops, connect_deadline, reply_timeout);
+        let result = self.session.as_mut().expect("session").exchange_pipeline(
+            start_id,
+            ops,
+            connect_deadline,
+            reply_timeout,
+        );
         match result {
             Ok(resps) => {
                 self.session.as_mut().expect("session").last_used = Instant::now();
