@@ -492,11 +492,7 @@ impl AgentClient {
                 Err(error) => return Err(WireError::Retryable(error)),
             }
         } else {
-            let peer_closed = self
-                .session
-                .as_ref()
-                .expect("session")
-                .peer_closed();
+            let peer_closed = self.session.as_ref().expect("session").peer_closed();
             match peer_closed {
                 Ok(false) => {}
                 Ok(true) => {
@@ -577,11 +573,7 @@ impl AgentClient {
                 Err(err) => return Err(WireError::Retryable(err)),
             }
         } else {
-            let peer_closed = self
-                .session
-                .as_ref()
-                .expect("session")
-                .peer_closed();
+            let peer_closed = self.session.as_ref().expect("session").peer_closed();
             match peer_closed {
                 Ok(false) => {}
                 Ok(true) => {
