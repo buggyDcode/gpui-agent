@@ -403,7 +403,11 @@ fn handle_stream_mailbox(
         }
         if let Some(hello) = resp.hello.as_mut() {
             hello.auth = crate::protocol::HelloAuth::from_token_configured(token);
-            if !hello.features.iter().any(|feature| feature == "screenshot_inline") {
+            if !hello
+                .features
+                .iter()
+                .any(|feature| feature == "screenshot_inline")
+            {
                 hello.features.push("screenshot_inline".into());
             }
         }
@@ -941,12 +945,14 @@ mod tests {
             Duration::from_secs(2),
         )
         .expect("bind mailbox");
-        let mut client =
-            AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
         let response = client.rpc(Op::Hello).expect("hello");
         let hello = response.hello.expect("hello payload");
         assert!(
-            hello.features.iter().any(|feature| feature == "screenshot_inline"),
+            hello
+                .features
+                .iter()
+                .any(|feature| feature == "screenshot_inline"),
             "{:?}",
             hello.features
         );

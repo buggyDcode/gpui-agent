@@ -400,9 +400,10 @@ impl AgentClient {
         let mut last_err = String::new();
         while std::time::Instant::now() < deadline {
             self.drop_idle_session();
-            let peer_closed = self.session.as_ref().is_some_and(|session| {
-                !matches!(session.peer_closed(), Ok(false))
-            });
+            let peer_closed = self
+                .session
+                .as_ref()
+                .is_some_and(|session| !matches!(session.peer_closed(), Ok(false)));
             if peer_closed {
                 self.drop_session();
             }
