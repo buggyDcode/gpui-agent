@@ -726,32 +726,77 @@ pub fn remove_named_session(root: &Path, name: &str) -> io::Result<bool> {
 }
 
 /// List valid saved sessions, ordered by name.
-pub fn list_named_sessions(root: &Path) -> Vec<NamedSession> {
-    let Ok(dir) = checked_named_sessions_dir(root, false) else {
-        return Vec::new();
+///
+/// Returns an error when session storage is unreadable or unsafe.
+pub fn list_named_sessions(root: &Path) -> Result<Vec<NamedSession>, ResolveError> {
+    let dir = match checked_named_sessions_dir(root, false) {
+        Ok(dir) => dir,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => {
+            return Err(ResolveError::RuntimeDirectory {
+                detail: err.to_string(),
+            });
+        }
     };
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => {
+            return Err(ResolveError::RuntimeDirectory {
+                detail: err.to_string(),
+            });
+        }
     };
-    let mut sessions: Vec<_> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-                return None;
+    let entries = entries
+        .collect::<io::Result<Vec<_>>>()
+        .map_err(|err| ResolveError::RuntimeDirectory {
+            detail: err.to_string(),
+        })?;
+    let mut sessions = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(name) = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        if !valid_session_name(&name) {
+            continue;
+        }
+        match ensure_private_session_file(&path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => continue,
+            Err(err) => {
+                return Err(ResolveError::NamedSessionRead {
+                    name,
+                    detail: err.to_string(),
+                });
             }
-            let name = path.file_stem()?.to_str()?.to_string();
-            if !valid_session_name(&name) {
-                return None;
+        }
+        let body = match fs::read(&path) {
+            Ok(body) => body,
+            Err(err) if err.kind() == ErrorKind::NotFound => continue,
+            Err(err) => {
+                return Err(ResolveError::NamedSessionRead {
+                    name,
+                    detail: err.to_string(),
+                });
             }
-            ensure_private_session_file(&path).ok()?;
-            let body = fs::read(&path).ok()?;
-            let session: NamedSession = serde_json::from_slice(&body).ok()?;
-            (session.name == name).then_some(session)
-        })
-        .collect();
+        };
+        let Ok(session) = serde_json::from_slice::<NamedSession>(&body) else {
+            continue;
+        };
+        if session.name == name {
+            sessions.push(session);
+        }
+    }
     sessions.sort_by(|left, right| left.name.cmp(&right.name));
-    sessions
+    Ok(sessions)
 }
 
 fn parse_addr(addr: &str) -> Result<SocketAddr, ResolveError> {

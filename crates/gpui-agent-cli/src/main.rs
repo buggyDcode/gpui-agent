@@ -548,7 +548,7 @@ fn attach_session(cli: &Cli, target: &str) -> Result<()> {
 }
 
 fn list_sessions() -> Result<()> {
-    let sessions = gpui_agent::discovery::list_named_sessions(&gpui_agent::runtime_root());
+    let sessions = gpui_agent::discovery::list_named_sessions(&gpui_agent::runtime_root())?;
     let summaries: Vec<_> = sessions
         .into_iter()
         .map(|session| {
