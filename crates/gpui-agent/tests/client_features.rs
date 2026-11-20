@@ -8,8 +8,7 @@ use std::{
 
 use gpui_agent::{
     AgentClient, HelloAuth, HelloInfo, PROTOCOL_VERSION, PlatformKind, Response, ScreenshotMode,
-    is_unsupported_op,
-    protocol::Op,
+    is_unsupported_op, protocol::Op,
 };
 
 fn read_request(reader: &mut BufReader<TcpStream>) -> serde_json::Value {

@@ -253,13 +253,7 @@ fn stale_press_blocks_dispatch_with_the_click_target_changed_error() {
     }
     .with_fingerprint(fp);
     assert_eq!(press.fingerprint_gate(), Some(("add", fp)));
-    let resp = handle_request_cached(
-        &mut host,
-        &mut cache,
-        req(press),
-        None,
-        None,
-    );
+    let resp = handle_request_cached(&mut host, &mut cache, req(press), None, None);
     assert!(!resp.ok);
     assert_eq!(
         resp.error.as_deref(),

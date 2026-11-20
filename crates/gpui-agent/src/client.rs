@@ -555,9 +555,7 @@ impl AgentClient {
         if response.ok {
             Ok(response)
         } else {
-            Err(response
-                .error
-                .unwrap_or_else(|| "request failed".into()))
+            Err(response.error.unwrap_or_else(|| "request failed".into()))
         }
     }
 
