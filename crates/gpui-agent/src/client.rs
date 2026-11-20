@@ -37,7 +37,11 @@ struct LiveSession {
 
 impl LiveSession {
     fn open(addr: SocketAddr, timeout: Duration, token: Option<&str>) -> Result<Self, String> {
-        let stream = TcpStream::connect_timeout(&addr, Duration::from_millis(400))
+        let connect_timeout = timeout.min(Duration::from_millis(400));
+        if connect_timeout.is_zero() {
+            return Err(format!("{TCP_CONNECT}connection deadline elapsed"));
+        }
+        let stream = TcpStream::connect_timeout(&addr, connect_timeout)
             .map_err(|err| format!("{TCP_CONNECT}{err}"))?;
         let _ = stream.set_nodelay(true);
         stream
@@ -78,7 +82,7 @@ impl LiveSession {
         Ok(())
     }
 
-    fn exchange_wire(&mut self, id: &str, op: &Op) -> Result<Response, String> {
+    fn exchange_wire(&mut self, id: &str, op: &Op) -> Result<Response, WireError> {
         let req = WireRequest {
             v: PROTOCOL_VERSION,
             id,
@@ -86,14 +90,24 @@ impl LiveSession {
             op,
         };
         write_json_line(&mut self.writer, &mut self.encode_buf, &req)
-            .map_err(|err| err.to_string())?;
-        self.writer.flush().map_err(|err| err.to_string())?;
-        if !read_limited_line_into(&mut self.reader, &mut self.line_buf, MAX_LINE_BYTES)
-            .map_err(|err| err.to_string())?
-        {
-            return Err("connection closed".into());
+            .map_err(|err| WireError::Retryable(err.to_string()))?;
+        self.writer
+            .flush()
+            .map_err(|err| WireError::Retryable(err.to_string()))?;
+        match read_limited_line_into(&mut self.reader, &mut self.line_buf, MAX_LINE_BYTES) {
+            Ok(true) => {}
+            Ok(false) => return Err(WireError::Fatal("connection closed".into())),
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                return Err(WireError::NoReply(err.to_string()));
+            }
+            Err(err) => return Err(WireError::Fatal(err.to_string())),
         }
-        parse_response_line(&self.line_buf)
+        parse_response_line(&self.line_buf).map_err(WireError::Fatal)
     }
 
     /// Write every request line, flush once, then read one response each.
@@ -105,7 +119,7 @@ impl LiveSession {
         &mut self,
         start_id: u64,
         ops: &[&Op],
-    ) -> Result<Vec<Response>, PipelineError> {
+    ) -> Result<Vec<Response>, WireError> {
         let mut id_buf = [0u8; 20];
         let mut wrote = false;
         for (i, op) in ops.iter().enumerate() {
@@ -118,24 +132,24 @@ impl LiveSession {
             };
             if let Err(err) = write_json_line(&mut self.writer, &mut self.encode_buf, &req) {
                 return Err(if wrote {
-                    PipelineError::Fatal(err.to_string())
+                    WireError::Fatal(err.to_string())
                 } else {
-                    PipelineError::Retryable(err.to_string())
+                    WireError::Retryable(err.to_string())
                 });
             }
             wrote = true;
         }
         self.writer
             .flush()
-            .map_err(|err| PipelineError::Fatal(err.to_string()))?;
+            .map_err(|err| WireError::Fatal(err.to_string()))?;
         let mut out = Vec::with_capacity(ops.len());
         for _ in ops {
             match read_limited_line_into(&mut self.reader, &mut self.line_buf, MAX_LINE_BYTES) {
                 Ok(true) => {}
                 Ok(false) => return Err(pipeline_eof(&out)),
-                Err(err) => return Err(PipelineError::Fatal(err.to_string())),
+                Err(err) => return Err(WireError::Fatal(err.to_string())),
             }
-            out.push(parse_response_line(&self.line_buf).map_err(PipelineError::Fatal)?);
+            out.push(parse_response_line(&self.line_buf).map_err(WireError::Fatal)?);
         }
         Ok(out)
     }
@@ -143,21 +157,30 @@ impl LiveSession {
 
 /// Connect/write failures before any request line is sent may retry.
 /// Once a line is on the wire, ops may already have run — do not replay.
-enum PipelineError {
+enum WireError {
     Retryable(String),
     Fatal(String),
+    NoReply(String),
 }
 
-fn pipeline_eof(partial: &[Response]) -> PipelineError {
+fn pipeline_eof(partial: &[Response]) -> WireError {
     if let Some(resp) = partial.iter().find(|resp| !resp.ok) {
-        PipelineError::Fatal(
+        WireError::Fatal(
             resp.error
                 .clone()
                 .unwrap_or_else(|| "connection closed".into()),
         )
     } else {
-        PipelineError::Fatal("connection closed".into())
+        WireError::Fatal("connection closed".into())
     }
+}
+
+fn sleep_before_retry(deadline: std::time::Instant) {
+    std::thread::sleep(
+        deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .min(Duration::from_millis(50)),
+    );
 }
 
 #[derive(serde::Serialize)]
@@ -347,20 +370,37 @@ impl AgentClient {
     }
 
     fn roundtrip_retry(&mut self, op: &Op) -> Result<Response, String> {
+        let timeout = self.timeout_for(op);
+        let deadline = std::time::Instant::now() + timeout;
+        self.roundtrip_retry_until(op, deadline, timeout)
+    }
+
+    fn roundtrip_retry_until(
+        &mut self,
+        op: &Op,
+        deadline: std::time::Instant,
+        timeout: Duration,
+    ) -> Result<Response, String> {
         let id_num = self.next_id;
         self.next_id += 1;
         let mut id_buf = [0u8; 20];
         let id = fmt_u64(id_num, &mut id_buf);
         let mut last_err = String::new();
-        let timeout = self.timeout_for(op);
-        let deadline = std::time::Instant::now() + timeout;
-        while std::time::Instant::now() < deadline {
-            match self.roundtrip_wire(id, op, timeout) {
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match self.roundtrip_wire(id, op, remaining) {
                 Ok(resp) => return Ok(resp),
-                Err(err) => {
+                Err(WireError::Retryable(err)) => {
                     last_err = err;
                     self.drop_session();
-                    std::thread::sleep(Duration::from_millis(50));
+                    sleep_before_retry(deadline);
+                }
+                Err(WireError::Fatal(err)) => return Err(err),
+                Err(WireError::NoReply(err)) => {
+                    return Err(no_answer(self.addr, timeout, &err));
                 }
             }
         }
@@ -375,36 +415,47 @@ impl AgentClient {
             if self.session.is_none() {
                 self.features = None;
             }
-            let request = self.negotiated(op)?.unwrap_or_else(|| op.clone());
+            let request = self.negotiated(op, deadline)?.unwrap_or_else(|| op.clone());
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(no_answer(self.addr, timeout, "operation timed out"));
+            }
             let id_num = self.next_id;
             self.next_id += 1;
             let mut id_buf = [0u8; 20];
             let id = fmt_u64(id_num, &mut id_buf);
-            match self.roundtrip_wire(id, &request, timeout) {
+            match self.roundtrip_wire(id, &request, self.timeout_for(op).min(remaining)) {
                 Ok(response) => return Ok(response),
-                Err(err) => {
+                Err(WireError::Retryable(err)) => {
                     last_err = err;
                     self.drop_session();
-                    std::thread::sleep(Duration::from_millis(50));
+                    sleep_before_retry(deadline);
+                }
+                Err(WireError::Fatal(err)) => return Err(err),
+                Err(WireError::NoReply(err)) => {
+                    return Err(no_answer(self.addr, remaining, &err));
                 }
             }
         }
-        Err(format!(
-            "connect {addr} failed: {last_err}",
-            addr = self.addr
-        ))
+        Err(no_answer(self.addr, timeout, &last_err))
     }
 
-    fn roundtrip_wire(&mut self, id: &str, op: &Op, timeout: Duration) -> Result<Response, String> {
+    fn roundtrip_wire(
+        &mut self,
+        id: &str,
+        op: &Op,
+        timeout: Duration,
+    ) -> Result<Response, WireError> {
         if self.session.is_none() {
             self.features = None;
-            self.session = Some(LiveSession::open(
-                self.addr,
-                timeout,
-                self.token.as_deref(),
-            )?);
+            self.session = Some(
+                LiveSession::open(self.addr, timeout, self.token.as_deref())
+                    .map_err(WireError::Retryable)?,
+            );
         } else if let Some(session) = self.session.as_mut() {
-            session.set_io_timeout(timeout)?;
+            session
+                .set_io_timeout(timeout)
+                .map_err(WireError::Retryable)?;
         }
         match self
             .session
@@ -428,12 +479,12 @@ impl AgentClient {
         while std::time::Instant::now() < deadline {
             match self.pipeline_once(start_id, ops) {
                 Ok(resps) => return Ok(resps),
-                Err(PipelineError::Retryable(err)) => {
+                Err(WireError::Retryable(err)) => {
                     last_err = err;
                     self.drop_session();
                     std::thread::sleep(Duration::from_millis(50));
                 }
-                Err(PipelineError::Fatal(err)) => {
+                Err(WireError::Fatal(err)) => {
                     self.drop_session();
                     return Err(if read_timed_out(&err) {
                         no_answer(self.addr, self.timeout, &err)
@@ -441,21 +492,21 @@ impl AgentClient {
                         err
                     });
                 }
+                Err(WireError::NoReply(err)) => {
+                    self.drop_session();
+                    return Err(no_answer(self.addr, self.timeout, &err));
+                }
             }
         }
         Err(no_answer(self.addr, self.timeout, &last_err))
     }
 
-    fn pipeline_once(
-        &mut self,
-        start_id: u64,
-        ops: &[&Op],
-    ) -> Result<Vec<Response>, PipelineError> {
+    fn pipeline_once(&mut self, start_id: u64, ops: &[&Op]) -> Result<Vec<Response>, WireError> {
         if self.session.is_none() {
             self.features = None;
             match LiveSession::open(self.addr, self.timeout, self.token.as_deref()) {
                 Ok(session) => self.session = Some(session),
-                Err(err) => return Err(PipelineError::Retryable(err)),
+                Err(err) => return Err(WireError::Retryable(err)),
             }
         } else if let Some(session) = self.session.as_mut() {
             session
@@ -627,14 +678,29 @@ impl AgentClient {
 
     /// `Some(invoke)` when the host needs the 0.1 spelling, `None` when
     /// `op` goes as written, `Err(unsupported_op)` when it cannot be sent.
-    fn negotiated(&mut self, op: &Op) -> Result<Option<Op>, String> {
+    fn negotiated(&mut self, op: &Op, deadline: std::time::Instant) -> Result<Option<Op>, String> {
         let Some(feature) = op.feature() else {
             return Ok(None);
         };
         if self.as_written {
             return Ok(None);
         }
-        let features = self.features()?;
+        if self.features.is_none() {
+            let hello_op = Op::Hello;
+            let hello_timeout = self.timeout_for(&hello_op);
+            let hello_started = std::time::Instant::now();
+            let hello_budget = hello_timeout.min(deadline.saturating_duration_since(hello_started));
+            if hello_budget.is_zero() {
+                return Err(no_answer(self.addr, hello_timeout, "operation timed out"));
+            }
+            let hello =
+                self.roundtrip_retry_until(&hello_op, hello_started + hello_budget, hello_budget)?;
+            if !hello.ok {
+                return Err(hello.error.unwrap_or_else(|| "request failed".into()));
+            }
+            self.features = Some(hello.hello.ok_or("hello has no info")?.features);
+        }
+        let features = self.features.as_deref().unwrap_or_default();
         if features.iter().any(|f| f == feature) {
             return Ok(None);
         }
