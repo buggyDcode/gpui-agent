@@ -33,10 +33,12 @@ fn ref_arg(arg: &str) -> Option<(&str, &str)> {
         return Some(("", arg));
     }
     let (option, value) = arg.split_once('=')?;
-    (option.starts_with("--") && is_ref(value)).then_some((&arg[..option.len() + 1], value))
+    (NODE_ID_OPTIONS.contains(&option) && is_ref(value)).then_some((&arg[..option.len() + 1], value))
 }
 
-/// `true` for an exact ref argument or a `--long=@eN` argument.
+const NODE_ID_OPTIONS: &[&str] = &["--id", "--target", "--from", "--to"];
+
+/// `true` for an exact ref argument or a node-id option with a ref value.
 pub fn has_ref(arg: &str) -> bool {
     ref_arg(arg).is_some()
 }
@@ -242,13 +244,29 @@ mod tests {
             "press".into(),
             "@e3".into(),
             "--id=@e1".into(),
+            "--target=@e1".into(),
+            "--from=@e1".into(),
+            "--to=@e1".into(),
+            "--name=@e1".into(),
+            "--value=@e1".into(),
             "--text=hi @e1".into(),
             "@everyone".into(),
         ];
         resolve(&root, addr, &mut args).unwrap();
         assert_eq!(
             args,
-            ["press", "n40", "--id=n12", "--text=hi @e1", "@everyone"]
+            [
+                "press",
+                "n40",
+                "--id=n12",
+                "--target=n12",
+                "--from=n12",
+                "--to=n12",
+                "--name=@e1",
+                "--value=@e1",
+                "--text=hi @e1",
+                "@everyone"
+            ]
         );
         let mut stale: Vec<OsString> = vec!["@e9".into()];
         assert!(
