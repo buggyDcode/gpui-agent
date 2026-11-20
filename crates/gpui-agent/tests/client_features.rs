@@ -21,7 +21,12 @@ fn accept_with_timeout(listener: &TcpListener) -> TcpStream {
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return stream,
+            Ok((stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .expect("restore blocking mode on accepted stream");
+                return stream;
+            }
             Err(error)
                 if error.kind() == std::io::ErrorKind::WouldBlock
                     && std::time::Instant::now() < deadline =>
