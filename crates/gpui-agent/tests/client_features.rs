@@ -17,6 +17,22 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> serde_json::Value {
     serde_json::from_str(&line).unwrap()
 }
 
+fn accept_with_timeout(listener: &TcpListener) -> TcpStream {
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return stream,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    && std::time::Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => panic!("accept timed out: {error}"),
+        }
+    }
+}
+
 fn respond(writer: &mut TcpStream, request: &serde_json::Value, hello: Option<HelloInfo>) {
     let mut response = Response::ok(request["id"].as_str().unwrap());
     response.hello = hello;
@@ -137,6 +153,59 @@ fn gated_call_renegotiates_after_the_host_restarts() {
 
     let error = client.gated(press()).unwrap_err();
     assert!(is_unsupported_op(&error), "{error}");
+    server.join().unwrap();
+}
+
+#[test]
+fn gated_call_refreshes_cached_rejections_after_the_host_restarts() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (closed_tx, closed_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let mut old_writer = accept_with_timeout(&listener);
+        let mut old_reader = BufReader::new(old_writer.try_clone().unwrap());
+        let request = read_request(&mut old_reader);
+        assert_eq!(request["op"], "hello");
+        respond(
+            &mut old_writer,
+            &request,
+            Some(hello(&["screenshot_inline"])),
+        );
+        let request = read_request(&mut old_reader);
+        assert_eq!(request["op"], "screenshot");
+        assert!(request["inline"].as_bool().unwrap());
+        respond(&mut old_writer, &request, None);
+        old_writer.shutdown(Shutdown::Both).unwrap();
+        drop(old_reader);
+        drop(old_writer);
+        closed_tx.send(()).unwrap();
+
+        let mut new_writer = accept_with_timeout(&listener);
+        let mut new_reader = BufReader::new(new_writer.try_clone().unwrap());
+        let request = read_request(&mut new_reader);
+        assert_eq!(request["op"], "hello");
+        respond(
+            &mut new_writer,
+            &request,
+            Some(hello(&["screenshot_inline", "press"])),
+        );
+        let request = read_request(&mut new_reader);
+        assert_eq!(request["op"], "press");
+        respond(&mut new_writer, &request, None);
+    });
+
+    let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(3));
+    let screenshot = Op::Screenshot {
+        path: None,
+        mode: ScreenshotMode::Viewport,
+        target: None,
+        max_height_px: None,
+        inline: true,
+    };
+    assert!(client.gated(screenshot).unwrap().ok);
+    closed_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(client.gated(press()).unwrap().ok);
     server.join().unwrap();
 }
 
