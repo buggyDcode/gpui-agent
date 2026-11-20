@@ -13,7 +13,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use clap::{Parser, Subcommand};
+use clap::parser::ValueSource;
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use gpui_agent::client::AgentClient;
 use gpui_agent::discovery::NamedSession;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, KeybindingScope, Op};
@@ -51,7 +52,8 @@ struct Cli {
     )]
     session: Option<String>,
     /// Shared secret; must match `GPUI_AGENT_TOKEN` on the host when the host
-    /// has one. Required (non-empty) for `recipe run` and `mcp`.
+    /// has one. With `--session`, the saved token precedes the environment
+    /// value; this command-line flag overrides it. Required for `recipe run` and `mcp`.
     #[arg(long, env = "GPUI_AGENT_TOKEN", hide_env_values = true)]
     token: Option<String>,
     /// Connect to a non-loopback host. Requires a non-empty token. Plaintext
@@ -89,7 +91,9 @@ token so a mistyped address cannot leak the secret (see docs/SECURITY.md).
 the last pick. Use `--session <name> attach <target>` once, then pass
 `--session <name>` for later commands. `gpui-agent sessions` lists saved
 sessions without printing tokens; `gpui-agent --session <name> detach`
-removes one. Every command that discovery routes names its app on stderr.";
+removes one. With `--session`, the saved token is used before
+`GPUI_AGENT_TOKEN`; a command-line `--token` overrides it. Every command that
+discovery routes names its app on stderr.";
 
 #[derive(Debug, Subcommand)]
 enum Command {
@@ -429,6 +433,17 @@ fn take_non_empty_token(token: Option<String>) -> Option<String> {
     token.filter(|s| !s.is_empty())
 }
 
+fn parse_cli_from<I, T>(args: I) -> (Cli, bool)
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let matches = Cli::command().get_matches_from(args);
+    let command_line_token = matches.value_source("token") == Some(ValueSource::CommandLine);
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
+    (cli, command_line_token)
+}
+
 fn require_session_name<'a>(cli: &'a Cli, command: &str) -> Result<&'a str> {
     cli.session
         .as_deref()
@@ -528,7 +543,7 @@ fn require_recipe_mcp_token(token: Option<&str>) -> Result<&str> {
 }
 
 fn run() -> Result<()> {
-    let mut cli = Cli::parse();
+    let (mut cli, mut token_from_command_line) = parse_cli_from(std::env::args_os());
     if matches!(cli.command, Command::Skill) {
         print!("{}", skill());
         return Ok(());
@@ -565,7 +580,7 @@ fn run() -> Result<()> {
         .any(|arg| arg.to_str().is_some_and(refs::is_ref))
     {
         refs::resolve(&root, initial_target.addr, &mut args[1..]).map_err(|e| anyhow!(e))?;
-        cli = Cli::parse_from(args);
+        (cli, token_from_command_line) = parse_cli_from(args);
     }
     let (target, session) = resolve_cli_target(&root, &cli)?;
     let addr = target.addr;
@@ -574,10 +589,14 @@ fn run() -> Result<()> {
     } else if target.app.is_some() {
         eprintln!("gpui-agent: {}", target.describe());
     }
-    let token = take_non_empty_token(
+    let token = take_non_empty_token(if token_from_command_line {
         cli.token
-            .or_else(|| session.as_ref().and_then(|session| session.token.clone())),
-    );
+    } else {
+        session
+            .as_ref()
+            .and_then(|session| session.token.clone())
+            .or(cli.token)
+    });
     let allow_remote = cli.allow_remote || session.is_some_and(|session| session.allow_remote);
     let request_timeout = cli.request_timeout_ms.map(Duration::from_millis);
     gpui_agent::authorize_client(addr, token.as_deref(), allow_remote)

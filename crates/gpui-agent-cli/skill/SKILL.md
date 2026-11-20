@@ -23,6 +23,8 @@ gpui-agent --session app doctor            # address, token, capabilities, answe
 - For repeated work, keep using `--session app`; `gpui-agent sessions` lists
   saved sessions without revealing tokens. A session is a stored connection
   record, not a background process. Use a different name for each app.
+- The saved token takes precedence over `GPUI_AGENT_TOKEN`; pass `--token` to
+  override it.
 - Do not rely on `--connect` for a saved workflow, which picks whichever
   matching app is running.
 - `no reply from … within 8000 ms` means the app is up but busy. Raise

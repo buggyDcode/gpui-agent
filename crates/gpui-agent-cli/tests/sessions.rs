@@ -11,16 +11,23 @@ use serde_json::Value;
 const TOKEN: &str = "named-session-secret";
 
 fn cli(runtime: &RuntimeRoot, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_gpui-agent"))
+    cli_with_env_token(runtime, args, None)
+}
+
+fn cli_with_env_token(runtime: &RuntimeRoot, args: &[&str], token: Option<&str>) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_gpui-agent"));
+    command
         .args(args)
         .env("GPUI_AGENT_RUNTIME_DIR", runtime.path())
         .env_remove("GPUI_AGENT_SESSION")
         .env_remove("GPUI_AGENT_ADDR")
         .env_remove("GPUI_AGENT_CONNECT")
         .env_remove("GPUI_AGENT_TOKEN")
-        .env_remove("GPUI_AGENT_ALLOW_REMOTE")
-        .output()
-        .expect("spawn gpui-agent")
+        .env_remove("GPUI_AGENT_ALLOW_REMOTE");
+    if let Some(token) = token {
+        command.env("GPUI_AGENT_TOKEN", token);
+    }
+    command.output().expect("spawn gpui-agent")
 }
 
 fn stdout(output: &Output) -> String {
@@ -107,4 +114,37 @@ fn named_sessions_attach_reuse_list_detach_and_do_not_save_failed_attach() {
     );
     let sessions: Value = serde_json::from_slice(&listed.stdout).expect("sessions JSON");
     assert_eq!(sessions, serde_json::json!([]));
+}
+
+#[test]
+fn saved_token_precedes_environment_but_command_line_token_overrides_it() {
+    let todo = Todo::spawn(TOKEN);
+    let runtime = RuntimeRoot::new();
+
+    let attached = cli(
+        &runtime,
+        &["--session", "s", "--token", TOKEN, "attach", &todo.addr],
+    );
+    assert!(
+        attached.status.success(),
+        "attach failed: {}",
+        stderr(&attached)
+    );
+
+    let hello = cli_with_env_token(&runtime, &["--session", "s", "hello"], Some("wrong"));
+    assert!(
+        hello.status.success(),
+        "saved token should take precedence over GPUI_AGENT_TOKEN: {}",
+        stderr(&hello)
+    );
+
+    let explicit_wrong = cli_with_env_token(
+        &runtime,
+        &["--session", "s", "--token", "wrong", "hello"],
+        Some(TOKEN),
+    );
+    assert!(
+        !explicit_wrong.status.success(),
+        "a command-line token should override the saved token"
+    );
 }

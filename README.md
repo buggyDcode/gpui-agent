@@ -58,7 +58,8 @@ Navigation between pages is **click + assert** on stable ids (or `invoke` if the
 For repeated agent work, attach once with the host's token, then pass the same
 `--session <name>` to later commands. A named session stores an address and
 credentials on disk; it is a record, not a background process. On Unix, its
-token file is private to the current user.
+token file is private to the current user. The saved token takes precedence
+over `GPUI_AGENT_TOKEN`; pass `--token` to override it.
 
 ```bash
 GPUI_AGENT_TOKEN=dev-secret gpui-agent --session todo attach 127.0.0.1:17421
