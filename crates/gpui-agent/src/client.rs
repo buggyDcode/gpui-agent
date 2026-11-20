@@ -422,12 +422,7 @@ impl AgentClient {
             }
             let result = match shared_deadline {
                 Some(deadline) => self.roundtrip_wire(id, op, deadline),
-                None => self.roundtrip_wire_with_reply_timeout(
-                    id,
-                    op,
-                    connect_deadline,
-                    timeout,
-                ),
+                None => self.roundtrip_wire_with_reply_timeout(id, op, connect_deadline, timeout),
             };
             match result {
                 Ok(resp) => return Ok(resp),
@@ -676,11 +671,12 @@ impl AgentClient {
                 }
             }
         }
-        let result = self
-            .session
-            .as_mut()
-            .expect("session")
-            .exchange_pipeline(start_id, ops, connect_deadline, reply_timeout);
+        let result = self.session.as_mut().expect("session").exchange_pipeline(
+            start_id,
+            ops,
+            connect_deadline,
+            reply_timeout,
+        );
         match result {
             Ok(resps) => {
                 self.session.as_mut().expect("session").last_used = Instant::now();
@@ -868,14 +864,13 @@ impl AgentClient {
                     "operation deadline elapsed",
                 ));
             }
-            let hello =
-                let hello_deadline = hello_started + hello_budget;
-                self.roundtrip_retry_until(
-                    &hello_op,
-                    hello_deadline,
-                    hello_budget,
-                    Some(hello_deadline),
-                )?;
+            let hello_deadline = hello_started + hello_budget;
+            let hello = self.roundtrip_retry_until(
+                &hello_op,
+                hello_deadline,
+                hello_budget,
+                Some(hello_deadline),
+            )?;
             if !hello.ok {
                 return Err(hello.error.unwrap_or_else(|| "request failed".into()));
             }
