@@ -14,9 +14,10 @@ or --addr / --token passed through) and checks that:
 - the listed ops that are safe to try on any screen work: `scroll` and
   `swipe` on the first usable scroller (then back by what actually moved),
   `hover` on the first usable button, `viewport` to the current size, and
-  an inline screenshot that is a complete PNG. A host that declines with
-  `screenshot_unavailable` gets a warning, or a failure with
-  --require-screenshot.
+  an inline screenshot that is a complete PNG. A host that does not advertise
+  `screenshot_inline` gets a warning and skips screenshot checks. A host that
+  declines with `screenshot_unavailable` also gets a warning. Either case is
+  a failure with --require-screenshot.
 
 `press` is only tried with --press <node id>, since it changes the app.
 Exit code 0 when every check passed; 1 otherwise.
@@ -225,7 +226,10 @@ def main():
     run.check("hello.platform is stated", bool(hello.get("platform")))
     features = hello.get("features") or []
     current = "screenshot_inline" in features
-    run.check("hello.features lists screenshot_inline", current, ", ".join(features))
+    if current:
+        run.check("hello.features lists screenshot_inline", True, ", ".join(features))
+    else:
+        run.warn("hello.features does not list screenshot_inline")
     # Optional in the protocol, so its absence is reported and not failed.
     if hello.get("framework"):
         run.check("hello.framework is stated", True, hello["framework"])
@@ -298,6 +302,14 @@ def main():
                     code == 0 and valid_png(path),
                     err,
                 )
+    elif args.require_screenshot:
+        run.check(
+            "inline screenshot (required)",
+            False,
+            "hello.features does not list screenshot_inline",
+        )
+    else:
+        run.skip("inline screenshot", "host does not advertise screenshot_inline")
 
     print(f"\n{'PASS' if run.failed == 0 else f'{run.failed} FAILED'}")
     return 1 if run.failed else 0
