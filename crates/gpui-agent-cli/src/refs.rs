@@ -33,7 +33,8 @@ fn ref_arg(arg: &str) -> Option<(&str, &str)> {
         return Some(("", arg));
     }
     let (option, value) = arg.split_once('=')?;
-    (NODE_ID_OPTIONS.contains(&option) && is_ref(value)).then_some((&arg[..option.len() + 1], value))
+    (NODE_ID_OPTIONS.contains(&option) && is_ref(value))
+        .then_some((&arg[..option.len() + 1], value))
 }
 
 const NODE_ID_OPTIONS: &[&str] = &["--id", "--target", "--from", "--to"];
