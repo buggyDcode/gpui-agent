@@ -385,7 +385,12 @@ impl AgentClient {
             }
             return Ok(out);
         }
-        self.pipeline_retry(ops)
+        let timeout = ops
+            .iter()
+            .map(|op| self.timeout_for(op))
+            .max()
+            .unwrap_or(self.timeout);
+        self.pipeline_retry(ops, timeout)
     }
 
     /// One request on a fresh connection, then drop it.
@@ -541,14 +546,14 @@ impl AgentClient {
         }
     }
 
-    fn pipeline_retry(&mut self, ops: &[&Op]) -> Result<Vec<Response>, String> {
+    fn pipeline_retry(&mut self, ops: &[&Op], timeout: Duration) -> Result<Vec<Response>, String> {
         self.drop_idle_session();
         let start_id = self.next_id;
         self.next_id += ops.len() as u64;
         let mut last_err = String::new();
-        let deadline = std::time::Instant::now() + self.timeout;
+        let deadline = std::time::Instant::now() + timeout;
         while std::time::Instant::now() < deadline {
-            match self.pipeline_once(start_id, ops) {
+            match self.pipeline_once(start_id, ops, timeout) {
                 Ok(resps) => return Ok(resps),
                 Err(WireError::Retryable(err)) => {
                     last_err = err;
@@ -558,24 +563,29 @@ impl AgentClient {
                 Err(WireError::Fatal(err)) => {
                     self.drop_session();
                     return Err(if read_timed_out(&err) {
-                        no_answer(self.addr, self.timeout, &err)
+                        no_answer(self.addr, timeout, &err)
                     } else {
                         err
                     });
                 }
                 Err(WireError::NoReply(err)) => {
                     self.drop_session();
-                    return Err(no_answer(self.addr, self.timeout, &err));
+                    return Err(no_answer(self.addr, timeout, &err));
                 }
             }
         }
-        Err(no_answer(self.addr, self.timeout, &last_err))
+        Err(no_answer(self.addr, timeout, &last_err))
     }
 
-    fn pipeline_once(&mut self, start_id: u64, ops: &[&Op]) -> Result<Vec<Response>, WireError> {
+    fn pipeline_once(
+        &mut self,
+        start_id: u64,
+        ops: &[&Op],
+        timeout: Duration,
+    ) -> Result<Vec<Response>, WireError> {
         if self.session.is_none() {
             self.features = None;
-            match LiveSession::open(self.addr, self.timeout, self.token.as_deref()) {
+            match LiveSession::open(self.addr, timeout, self.token.as_deref()) {
                 Ok(session) => self.session = Some(session),
                 Err(err) => return Err(WireError::Retryable(err)),
             }
@@ -598,7 +608,7 @@ impl AgentClient {
         self.session
             .as_mut()
             .expect("session")
-            .set_io_timeout(self.timeout)
+            .set_io_timeout(timeout)
             .map_err(WireError::Retryable)?;
         let result = self
             .session
