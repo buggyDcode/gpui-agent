@@ -627,26 +627,18 @@ impl AgentClient {
                 "connection deadline elapsed before request".into(),
             ));
         }
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| !matches!(session.peer_closed(), Ok(false)))
+        {
+            self.drop_session();
+        }
         if self.session.is_none() {
             self.features = None;
             match LiveSession::open_until(self.addr, connect_deadline, self.token.as_deref()) {
                 Ok(session) => self.session = Some(session),
                 Err(error) => return Err(WireError::Retryable(error)),
-            }
-        } else {
-            let peer_closed = self.session.as_ref().expect("session").peer_closed();
-            match peer_closed {
-                Ok(false) => {}
-                Ok(true) => {
-                    self.drop_session();
-                    return Err(WireError::Retryable(
-                        "connection closed before request".into(),
-                    ));
-                }
-                Err(error) => {
-                    self.drop_session();
-                    return Err(WireError::Retryable(error.to_string()));
-                }
             }
         }
         let result = self
