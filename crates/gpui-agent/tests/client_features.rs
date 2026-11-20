@@ -8,7 +8,8 @@ use std::{
 
 use gpui_agent::{
     AgentClient, HelloAuth, HelloInfo, PROTOCOL_VERSION, PlatformKind, Response, ScreenshotMode,
-    challenge_for_nonce, hmac_hex, is_unsupported_op, protocol::Op,
+    challenge_for_nonce, hmac_hex, is_unsupported_op,
+    protocol::{AssertSpec, Op},
 };
 
 fn read_request(reader: &mut BufReader<TcpStream>) -> serde_json::Value {
@@ -211,6 +212,38 @@ fn gated_call_refreshes_cached_rejections_after_the_host_restarts() {
     assert!(client.gated(screenshot).unwrap().ok);
     closed_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     assert!(client.gated(press()).unwrap().ok);
+    server.join().unwrap();
+}
+
+#[test]
+fn pipeline_wait_uses_the_longest_operation_timeout() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let mut writer = accept_with_timeout(&listener);
+        let mut reader = BufReader::new(writer.try_clone().unwrap());
+        let wait_request = read_request(&mut reader);
+        assert_eq!(wait_request["op"], "wait_until");
+        let other_request = read_request(&mut reader);
+        assert_eq!(other_request["op"], "snapshot");
+        thread::sleep(Duration::from_millis(250));
+        respond(&mut writer, &wait_request, None);
+        respond(&mut writer, &other_request, None);
+    });
+
+    let wait = Op::WaitUntil {
+        timeout_ms: 1_000,
+        spec: AssertSpec {
+            target: "button".into(),
+            exists: Some(true),
+            ..AssertSpec::default()
+        },
+    };
+    let snapshot = Op::snapshot();
+    let mut client = AgentClient::connect(addr).with_timeout(Duration::from_millis(100));
+    let responses = client.rpc_pipeline(&[&wait, &snapshot]).unwrap();
+    assert_eq!(responses.len(), 2);
+    assert!(responses.iter().all(|response| response.ok));
     server.join().unwrap();
 }
 
