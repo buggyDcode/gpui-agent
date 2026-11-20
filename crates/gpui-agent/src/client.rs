@@ -37,10 +37,6 @@ struct LiveSession {
 }
 
 impl LiveSession {
-    fn open(addr: SocketAddr, timeout: Duration, token: Option<&str>) -> Result<Self, String> {
-        Self::open_until(addr, Instant::now() + timeout, token)
-    }
-
     fn open_until(
         addr: SocketAddr,
         deadline: Instant,
@@ -690,15 +686,6 @@ impl AgentClient {
         Err(no_answer(self.addr, self.timeout, &last_err))
     }
 
-    fn pipeline_once(
-        &mut self,
-        start_id: u64,
-        ops: &[&Op],
-        reply_timeout: Duration,
-    ) -> Result<Vec<Response>, WireError> {
-        self.pipeline_once_until(start_id, ops, Instant::now() + self.timeout, reply_timeout)
-    }
-
     fn pipeline_once_until(
         &mut self,
         start_id: u64,
@@ -1179,7 +1166,13 @@ mod tests {
         client.expect_ok(Op::Hello).unwrap();
         client.set_timeout(Duration::from_millis(100));
         let started = std::time::Instant::now();
-        let response = client.pipeline_once(2, &[&Op::Hello], client.timeout);
+        let timeout = client.timeout;
+        let response = client.pipeline_once_until(
+            2,
+            &[&Op::Hello],
+            Instant::now() + timeout,
+            timeout,
+        );
         let elapsed = started.elapsed();
         server.join().unwrap();
 
