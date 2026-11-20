@@ -747,11 +747,12 @@ pub fn list_named_sessions(root: &Path) -> Result<Vec<NamedSession>, ResolveErro
             });
         }
     };
-    let entries = entries
-        .collect::<io::Result<Vec<_>>>()
-        .map_err(|err| ResolveError::RuntimeDirectory {
-            detail: err.to_string(),
-        })?;
+    let entries =
+        entries
+            .collect::<io::Result<Vec<_>>>()
+            .map_err(|err| ResolveError::RuntimeDirectory {
+                detail: err.to_string(),
+            })?;
     let mut sessions = Vec::new();
     for entry in entries {
         let path = entry.path();
@@ -1177,13 +1178,13 @@ mod tests {
         };
         save_named_session(&root, &another).unwrap();
         assert_eq!(
-            list_named_sessions(&root),
+            list_named_sessions(&root).unwrap(),
             vec![another.clone(), session.clone()]
         );
 
         assert!(remove_named_session(&root, "work_agent").unwrap());
         assert!(!remove_named_session(&root, "work_agent").unwrap());
-        assert_eq!(list_named_sessions(&root), vec![another]);
+        assert_eq!(list_named_sessions(&root).unwrap(), vec![another]);
         let _ = fs::remove_dir_all(root);
     }
 

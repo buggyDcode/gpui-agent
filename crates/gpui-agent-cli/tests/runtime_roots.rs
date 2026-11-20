@@ -76,7 +76,7 @@ fn unsafe_runtime_root_errors_reach_discovery_commands() {
     assert_eq!(targets["adb"][0]["serial"], "emulator-5554");
     assert_eq!(targets["adb"][0]["forwarded"][0], "127.0.0.1:17421");
 
-    let sessions = cli(&unsafe_root, &["sessions"]);
+    let sessions = cli_with_root(&unsafe_root, &["sessions"]);
     assert!(!sessions.status.success());
     assert!(
         stderr(&sessions).contains("unsafe runtime directory"),
