@@ -90,6 +90,16 @@ with `--reply-timeout-ms` or
 `GPUI_AGENT_REPLY_TIMEOUT_MS`; a `no reply from …` error means the
 host is up but was too busy to answer in time.
 
+`snapshot --refs` prints an outline with a short ref per node, and every command takes a
+ref where it takes a node id. Refs hold until the next `snapshot --refs` of that host.
+
+```bash
+gpui-agent snapshot --refs   # @e1 button "Save" …
+gpui-agent press @e1
+```
+
+An argument spelled exactly like a ref (`@e1`) is always read as one, text to type included.
+
 When a host does not answer, two commands say why:
 
 ```bash

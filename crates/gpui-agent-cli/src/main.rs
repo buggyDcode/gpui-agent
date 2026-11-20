@@ -3,6 +3,7 @@ mod doctor;
 mod instinct_wiring;
 mod mcp;
 mod recipe_cmd;
+mod refs;
 #[cfg(feature = "instinct")]
 mod run_cmd;
 
@@ -119,6 +120,12 @@ enum Command {
     Snapshot {
         #[arg(long)]
         pretty: bool,
+        /// Print an outline instead of JSON: one line per visible node that
+        /// says something or can be acted on, each with a short ref
+        /// (`@e1`, `@e2`, …). Any later command takes a ref where it takes a
+        /// node id, until the next `snapshot --refs` renumbers them.
+        #[arg(long, conflicts_with = "pretty")]
+        refs: bool,
     },
     /// Observe-only PNG of the **app surface**. Host writes `--out`.
     /// Headless / Linux / Windows: `screenshot_unavailable` (no fake file).
@@ -396,7 +403,7 @@ fn require_recipe_mcp_token(token: Option<&str>) -> Result<&str> {
 }
 
 fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
     if matches!(cli.command, Command::Targets) {
         println!("{}", serde_json::to_string_pretty(&doctor::targets())?);
         return Ok(());
@@ -412,6 +419,12 @@ fn run() -> Result<()> {
         eprintln!("gpui-agent: {}", target.describe());
     }
     let addr = target.addr;
+    // `@e3` stands for a node of the last `snapshot --refs` of this host.
+    let mut args: Vec<String> = std::env::args().collect();
+    if args.iter().skip(1).any(|arg| refs::is_ref(arg)) {
+        refs::resolve(&gpui_agent::runtime_root(), addr, &mut args[1..]).map_err(|e| anyhow!(e))?;
+        cli = Cli::parse_from(args);
+    }
     let token = take_non_empty_token(cli.token);
     let request_timeout = cli.request_timeout_ms.map(Duration::from_millis);
     gpui_agent::authorize_client(addr, token.as_deref(), cli.allow_remote)
@@ -511,9 +524,17 @@ fn run() -> Result<()> {
             print_resp(rpc(client.wait_until(spec, timeout_ms))?)
         }
         Command::Hello => print_resp(rpc(client.expect_ok(Op::Hello))?),
-        Command::Snapshot { pretty } => {
+        Command::Snapshot { pretty, refs } => {
             let resp = rpc(client.snapshot())?;
-            if pretty {
+            if refs {
+                let tree = resp
+                    .tree
+                    .ok_or_else(|| anyhow!("the reply carried no tree"))?;
+                let (outline, table) = refs::render(&tree);
+                refs::save(&gpui_agent::runtime_root(), addr, &table)
+                    .context("saving the ref table")?;
+                print!("{outline}");
+            } else if pretty {
                 println!("{}", serde_json::to_string_pretty(&resp.tree)?);
             } else {
                 print_resp(resp);
