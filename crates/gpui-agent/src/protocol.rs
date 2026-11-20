@@ -1057,6 +1057,7 @@ impl Op {
     /// the first protocol 2 release. `None` for the original ops.
     pub fn feature(&self) -> Option<&'static str> {
         Some(match self {
+            Self::Screenshot { inline: true, .. } => "screenshot_inline",
             Self::Press { .. } => "press",
             Self::Scroll { .. } => "scroll",
             Self::Hover { .. } => "hover",
