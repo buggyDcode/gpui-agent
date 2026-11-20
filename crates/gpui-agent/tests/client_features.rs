@@ -273,6 +273,45 @@ fn zero_timeout_wait_still_attempts_the_host() {
 }
 
 #[test]
+fn zero_timeout_wait_reconnects_after_cached_session_closes() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (closed_tx, closed_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let mut first_writer = accept_with_timeout(&listener);
+        let mut first_reader = BufReader::new(first_writer.try_clone().unwrap());
+        let request = read_request(&mut first_reader);
+        assert_eq!(request["op"], "hello");
+        respond(&mut first_writer, &request, None);
+        first_writer.shutdown(Shutdown::Both).unwrap();
+        drop(first_reader);
+        drop(first_writer);
+        closed_tx.send(()).unwrap();
+
+        let mut second_writer = accept_with_timeout(&listener);
+        let mut second_reader = BufReader::new(second_writer.try_clone().unwrap());
+        let request = read_request(&mut second_reader);
+        assert_eq!(request["op"], "wait");
+        assert_eq!(request["timeout_ms"], 0);
+        respond(&mut second_writer, &request, None);
+    });
+
+    let mut client = AgentClient::connect(addr).with_timeout(Duration::ZERO);
+    assert!(client.expect_ok(Op::Hello).unwrap().ok);
+    closed_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(
+        client
+            .expect_ok(Op::Wait {
+                timeout_ms: Some(0),
+            })
+            .unwrap()
+            .ok
+    );
+    server.join().unwrap();
+}
+
+#[test]
 fn long_wait_does_not_extend_connection_retry_budget() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
