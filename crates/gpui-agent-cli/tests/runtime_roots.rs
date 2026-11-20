@@ -94,7 +94,16 @@ fn unsafe_runtime_root_errors_reach_discovery_commands() {
     assert!(doctor_stdout.contains("fail  discovery:"));
     assert!(doctor_stdout.contains("ok    connect"));
     assert!(doctor_stdout.contains("ok    hello:"));
-    assert!(doctor_stdout.contains("snapshot:"), "{doctor_stdout}");
+    assert!(doctor_stdout.contains("ok    snapshot:"), "{doctor_stdout}");
+    let failures = doctor_stdout
+        .lines()
+        .filter(|line| line.starts_with("fail"))
+        .collect::<Vec<_>>();
+    assert_eq!(failures.len(), 1, "{doctor_stdout}");
+    assert!(
+        failures[0].starts_with("fail  discovery:"),
+        "{doctor_stdout}"
+    );
 
     let connect = cli_with_root(&unsafe_root, &["--connect", "fake-app", "hello"]);
     assert!(!connect.status.success());
