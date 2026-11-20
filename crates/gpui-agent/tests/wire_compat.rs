@@ -230,3 +230,21 @@ fn gesture_ops_fall_back_to_the_invoke_names_0_1_hosts_knew() {
         .is_none()
     );
 }
+
+#[test]
+fn float_fields_parse_from_integers_floats_and_null() {
+    use gpui_agent::{Op, Request};
+    let req: Request = serde_json::from_str(
+        r#"{"v":2,"id":"1","op":"scroll","target":"list","dx":0,"dy":-120.5,"x":null}"#,
+    )
+    .unwrap();
+    match req.op {
+        Op::Scroll { dx, dy, x, y, .. } => {
+            assert_eq!((dx, dy, x, y), (0.0, -120.5, None, None));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        serde_json::from_str::<Request>(r#"{"v":2,"id":"1","op":"pinch","scale":"big"}"#).is_err()
+    );
+}

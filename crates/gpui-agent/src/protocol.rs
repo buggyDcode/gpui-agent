@@ -357,9 +357,17 @@ pub enum Op {
     Press {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "points::optional"
+        )]
         x: Option<f64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "points::optional"
+        )]
         y: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expect_fingerprint: Option<u64>,
@@ -369,13 +377,21 @@ pub enum Op {
     Scroll {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "points::optional"
+        )]
         x: Option<f64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "points::optional"
+        )]
         y: Option<f64>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "points::required")]
         dx: f64,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "points::required")]
         dy: f64,
     },
     /// Move the pointer over a node or point. Hosts without a pointer
@@ -383,9 +399,17 @@ pub enum Op {
     Hover {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "points::optional"
+        )]
         x: Option<f64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "points::optional"
+        )]
         y: Option<f64>,
     },
     /// Drag node `from` onto node `to`, or drag `target` (or the point
@@ -397,13 +421,29 @@ pub enum Op {
         to: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "points::optional"
+        )]
         x: Option<f64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "points::optional"
+        )]
         y: Option<f64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "points::optional"
+        )]
         dx: Option<f64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "points::optional"
+        )]
         dy: Option<f64>,
     },
     /// A one-finger swipe across a node (or the whole surface when
@@ -413,16 +453,28 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<String>,
         direction: SwipeDirection,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "points::optional"
+        )]
         distance: Option<f64>,
     },
     /// Press and hold. Feature `long_press`.
     LongPress {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "points::optional"
+        )]
         x: Option<f64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "points::optional"
+        )]
         y: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
@@ -432,15 +484,24 @@ pub enum Op {
     Pinch {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<String>,
+        #[serde(deserialize_with = "points::required")]
         scale: f64,
     },
     /// Resize the app's content area (not the device) to a size in logical
     /// points or to a host-named preset (`phone`, `tablet`, `desktop`).
     /// Feature `viewport`.
     Viewport {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "points::optional"
+        )]
         width: Option<f64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "points::optional"
+        )]
         height: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         preset: Option<String>,
@@ -564,6 +625,34 @@ impl std::str::FromStr for SystemAction {
                      keyboard_hide, background, foreground or open_url)"
                 )
             })
+    }
+}
+
+/// Float fields of [`Op`] are read through `serde_json::Value`.
+///
+/// `Request` flattens `Op`, so serde buffers the fields before it reads
+/// them. A host whose build turns on serde_json's `arbitrary_precision`
+/// (any crate in its dependency graph can) buffers a float as a map, and a
+/// plain `f64` field then fails with `invalid type: map, expected f64`.
+mod points {
+    use serde::{Deserialize, Deserializer, de::Error};
+
+    fn finite<E: Error>(value: &serde_json::Value) -> Result<f64, E> {
+        value
+            .as_f64()
+            .filter(|number| number.is_finite())
+            .ok_or_else(|| E::custom(format!("expected a finite number, got {value}")))
+    }
+
+    pub fn required<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+        finite(&serde_json::Value::deserialize(deserializer)?)
+    }
+
+    pub fn optional<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Error> {
+        match serde_json::Value::deserialize(deserializer)? {
+            serde_json::Value::Null => Ok(None),
+            value => finite(&value).map(Some),
+        }
     }
 }
 
