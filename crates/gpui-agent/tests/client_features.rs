@@ -248,6 +248,43 @@ fn pipeline_wait_uses_the_longest_operation_timeout() {
 }
 
 #[test]
+fn long_wait_does_not_extend_connection_retry_budget() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+
+    let wait = || Op::WaitUntil {
+        timeout_ms: 20_000,
+        spec: AssertSpec {
+            target: "button".into(),
+            exists: Some(true),
+            ..AssertSpec::default()
+        },
+    };
+    let timeout = Duration::from_millis(200);
+    let snapshot = Op::snapshot();
+    let mut pipeline_client = AgentClient::connect(addr).with_timeout(timeout);
+    let started = std::time::Instant::now();
+    let error = pipeline_client
+        .rpc_pipeline(&[&wait(), &snapshot])
+        .unwrap_err();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "pipeline connection retries took {:?}: {error}",
+        started.elapsed()
+    );
+
+    let mut client = AgentClient::connect(addr).with_timeout(timeout);
+    let started = std::time::Instant::now();
+    let error = client.rpc(wait()).unwrap_err();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "single-op connection retries took {:?}: {error}",
+        started.elapsed()
+    );
+}
+
+#[test]
 fn gated_no_reply_is_reported_once_within_the_shared_deadline() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
