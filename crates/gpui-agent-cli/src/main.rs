@@ -584,7 +584,11 @@ fn run() -> Result<()> {
         return Ok(());
     }
     if matches!(cli.command, Command::Targets) {
-        println!("{}", serde_json::to_string_pretty(&doctor::targets()?)?);
+        let (targets, discovery_error) = doctor::targets();
+        println!("{}", serde_json::to_string_pretty(&targets)?);
+        if let Some(error) = discovery_error {
+            return Err(anyhow!(error));
+        }
         return Ok(());
     }
     if matches!(cli.command, Command::Sessions) {
@@ -620,9 +624,6 @@ fn run() -> Result<()> {
     let root = gpui_agent::runtime_root();
     if matches!(&cli.command, Command::Doctor) {
         check_cli_target_selector_conflicts(&cli, sources)?;
-        if !doctor::check_discovery(&root) {
-            return Err(anyhow!("the host cannot be driven as it stands"));
-        }
     }
     let (target, session) = resolve_cli_target(&root, &cli, sources)?;
     // Say which app discovery picked before acting on it, so a command that lands in the wrong
@@ -661,7 +662,7 @@ fn run() -> Result<()> {
         if let Some(token) = token.clone() {
             client = client.with_token(token);
         }
-        if doctor::doctor(addr, client, token.is_some()) {
+        if doctor::doctor(addr, client, token.is_some(), &root) {
             return Ok(());
         }
         return Err(anyhow!("the host cannot be driven as it stands"));
