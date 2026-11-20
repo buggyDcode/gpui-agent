@@ -3,13 +3,15 @@
 //! Both the GPUI Kit window and the headless host call the same methods, so
 //! an agent action (`click todo-add`) and a human click run identical code.
 
+use std::collections::HashMap;
+
 use gpui_agent::dispatch::DispatchResult;
 use gpui_agent::host::AgentHost;
 use gpui_agent::keybinding::{KeybindingInfo, keybinding_unavailable};
 use gpui_agent::protocol::{
     DeliveryMode, HelloInfo, KeybindingScope, Op, PROTOCOL_VERSION, PlatformKind,
 };
-use gpui_agent::tree::{UiNode, UiTree};
+use gpui_agent::tree::{Bounds, UiNode, UiTree};
 use gpui_agent::virtual_unavailable;
 use serde::{Deserialize, Serialize};
 
@@ -142,8 +144,9 @@ pub struct TodoStore {
     /// Headless stand-in for OS window focus. Desktop uses `Window::is_window_active`.
     app_focused: bool,
     /// Snapshot revision (M3): bumped by every mutator that can change
-    /// the tree — items, draft, page, sidebar, settings, shutdown.
+    /// the tree — items, draft, page, sidebar, bounds, settings, shutdown.
     rev: u64,
+    layout_bounds: HashMap<String, Bounds>,
     /// Bounded event stream (M9): one `info` record per `todo.*`
     /// invoke — the bridge fixture proving the `event_ring` recipe.
     events: std::sync::Arc<gpui_agent::event::EventRing>,
@@ -168,6 +171,7 @@ impl TodoStore {
             shutdown: false,
             app_focused: false,
             rev: 0,
+            layout_bounds: HashMap::new(),
             events: std::sync::Arc::new(gpui_agent::event::EventRing::default()),
         }
     }
@@ -177,6 +181,19 @@ impl TodoStore {
     /// state changes so `revision()` never lies.
     pub fn bump_revision(&mut self) {
         self.rev += 1;
+    }
+
+    pub fn set_layout_bound(&mut self, id: &str, bounds: Bounds) {
+        if self.layout_bounds.get(id) != Some(&bounds) {
+            self.layout_bounds.insert(id.to_string(), bounds);
+            self.bump_revision();
+        }
+    }
+
+    pub fn remove_layout_bound(&mut self, id: &str) {
+        if self.layout_bounds.remove(id).is_some() {
+            self.bump_revision();
+        }
     }
 
     pub fn page(&self) -> Page {
@@ -392,13 +409,17 @@ impl TodoStore {
             .with_child(nav)
             .with_child(page);
 
-        UiTree {
+        let mut tree = UiTree {
             app: "todo".into(),
             platform: self.platform,
             ready: true,
             nodes: vec![window],
             rev: Some(self.rev),
+        };
+        if !self.layout_bounds.is_empty() {
+            tree.apply_bounds_map(&self.layout_bounds);
         }
+        tree
     }
 
     fn todos_page(&self) -> UiNode {
@@ -545,8 +566,8 @@ impl TodoStore {
                     .and_then(|v| v.as_str())
                     .ok_or("nav.go requires args.page")?;
                 match page {
-                    "todos" => self.page = Page::Todos,
-                    "settings" => self.page = Page::Settings,
+                    "todos" => self.go(Page::Todos),
+                    "settings" => self.go(Page::Settings),
                     other => return Err(format!("unknown page `{other}`")),
                 }
                 Ok(DispatchResult::empty())
@@ -705,7 +726,7 @@ impl AgentHost for TodoStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_agent::dispatch::handle_request;
+    use gpui_agent::dispatch::{TreeCache, handle_request, handle_request_cached};
     use gpui_agent::protocol::{AssertSpec, Request};
 
     fn add(store: &mut TodoStore, title: &str) -> u64 {
@@ -761,6 +782,97 @@ mod tests {
             .dispatch(&Op::click(ids::SETTINGS_CONFIRM_DELETE))
             .unwrap();
         assert!(store.rev > r);
+    }
+
+    #[test]
+    fn nav_go_bumps_revision_and_updates_cached_snapshot() {
+        let mut store = TodoStore::default();
+        let mut cache = TreeCache::new();
+        let before = handle_request_cached(
+            &mut store,
+            &mut cache,
+            Request::new("1", Op::snapshot()),
+            None,
+            None,
+        );
+        let before_rev = before.rev.expect("initial revision");
+
+        let response = handle_request_cached(
+            &mut store,
+            &mut cache,
+            Request::new(
+                "2",
+                Op::Invoke {
+                    name: "nav.go".into(),
+                    args: serde_json::json!({ "page": "settings" }),
+                },
+            ),
+            None,
+            None,
+        );
+        assert!(response.ok, "{:?}", response.error);
+
+        let after = handle_request_cached(
+            &mut store,
+            &mut cache,
+            Request::new("3", Op::snapshot()),
+            None,
+            None,
+        );
+        assert!(after.rev.expect("updated revision") > before_rev);
+        assert!(
+            after
+                .tree
+                .expect("snapshot tree")
+                .find(ids::PAGE_SETTINGS)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn layout_bounds_are_revisioned_and_diffed() {
+        let mut store = TodoStore::default();
+        let mut cache = TreeCache::new();
+        let before = handle_request_cached(
+            &mut store,
+            &mut cache,
+            Request::new("1", Op::snapshot()),
+            None,
+            None,
+        );
+        let before_rev = before.rev.expect("initial revision");
+        let bounds = Bounds {
+            x: 10.0,
+            y: 20.0,
+            w: 300.0,
+            h: 400.0,
+        };
+
+        store.set_layout_bound(ids::WINDOW, bounds);
+        let updated_rev = store.rev;
+        store.set_layout_bound(ids::WINDOW, bounds);
+        assert_eq!(store.rev, updated_rev);
+
+        let response = handle_request_cached(
+            &mut store,
+            &mut cache,
+            Request::new("2", Op::snapshot_since(before_rev, None)),
+            None,
+            None,
+        );
+        assert!(response.ok, "{:?}", response.error);
+        let result = response.result.expect("snapshot diff");
+        let changed = result["diff"]["changed"]
+            .as_array()
+            .expect("changed nodes")
+            .iter()
+            .find(|node| node["id"] == ids::WINDOW)
+            .expect("window bounds change");
+        assert_eq!(
+            changed["fields"]["bounds"],
+            serde_json::json!({ "x": 10.0, "y": 20.0, "w": 300.0, "h": 400.0 })
+        );
+        assert_eq!(response.rev, Some(updated_rev));
     }
 
     #[test]

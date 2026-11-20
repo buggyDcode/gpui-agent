@@ -1,5 +1,5 @@
 #[cfg(feature = "embedded-host")]
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
 #[cfg(feature = "embedded-host")]
 use gpui_kit::component::ElementExt;
@@ -51,7 +51,7 @@ pub struct TodoApp {
     last_keybinding_result: Option<(String, Result<gpui_agent::DispatchResult, String>)>,
     _refresh: Option<Task<()>>,
     #[cfg(feature = "embedded-host")]
-    layout_bounds: HashMap<String, gpui_agent::Bounds>,
+    agent_cache: gpui_agent::TreeCache,
     #[cfg(feature = "embedded-host")]
     agent_cursor: gpui_agent::AgentCursor,
     scroll: ScrollHandle,
@@ -166,7 +166,7 @@ impl TodoApp {
             last_keybinding_result: None,
             _refresh: None,
             #[cfg(feature = "embedded-host")]
-            layout_bounds: HashMap::new(),
+            agent_cache: gpui_agent::TreeCache::new(),
             #[cfg(feature = "embedded-host")]
             agent_cursor: gpui_agent::AgentCursor::session_default(),
             scroll: ScrollHandle::new(),
@@ -392,28 +392,33 @@ impl TodoApp {
 
             let shutdown = matches!(posted.request.op, gpui_agent::Op::Shutdown);
             let response = if posted.request.op.is_virtual_input() {
-                match self.dispatch_virtual(&posted.request.op, window, cx) {
-                    Ok(result) => {
-                        let mut resp = gpui_agent::Response::ok(&posted.request.id);
-                        resp.result = result.value;
-                        resp
-                    }
+                match gpui_agent::check_fingerprint_gate(
+                    &self.agent_cache.snapshot(&self.store),
+                    &posted.request.op,
+                ) {
+                    Ok(()) => match self.dispatch_virtual(&posted.request.op, window, cx) {
+                        Ok(result) => {
+                            let mut resp = gpui_agent::Response::ok(&posted.request.id);
+                            resp.result = result.value;
+                            resp
+                        }
+                        Err(error) => gpui_agent::Response::err(&posted.request.id, error),
+                    },
                     Err(error) => gpui_agent::Response::err(&posted.request.id, error),
                 }
             } else if let gpui_agent::Op::Assert { spec } = &posted.request.op {
-                let mut tree = self.store.tree();
-                tree.apply_bounds_map(&self.layout_bounds);
-                match gpui_agent::assert_tree(&tree, spec) {
+                match gpui_agent::assert_tree(&self.store.tree(), spec) {
                     Ok(()) => gpui_agent::Response::ok(&posted.request.id),
                     Err(error) => gpui_agent::Response::err(&posted.request.id, error),
                 }
             } else {
-                let mut response =
-                    gpui_agent::handle_request(&mut self.store, posted.request.clone(), None, None);
-                if let Some(tree) = response.tree.as_mut() {
-                    tree.apply_bounds_map(&self.layout_bounds);
-                }
-                response
+                gpui_agent::handle_request_cached(
+                    &mut self.store,
+                    &mut self.agent_cache,
+                    posted.request.clone(),
+                    None,
+                    None,
+                )
             };
 
             self.sync_input_from_store(window, cx);
@@ -520,7 +525,6 @@ impl TodoApp {
                      test-support only). Headless stays screenshot_unavailable.",
                 ),
             );
-            return;
         }
         #[cfg(target_os = "macos")]
         {
@@ -584,7 +588,6 @@ impl TodoApp {
                     cx,
                 );
             }
-            return;
         }
         #[cfg(target_os = "macos")]
         {
@@ -777,22 +780,14 @@ impl TodoApp {
         }
     }
 
-    /// Bounds live outside `TodoStore` but change the snapshot — the
-    /// revision must move when they do (M3 contract). Bumping only on a
-    /// real change keeps repaints from churning `rev`.
     #[cfg(feature = "embedded-host")]
     fn set_bound(&mut self, id: &str, bounds: gpui_agent::Bounds) {
-        if self.layout_bounds.get(id) != Some(&bounds) {
-            self.layout_bounds.insert(id.to_string(), bounds);
-            self.store.bump_revision();
-        }
+        self.store.set_layout_bound(id, bounds);
     }
 
     #[cfg(feature = "embedded-host")]
     fn remove_bound(&mut self, id: &str) {
-        if self.layout_bounds.remove(id).is_some() {
-            self.store.bump_revision();
-        }
+        self.store.remove_layout_bound(id);
     }
 
     #[cfg(feature = "embedded-host")]
@@ -823,9 +818,7 @@ impl TodoApp {
 
     #[cfg(feature = "embedded-host")]
     fn snapshot_with_bounds(&self) -> gpui_agent::UiTree {
-        let mut tree = self.store.tree();
-        tree.apply_bounds_map(&self.layout_bounds);
-        tree
+        self.store.tree()
     }
 
     #[cfg(feature = "embedded-host")]

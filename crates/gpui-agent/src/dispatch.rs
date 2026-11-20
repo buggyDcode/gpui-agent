@@ -37,6 +37,22 @@ pub fn is_stale_dispatch_error(err: &str) -> bool {
     err.starts_with(STALE_TARGET) || err.starts_with(TARGET_GONE)
 }
 
+/// Validate an op's expected target fingerprint against a snapshot.
+pub fn check_fingerprint_gate(tree: &UiTree, op: &Op) -> Result<(), String> {
+    let Some((target, expected)) = op.fingerprint_gate() else {
+        return Ok(());
+    };
+    match tree.fingerprint_of(target) {
+        None => Err(format!(
+            "{TARGET_GONE}: `{target}` is no longer in the tree"
+        )),
+        Some(actual) if actual != expected => Err(format!(
+            "{STALE_TARGET}: `{target}` changed between snapshot and dispatch"
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Version + optional HMAC gate. Call this before dispatching,
 /// including on the mailbox path where virtual ops skip [`handle_request`].
 pub fn authorize_request(
@@ -300,24 +316,10 @@ pub fn handle_request_cached(
             // M5 staleness gate — recomputed in the same call, before
             // dispatch. `cache.snapshot` re-reads whenever the revision
             // moved, so this is never a stale-of-stale check.
-            if let Some((target, expected)) = other.fingerprint_gate() {
+            if other.fingerprint_gate().is_some() {
                 let tree = cache.snapshot(host);
-                match tree.fingerprint_of(target) {
-                    None => {
-                        return Response::err(
-                            req.id,
-                            format!("{TARGET_GONE}: `{target}` is no longer in the tree"),
-                        );
-                    }
-                    Some(actual) if actual != expected => {
-                        return Response::err(
-                            req.id,
-                            format!(
-                                "{STALE_TARGET}: `{target}` changed between snapshot and dispatch"
-                            ),
-                        );
-                    }
-                    _ => {}
+                if let Err(error) = check_fingerprint_gate(&tree, &other) {
+                    return Response::err(req.id, error);
                 }
             }
             match host.dispatch(&other) {
@@ -743,6 +745,54 @@ mod tests {
         let resp = handle_request(&mut host, req, Some("secret"), Some(&nonce));
         assert!(resp.ok);
         assert!(resp.hello.is_some());
+    }
+
+    fn fingerprint_test_tree() -> UiTree {
+        UiTree {
+            app: "test".into(),
+            platform: PlatformKind::Headless,
+            ready: true,
+            nodes: vec![UiNode::button("target", "Target")],
+            rev: None,
+        }
+    }
+
+    #[test]
+    fn fingerprint_gate_accepts_matching_fingerprint() {
+        let tree = fingerprint_test_tree();
+        let fingerprint = tree.fingerprint_of("target").unwrap();
+        assert_eq!(
+            check_fingerprint_gate(&tree, &Op::click("target").with_fingerprint(fingerprint)),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn fingerprint_gate_rejects_stale_fingerprint() {
+        let tree = fingerprint_test_tree();
+        let fingerprint = tree.fingerprint_of("target").unwrap();
+        assert_eq!(
+            check_fingerprint_gate(
+                &tree,
+                &Op::click("target").with_fingerprint(fingerprint.wrapping_add(1)),
+            ),
+            Err("stale_target: `target` changed between snapshot and dispatch".into())
+        );
+    }
+
+    #[test]
+    fn fingerprint_gate_rejects_missing_target() {
+        let tree = fingerprint_test_tree();
+        assert_eq!(
+            check_fingerprint_gate(&tree, &Op::click("missing").with_fingerprint(1)),
+            Err("target_gone: `missing` is no longer in the tree".into())
+        );
+    }
+
+    #[test]
+    fn fingerprint_gate_allows_ops_without_expected_fingerprint() {
+        let tree = fingerprint_test_tree();
+        assert_eq!(check_fingerprint_gate(&tree, &Op::click("missing")), Ok(()));
     }
 
     /// A host that owns an [`crate::event::EventRing`] (M9 fixture).
