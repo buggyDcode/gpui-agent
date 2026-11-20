@@ -122,6 +122,95 @@ enum Command {
         /// Safety cap for scrolled capture (max 16384).
         #[arg(long)]
         max_height_px: Option<u32>,
+        /// Fetch the PNG over the connection and write `--out` here, for a
+        /// host whose files this machine cannot read (a device, a browser).
+        #[arg(long)]
+        inline: bool,
+    },
+    /// Press (tap) a node, or a point with `--x`/`--y`, as the platform delivers it.
+    Press {
+        target: Option<String>,
+        #[arg(long)]
+        x: Option<f64>,
+        #[arg(long)]
+        y: Option<f64>,
+    },
+    /// Scroll a node, or what is under `--x`/`--y`, by a delta in points.
+    Scroll {
+        target: Option<String>,
+        #[arg(long)]
+        x: Option<f64>,
+        #[arg(long)]
+        y: Option<f64>,
+        #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+        dx: f64,
+        #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+        dy: f64,
+    },
+    /// Move the pointer over a node or point (hosts with a pointer).
+    Hover {
+        target: Option<String>,
+        #[arg(long)]
+        x: Option<f64>,
+        #[arg(long)]
+        y: Option<f64>,
+    },
+    /// Drag `--from` onto `--to`, or drag a node / point by `--dx`/`--dy`.
+    Drag {
+        target: Option<String>,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        x: Option<f64>,
+        #[arg(long)]
+        y: Option<f64>,
+        #[arg(long, allow_hyphen_values = true)]
+        dx: Option<f64>,
+        #[arg(long, allow_hyphen_values = true)]
+        dy: Option<f64>,
+    },
+    /// One-finger swipe (`up`, `down`, `left`, `right`) across a node or the surface.
+    Swipe {
+        direction: gpui_agent::SwipeDirection,
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long)]
+        distance: Option<f64>,
+    },
+    /// Press and hold a node or point.
+    LongPress {
+        target: Option<String>,
+        #[arg(long)]
+        x: Option<f64>,
+        #[arg(long)]
+        y: Option<f64>,
+        #[arg(long)]
+        duration_ms: Option<u64>,
+    },
+    /// Two-finger pinch on a node: `--scale` above 1 spreads, below 1 pinches in.
+    Pinch {
+        target: Option<String>,
+        #[arg(long)]
+        scale: f64,
+    },
+    /// Resize the app's content area to `--width`/`--height` points or a `--preset`.
+    Viewport {
+        #[arg(long)]
+        width: Option<f64>,
+        #[arg(long)]
+        height: Option<f64>,
+        #[arg(long)]
+        preset: Option<String>,
+    },
+    /// Insert text into an editable node as one paste.
+    Paste { target: String, text: String },
+    /// Device action: back, home, rotate, keyboard-show, keyboard-hide,
+    /// background, foreground, open-url. `rotate` and `open-url` take a value.
+    System {
+        action: gpui_agent::SystemAction,
+        value: Option<String>,
     },
     /// Activate a widget by stable id (`nav-settings`, `submit`, …).
     Click {
@@ -392,7 +481,18 @@ fn run() -> Result<()> {
             mode,
             target,
             max_height_px,
+            inline,
         } => {
+            if inline {
+                let png = rpc(client.screenshot_bytes(mode, target, max_height_px))?;
+                std::fs::write(&out, &png)
+                    .map_err(|err| anyhow!("write {}: {err}", out.display()))?;
+                println!(
+                    "{}",
+                    serde_json::json!({"ok": true, "result": {"path": out, "bytes": png.len()}})
+                );
+                return Ok(());
+            }
             if mode.is_scrolled() && target.as_deref().map(str::trim).unwrap_or("").is_empty() {
                 return Err(anyhow!(
                     "screenshot --mode scrolled requires --target <scroll-view-id>"
@@ -404,6 +504,83 @@ fn run() -> Result<()> {
                 target,
                 max_height_px,
             ))?)
+        }
+        Command::Press { target, x, y } => print_resp(rpc(client.gated(Op::Press {
+            target,
+            x,
+            y,
+            expect_fingerprint: None,
+        }))?),
+        Command::Scroll {
+            target,
+            x,
+            y,
+            dx,
+            dy,
+        } => print_resp(rpc(client.gated(Op::Scroll {
+            target,
+            x,
+            y,
+            dx,
+            dy,
+        }))?),
+        Command::Hover { target, x, y } => {
+            print_resp(rpc(client.gated(Op::Hover { target, x, y }))?)
+        }
+        Command::Drag {
+            target,
+            from,
+            to,
+            x,
+            y,
+            dx,
+            dy,
+        } => print_resp(rpc(client.gated(Op::Drag {
+            from,
+            to,
+            target,
+            x,
+            y,
+            dx,
+            dy,
+        }))?),
+        Command::Swipe {
+            direction,
+            target,
+            distance,
+        } => print_resp(rpc(client.gated(Op::Swipe {
+            target,
+            direction,
+            distance,
+        }))?),
+        Command::LongPress {
+            target,
+            x,
+            y,
+            duration_ms,
+        } => print_resp(rpc(client.gated(Op::LongPress {
+            target,
+            x,
+            y,
+            duration_ms,
+        }))?),
+        Command::Pinch { target, scale } => {
+            print_resp(rpc(client.gated(Op::Pinch { target, scale }))?)
+        }
+        Command::Viewport {
+            width,
+            height,
+            preset,
+        } => print_resp(rpc(client.gated(Op::Viewport {
+            width,
+            height,
+            preset,
+        }))?),
+        Command::Paste { target, text } => {
+            print_resp(rpc(client.gated(Op::Paste { target, text }))?)
+        }
+        Command::System { action, value } => {
+            print_resp(rpc(client.gated(Op::System { action, value }))?)
         }
         Command::Events { since, limit } => {
             let poll = client.events(since, limit).map_err(anyhow::Error::msg)?;
@@ -936,6 +1113,7 @@ mod tests {
                 mode,
                 target,
                 max_height_px,
+                ..
             } => {
                 assert_eq!(out.as_os_str(), "artifacts/steps/001-wait.png");
                 assert!(mode.is_viewport());
@@ -964,6 +1142,7 @@ mod tests {
                 mode,
                 target,
                 max_height_px,
+                ..
             } => {
                 assert_eq!(out.as_os_str(), "tall.png");
                 assert!(mode.is_scrolled());
