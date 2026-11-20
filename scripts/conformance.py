@@ -14,7 +14,9 @@ or --addr / --token passed through) and checks that:
 - the listed ops that are safe to try on any screen work: `scroll` and
   `swipe` on the first usable scroller (then back by what actually moved),
   `hover` on the first usable button, `viewport` to the current size, and
-  an inline screenshot that is a complete PNG.
+  an inline screenshot that is a complete PNG. A host that declines with
+  `screenshot_unavailable` gets a warning, or a failure with
+  --require-screenshot.
 
 `press` is only tried with --press <node id>, since it changes the app.
 Exit code 0 when every check passed; 1 otherwise.
@@ -207,6 +209,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cli", default=os.environ.get("GPUI_AGENT_CLI", "gpui-agent"))
     parser.add_argument("--press", metavar="NODE", help="also press this node")
+    parser.add_argument(
+        "--require-screenshot",
+        action="store_true",
+        help="fail when the host declines to capture (every nsh host captures)",
+    )
     args, passthrough = parser.parse_known_args()
     run = Run(args.cli, passthrough)
 
@@ -271,10 +278,18 @@ def main():
         with tempfile.TemporaryDirectory() as scratch:
             path = os.path.join(scratch, "shot.png")
             code, _, err = run.cli("screenshot", "--inline", "--out", path)
-            # Only a host with no surface may decline; the same error from a
-            # host that draws is a capture that broke.
-            if hello.get("platform") == "headless" and "screenshot_unavailable" in err:
+            # `screenshot_unavailable` is the documented answer of a host
+            # that cannot capture (headless, GPUI desktop on Linux and
+            # Windows), and also what a capture that broke returns. Only the
+            # caller knows which this host is: --require-screenshot.
+            declined = "screenshot_unavailable" in err
+            if declined and hello.get("platform") == "headless":
                 run.skip("inline screenshot", "a headless host has no surface")
+            elif declined and not args.require_screenshot:
+                run.warn(
+                    "inline screenshot: the host declined (screenshot_unavailable); "
+                    "pass --require-screenshot if this host should capture"
+                )
             else:
                 run.check(
                     "inline screenshot is a complete PNG on this machine",
