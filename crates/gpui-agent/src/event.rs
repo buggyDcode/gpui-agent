@@ -61,8 +61,8 @@ pub struct AgentEvent {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventPoll {
     pub events: Vec<AgentEvent>,
-    /// Highest allocated seq (0 when nothing was ever pushed). Pollers
-    /// advance their cursor to `latest` to avoid re-receiving.
+    /// Cursor for the next `since` poll: the last returned seq when
+    /// truncated, otherwise the highest allocated seq.
     pub latest: u64,
     /// True when `since + 1` is below the ring's base seq — the caller
     /// lost events to capacity eviction and must not treat the gap as
@@ -130,16 +130,17 @@ impl EventRing {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let limit = limit.min(self.capacity.max(1));
         let base_seq = inner.next - inner.buf.len() as u64;
-        let events: Vec<AgentEvent> = inner
-            .buf
-            .iter()
-            .filter(|e| since.is_none_or(|s| e.seq > s))
-            .take(limit)
-            .cloned()
-            .collect();
+        let newest_seq = inner.next.saturating_sub(1);
+        let mut matching = inner.buf.iter().filter(|e| since.is_none_or(|s| e.seq > s));
+        let events: Vec<AgentEvent> = matching.by_ref().take(limit).cloned().collect();
+        let truncated = matching.next().is_some();
         EventPoll {
+            latest: if truncated {
+                events.last().map_or(newest_seq, |event| event.seq)
+            } else {
+                newest_seq
+            },
             events,
-            latest: inner.next.saturating_sub(1),
             lagged: since.is_some_and(|s| s + 1 < base_seq),
         }
     }
@@ -241,6 +242,47 @@ mod tests {
         assert_eq!(ring.since(None, 3).events.len(), 3);
         // Over-capacity limits clamp to the ring, never panic.
         assert_eq!(ring.since(None, usize::MAX).events.len(), 8);
+    }
+
+    #[test]
+    fn latest_tracks_cursor_when_limit_truncates_page() {
+        let ring = EventRing::default();
+        for i in 1..=5 {
+            ring.push(EventLevel::Info, "t", format!("m{i}"));
+        }
+
+        let first = ring.since(Some(0), 2);
+        assert_eq!(
+            first
+                .events
+                .iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(first.latest, 2);
+
+        let second = ring.since(Some(first.latest), 2);
+        assert_eq!(
+            second
+                .events
+                .iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
+            [3, 4]
+        );
+        assert_eq!(second.latest, 4);
+
+        let third = ring.since(Some(second.latest), 2);
+        assert_eq!(
+            third
+                .events
+                .iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
+            [5]
+        );
+        assert_eq!(third.latest, 5);
     }
 
     #[test]
