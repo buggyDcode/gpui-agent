@@ -208,13 +208,7 @@ fn named_session_conflicts_with_command_line_selectors_but_ignores_env_addr() {
 
     let detach_conflict = cli(
         &runtime,
-        &[
-            "--session",
-            "s",
-            "--addr",
-            "127.0.0.1:9",
-            "detach",
-        ],
+        &["--session", "s", "--addr", "127.0.0.1:9", "detach"],
     );
     assert!(!detach_conflict.status.success());
     assert!(
@@ -227,7 +221,6 @@ fn named_session_conflicts_with_command_line_selectors_but_ignores_env_addr() {
     assert_eq!(sessions.as_array().unwrap().len(), 1, "{sessions}");
     assert_eq!(sessions[0]["name"], "s");
 }
-
 
 #[test]
 fn offline_recipe_validation_ignores_a_missing_session() {
