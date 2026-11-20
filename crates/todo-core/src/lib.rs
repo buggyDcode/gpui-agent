@@ -684,6 +684,9 @@ impl AgentHost for TodoStore {
                 target: Some(target),
                 ..
             } => self.click(target),
+            Op::Press { target: None, .. } => {
+                Err("this host presses named targets only; pass a target".into())
+            }
             Op::Paste { target, text } => self.type_into(target, text),
             other => Err(gpui_agent::unsupported_op(
                 other.feature().unwrap_or("this operation"),
@@ -1496,5 +1499,31 @@ mod gated_op_tests {
             assert!(hello.features.iter().any(|f| f == feature), "{feature}");
         }
         assert!(!hello.features.iter().any(|f| f == "hover"));
+    }
+
+    #[test]
+    fn targetless_press_is_a_request_error_not_an_unsupported_op() {
+        let mut store = TodoStore::default();
+        let resp = handle_request(
+            &mut store,
+            Request::new(
+                "2",
+                Op::Press {
+                    target: None,
+                    x: None,
+                    y: None,
+                    expect_fingerprint: None,
+                },
+            ),
+            None,
+            None,
+        );
+        assert!(!resp.ok);
+        let error = resp.error.unwrap();
+        assert_eq!(
+            error,
+            "this host presses named targets only; pass a target"
+        );
+        assert!(!gpui_agent::is_unsupported_op(&error));
     }
 }
