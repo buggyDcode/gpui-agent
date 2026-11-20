@@ -56,6 +56,11 @@ struct Cli {
         global = true
     )]
     request_timeout_ms: Option<u64>,
+    /// Send the op as written, without checking the host's feature list
+    /// first: the reply is the host's own, refusal included. For testing a
+    /// host; an agent wants the default.
+    #[arg(long, global = true)]
+    as_written: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -505,6 +510,9 @@ fn run() -> Result<()> {
     let mut client = connect(addr, request_timeout);
     if let Some(token) = token {
         client = client.with_token(token);
+    }
+    if cli.as_written {
+        client = client.as_written();
     }
 
     match cli.command {
