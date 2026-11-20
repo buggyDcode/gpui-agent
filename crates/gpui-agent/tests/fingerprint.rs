@@ -168,7 +168,7 @@ impl AgentHost for RaceHost {
             auth: HelloAuth::None,
             bundle_id: None,
             executable: None,
-            features: vec![],
+            features: vec!["press".into()],
         }
     }
 
@@ -234,6 +234,38 @@ fn stale_target_blocks_dispatch_and_changes_nothing() {
     let err = resp.error.unwrap_or_default();
     assert!(err.starts_with("stale_target"), "got {err}");
     assert_eq!(host.dispatched, 0, "nothing may dispatch on a mismatch");
+}
+
+#[test]
+fn stale_press_blocks_dispatch_with_the_click_target_changed_error() {
+    let mut host = RaceHost::new(vec![UiNode::new("add", "button", "Add")]);
+    let mut cache = TreeCache::default();
+    let fp = {
+        let tree = cache.snapshot(&host);
+        tree.fingerprint_of("add").unwrap()
+    };
+    host.swap(2, vec![UiNode::new("add", "button", "Save")]);
+    let press = Op::Press {
+        target: Some("add".into()),
+        x: None,
+        y: None,
+        expect_fingerprint: None,
+    }
+    .with_fingerprint(fp);
+    assert_eq!(press.fingerprint_gate(), Some(("add", fp)));
+    let resp = handle_request_cached(
+        &mut host,
+        &mut cache,
+        req(press),
+        None,
+        None,
+    );
+    assert!(!resp.ok);
+    assert_eq!(
+        resp.error.as_deref(),
+        Some("stale_target: `add` changed between snapshot and dispatch")
+    );
+    assert_eq!(host.dispatched, 0);
 }
 
 #[test]

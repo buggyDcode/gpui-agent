@@ -910,7 +910,7 @@ impl Op {
     }
 
     /// Attach the M5 `expect_fingerprint` gate to a mutating op
-    /// (`click`/`type`/`set_value`/`key`); a no-op for other variants.
+    /// (`click`/`press`/`type`/`set_value`/`key`); a no-op for other variants.
     pub fn with_fingerprint(self, fingerprint: u64) -> Self {
         match self {
             Self::Click {
@@ -918,6 +918,14 @@ impl Op {
             } => Self::Click {
                 target,
                 delivery,
+                expect_fingerprint: Some(fingerprint),
+            },
+            Self::Press {
+                target, x, y, ..
+            } => Self::Press {
+                target,
+                x,
+                y,
                 expect_fingerprint: Some(fingerprint),
             },
             Self::Type {
