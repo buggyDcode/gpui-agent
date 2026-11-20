@@ -237,6 +237,7 @@ fn capture_screenshot(
         mode: gpui_agent::ScreenshotMode::Viewport,
         target: None,
         max_height_px: None,
+        inline: false,
     }) {
         Ok(resp) if resp.ok => Some(ScreenshotReceipt {
             path: path_str,

@@ -336,7 +336,271 @@ pub enum Op {
         target: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_height_px: Option<u32>,
+        /// Return the PNG to the client over the wire instead of only a
+        /// host path: the response carries a `blob` handle the client
+        /// reads with [`Op::Blob`]. For hosts whose filesystem the client
+        /// cannot see (a device, a browser). Feature `screenshot_inline`.
+        #[serde(default, skip_serializing_if = "is_false")]
+        inline: bool,
     },
+    /// Read one chunk of a blob a previous response announced
+    /// (`result.blob = {blob, bytes, chunks}`). Each chunk is base64 and
+    /// fits the 1 MiB line cap. The host drops the blob after its last
+    /// chunk is read.
+    Blob { blob: String, index: u32 },
+    /// A pointer press (a tap on touch hosts) at a node or a point, as the
+    /// platform delivers it: refused when the target is hidden, disabled,
+    /// off screen or covered. Feature `press`.
+    Press {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect_fingerprint: Option<u64>,
+    },
+    /// Scroll a scrollable node, or whatever is under a point, by a delta
+    /// in logical points. Feature `scroll`.
+    Scroll {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y: Option<f64>,
+        #[serde(default)]
+        dx: f64,
+        #[serde(default)]
+        dy: f64,
+    },
+    /// Move the pointer over a node or point. Hosts without a pointer
+    /// (phones) do not list the `hover` feature.
+    Hover {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y: Option<f64>,
+    },
+    /// Drag node `from` onto node `to`, or drag `target` (or the point
+    /// `x`,`y`) by `dx`,`dy`. Feature `drag`.
+    Drag {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dx: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dy: Option<f64>,
+    },
+    /// A one-finger swipe across a node (or the whole surface when
+    /// `target` is omitted). `distance` is in logical points; the host
+    /// picks a default. Feature `swipe`.
+    Swipe {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        direction: SwipeDirection,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        distance: Option<f64>,
+    },
+    /// Press and hold. Feature `long_press`.
+    LongPress {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+    },
+    /// Two-finger pinch centred on a node: `scale > 1` spreads, `< 1`
+    /// pinches in. Feature `pinch`.
+    Pinch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        scale: f64,
+    },
+    /// Resize the app's content area (not the device) to a size in logical
+    /// points or to a host-named preset (`phone`, `tablet`, `desktop`).
+    /// Feature `viewport`.
+    Viewport {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        width: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preset: Option<String>,
+    },
+    /// Insert text into an editable node as a paste does (one edit, not
+    /// key by key). Feature `paste`.
+    Paste { target: String, text: String },
+    /// A device or system action outside the app's own tree. Each action
+    /// is its own feature: `system.back`, `system.rotate`, …
+    System {
+        action: SystemAction,
+        /// `rotate`: `portrait` or `landscape`. `open_url`: the URL.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwipeDirection {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl SwipeDirection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Up => "up",
+            Self::Down => "down",
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+}
+
+impl std::str::FromStr for SwipeDirection {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "up" => Ok(Self::Up),
+            "down" => Ok(Self::Down),
+            "left" => Ok(Self::Left),
+            "right" => Ok(Self::Right),
+            other => Err(format!(
+                "unknown direction `{other}` (want up, down, left or right)"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemAction {
+    Back,
+    Home,
+    Rotate,
+    KeyboardShow,
+    KeyboardHide,
+    Background,
+    Foreground,
+    OpenUrl,
+}
+
+impl SystemAction {
+    pub const ALL: [Self; 8] = [
+        Self::Back,
+        Self::Home,
+        Self::Rotate,
+        Self::KeyboardShow,
+        Self::KeyboardHide,
+        Self::Background,
+        Self::Foreground,
+        Self::OpenUrl,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Back => "back",
+            Self::Home => "home",
+            Self::Rotate => "rotate",
+            Self::KeyboardShow => "keyboard_show",
+            Self::KeyboardHide => "keyboard_hide",
+            Self::Background => "background",
+            Self::Foreground => "foreground",
+            Self::OpenUrl => "open_url",
+        }
+    }
+
+    /// The `hello.features` string a host lists when it implements this.
+    pub fn feature(self) -> &'static str {
+        match self {
+            Self::Back => "system.back",
+            Self::Home => "system.home",
+            Self::Rotate => "system.rotate",
+            Self::KeyboardShow => "system.keyboard_show",
+            Self::KeyboardHide => "system.keyboard_hide",
+            Self::Background => "system.background",
+            Self::Foreground => "system.foreground",
+            Self::OpenUrl => "system.open_url",
+        }
+    }
+}
+
+impl std::str::FromStr for SystemAction {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let wanted = s.trim().to_ascii_lowercase().replace('-', "_");
+        Self::ALL
+            .into_iter()
+            .find(|action| action.as_str() == wanted)
+            .ok_or_else(|| {
+                format!(
+                    "unknown system action `{s}` (want back, home, rotate, keyboard_show, \
+                     keyboard_hide, background, foreground or open_url)"
+                )
+            })
+    }
+}
+
+/// Error prefix for an op the answering host does not implement
+/// (`unsupported_op: <feature>`). Stable: match the prefix, not the wording.
+pub const UNSUPPORTED_OP: &str = "unsupported_op";
+
+pub fn unsupported_op(feature: &str) -> String {
+    format!("{UNSUPPORTED_OP}: this host does not list `{feature}` in hello.features")
+}
+
+pub fn is_unsupported_op(error: &str) -> bool {
+    error.starts_with(UNSUPPORTED_OP)
+}
+
+/// What the app is running on, beyond `platform` and `os`. Every field is
+/// optional: a host fills what it knows and never invents the rest.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeviceInfo {
+    /// Device or browser model (`Pixel 8`, `iPhone 16 Pro`, `Chrome 131`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// `phone`, `tablet`, `desktop` or `browser`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form_factor: Option<String>,
+    /// Physical pixels per logical point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<f64>,
+    /// Content size in logical points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f64>,
+    /// `portrait` or `landscape`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orientation: Option<String>,
+    /// Insets `[top, right, bottom, left]` in logical points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safe_area: Option<[f64; 4]>,
+    /// `trusted` when input reaches the app as the platform's own does,
+    /// `synthetic` when the host can only simulate it (an attached browser tab).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -447,6 +711,11 @@ pub struct HelloInfo {
     /// `snapshot_since`, `snapshot_compact`). Empty/old hosts omit it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub features: Vec<String>,
+    /// UI framework behind the host (`gpui`, `nsh`). Old hosts omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub framework: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<DeviceInfo>,
 }
 
 /// The operating system this process runs on, as `hello.os` reports it.
@@ -611,6 +880,11 @@ impl Op {
                 expect_fingerprint: Some(fp),
                 ..
             } => Some((target.as_str(), *fp)),
+            Self::Press {
+                target: Some(target),
+                expect_fingerprint: Some(fp),
+                ..
+            } => Some((target.as_str(), *fp)),
             _ => None,
         }
     }
@@ -635,6 +909,7 @@ impl Op {
             mode: ScreenshotMode::Viewport,
             target: None,
             max_height_px: None,
+            inline: false,
         }
     }
 
@@ -648,7 +923,135 @@ impl Op {
             mode: ScreenshotMode::Scrolled,
             target: Some(target.into()),
             max_height_px,
+            inline: false,
         }
+    }
+
+    /// The text fields of the ops added after the first protocol 2
+    /// release, for callers that rewrite them (recipe `$param`s). Empty
+    /// for the original ops, which their callers visit field by field.
+    pub fn added_strings_mut(&mut self) -> Vec<&mut String> {
+        let mut out = Vec::new();
+        match self {
+            Self::Press { target, .. }
+            | Self::Scroll { target, .. }
+            | Self::Hover { target, .. }
+            | Self::Swipe { target, .. }
+            | Self::LongPress { target, .. }
+            | Self::Pinch { target, .. } => out.extend(target.as_mut()),
+            Self::Drag {
+                from, to, target, ..
+            } => {
+                out.extend(from.as_mut());
+                out.extend(to.as_mut());
+                out.extend(target.as_mut());
+            }
+            Self::Viewport { preset, .. } => out.extend(preset.as_mut()),
+            Self::Paste { target, text } => {
+                out.push(target);
+                out.push(text);
+            }
+            Self::System { value, .. } => out.extend(value.as_mut()),
+            Self::Blob { blob, .. } => out.push(blob),
+            _ => {}
+        }
+        out
+    }
+
+    /// The `hello.features` string that gates this op, for ops added after
+    /// the first protocol 2 release. `None` for the original ops.
+    pub fn feature(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Press { .. } => "press",
+            Self::Scroll { .. } => "scroll",
+            Self::Hover { .. } => "hover",
+            Self::Drag { .. } => "drag",
+            Self::Swipe { .. } => "swipe",
+            Self::LongPress { .. } => "long_press",
+            Self::Pinch { .. } => "pinch",
+            Self::Viewport { .. } => "viewport",
+            Self::Paste { .. } => "paste",
+            Self::System { action, .. } => action.feature(),
+            _ => return None,
+        })
+    }
+
+    /// The `invoke` spelling hosts built against gpui-agent 0.1 (the nsh
+    /// adapter) used for this op, so a new client can still drive them.
+    pub fn legacy_invoke(&self) -> Option<Self> {
+        fn args(pairs: &[(&str, Option<serde_json::Value>)]) -> serde_json::Value {
+            serde_json::Value::Object(
+                pairs
+                    .iter()
+                    .filter_map(|(key, value)| Some(((*key).to_string(), value.clone()?)))
+                    .collect(),
+            )
+        }
+        let text = |value: &Option<String>| value.clone().map(serde_json::Value::from);
+        let num = |value: &Option<f64>| value.map(serde_json::Value::from);
+        let (name, args) = match self {
+            Self::Press { target, x, y, .. } => (
+                "press",
+                args(&[("target", text(target)), ("x", num(x)), ("y", num(y))]),
+            ),
+            Self::Scroll {
+                target,
+                x,
+                y,
+                dx,
+                dy,
+            } => (
+                "scroll",
+                args(&[
+                    ("target", text(target)),
+                    ("x", num(x)),
+                    ("y", num(y)),
+                    ("dx", Some((*dx).into())),
+                    ("dy", Some((*dy).into())),
+                ]),
+            ),
+            Self::Hover { target, x, y } => (
+                "hover",
+                args(&[("target", text(target)), ("x", num(x)), ("y", num(y))]),
+            ),
+            Self::Drag {
+                from,
+                to,
+                target,
+                x,
+                y,
+                dx,
+                dy,
+            } => (
+                "drag",
+                args(&[
+                    ("from", text(from)),
+                    ("to", text(to)),
+                    ("target", text(target)),
+                    ("x", num(x)),
+                    ("y", num(y)),
+                    ("dx", num(dx)),
+                    ("dy", num(dy)),
+                ]),
+            ),
+            Self::Viewport {
+                width,
+                height,
+                preset,
+            } => (
+                "viewport",
+                args(&[
+                    ("width", num(width)),
+                    ("height", num(height)),
+                    ("preset", text(preset)),
+                ]),
+            ),
+            _ => return None,
+        };
+        Some(Self::Invoke {
+            name: name.into(),
+            args,
+        })
     }
 
     pub fn wait_until(spec: AssertSpec, timeout_ms: u64) -> Self {
@@ -725,6 +1128,7 @@ mod tests {
                 mode,
                 target,
                 max_height_px,
+                inline: _,
             } => {
                 assert_eq!(path.as_deref(), Some("artifacts/steps/001-wait.png"));
                 assert_eq!(mode, ScreenshotMode::Viewport);
@@ -882,6 +1286,8 @@ mod tests {
         let hello = HelloInfo {
             os: crate::protocol::host_os(),
             protocol: PROTOCOL_VERSION,
+            framework: None,
+            device: None,
             app: "todo".into(),
             platform: PlatformKind::Headless,
             ready: true,

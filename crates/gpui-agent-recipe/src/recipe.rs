@@ -229,6 +229,21 @@ fn validate_placeholders_declared(op: &Op, params: &[String]) -> Result<(), Stri
 /// `Op` field must be visited or `$param` substitution silently skips it.
 fn collect_placeholders_in_op(op: &Op, out: &mut BTreeSet<String>) {
     match op {
+        Op::Blob { .. }
+        | Op::Press { .. }
+        | Op::Scroll { .. }
+        | Op::Hover { .. }
+        | Op::Drag { .. }
+        | Op::Swipe { .. }
+        | Op::LongPress { .. }
+        | Op::Pinch { .. }
+        | Op::Viewport { .. }
+        | Op::Paste { .. }
+        | Op::System { .. } => {
+            for text in op.clone().added_strings_mut() {
+                collect_placeholders(text, out);
+            }
+        }
         Op::Hello
         | Op::Snapshot { .. }
         | Op::Shutdown
@@ -362,6 +377,22 @@ fn is_ident(name: &str) -> bool {
 /// Keep this match in sync with [`collect_placeholders_in_op`].
 fn substitute_op_in_place(op: &mut Op, set: &BTreeMap<String, String>) -> Result<(), String> {
     match op {
+        Op::Blob { .. }
+        | Op::Press { .. }
+        | Op::Scroll { .. }
+        | Op::Hover { .. }
+        | Op::Drag { .. }
+        | Op::Swipe { .. }
+        | Op::LongPress { .. }
+        | Op::Pinch { .. }
+        | Op::Viewport { .. }
+        | Op::Paste { .. }
+        | Op::System { .. } => {
+            for text in op.added_strings_mut() {
+                substitute_string_in_place(text, set)?;
+            }
+            Ok(())
+        }
         Op::Hello
         | Op::Snapshot { .. }
         | Op::Shutdown
@@ -744,6 +775,7 @@ fn parse_screenshot_op(tokens: &[String]) -> Result<Op, String> {
         mode,
         target,
         max_height_px,
+        inline: false,
     })
 }
 
@@ -1409,6 +1441,7 @@ assert todo-item-1 name=$title checked=false
                 mode,
                 target,
                 max_height_px,
+                inline: false,
             } => {
                 assert_eq!(path.as_deref(), Some("tall.png"));
                 assert!(mode.is_scrolled());

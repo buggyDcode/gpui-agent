@@ -141,6 +141,8 @@ impl AgentHost for EmptyHost {
     fn hello(&self) -> HelloInfo {
         HelloInfo {
             protocol: PROTOCOL_VERSION,
+            framework: None,
+            device: None,
             app: "bench".into(),
             platform: PlatformKind::Headless,
             os: gpui_agent::protocol::host_os(),

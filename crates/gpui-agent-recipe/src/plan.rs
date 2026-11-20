@@ -158,6 +158,17 @@ fn annotate(op: &Op, registry: &Registry) -> (Option<String>, Vec<Effect>, bool)
         Op::Events { .. } => lookup("events", registry),
         Op::Assert { .. } => lookup("assert", registry),
         Op::Screenshot { .. } => lookup("screenshot", registry),
+        Op::Blob { .. } => lookup("blob", registry),
+        Op::Press { .. }
+        | Op::Scroll { .. }
+        | Op::Hover { .. }
+        | Op::Drag { .. }
+        | Op::Swipe { .. }
+        | Op::LongPress { .. }
+        | Op::Pinch { .. }
+        | Op::Viewport { .. }
+        | Op::Paste { .. }
+        | Op::System { .. } => lookup(op.feature().unwrap_or("invoke"), registry),
         Op::Shutdown => lookup("shutdown", registry),
         Op::Invoke { name, args } => {
             if let Some(schema) = registry.get(name) {

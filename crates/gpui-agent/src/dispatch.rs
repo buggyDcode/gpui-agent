@@ -204,7 +204,21 @@ pub fn handle_request_cached(
             mode,
             target,
             max_height_px,
+            inline,
         } => {
+            // An inline capture needs no name from the client: the host
+            // writes a scratch file in its own screenshot dir, the bytes
+            // travel as a blob, and the scratch file is removed.
+            let scratch = inline && path.is_none();
+            let path = if scratch {
+                Some(format!(
+                    "gpui-agent-inline-{}-{}.png",
+                    std::process::id(),
+                    INLINE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                ))
+            } else {
+                path
+            };
             let spec = ScreenshotSpec::from_op(&path, mode, &target, max_height_px);
             if let Err(error) = spec.validate_request() {
                 return Response::err(req.id, error);
@@ -213,11 +227,24 @@ pub fn handle_request_cached(
                 Ok(result) => {
                     let mut resp = Response::ok(req.id);
                     resp.result = result.value;
+                    if inline {
+                        if let Err(error) = attach_screenshot_blob(&mut resp, scratch) {
+                            return Response::err(resp.id, error);
+                        }
+                    }
                     resp
                 }
                 Err(error) => Response::err(req.id, error),
             }
         }
+        Op::Blob { blob, index } => match crate::blob::read_chunk(&blob, index) {
+            Ok(value) => {
+                let mut resp = Response::ok(req.id);
+                resp.result = Some(value);
+                resp
+            }
+            Err(error) => Response::err(req.id, error),
+        },
         Op::Assert { spec } => {
             let tree = cache.snapshot(host);
             match assert_tree(&tree, &spec) {
@@ -266,6 +293,14 @@ pub fn handle_request_cached(
             Err(error) => Response::err(req.id, error),
         },
         other => {
+            // Ops added after the first protocol 2 release are refused
+            // here unless the host lists them, so every host answers an
+            // op it does not implement with the same stable error.
+            if let Some(feature) = other.feature() {
+                if !host.hello().features.iter().any(|f| f == feature) {
+                    return Response::err(req.id, crate::protocol::unsupported_op(feature));
+                }
+            }
             // M5 staleness gate — recomputed in the same call, before
             // dispatch. `cache.snapshot` re-reads whenever the revision
             // moved, so this is never a stale-of-stale check.
@@ -347,12 +382,50 @@ fn snapshot_response(
     resp
 }
 
+static INLINE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Read the PNG the host just wrote (`result.path`) into a blob and
+/// announce it as `result.blob`. A scratch file is removed and its path
+/// withheld: it never existed for the client.
+fn attach_screenshot_blob(resp: &mut Response, scratch: bool) -> Result<(), String> {
+    let path = resp
+        .result
+        .as_ref()
+        .and_then(|result| result.get("path"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            crate::screenshot_unavailable("host returned no path to read the image from")
+        })?
+        .to_string();
+    let bytes = std::fs::read(&path).map_err(|err| {
+        crate::screenshot_unavailable(format!("host could not read back {path}: {err}"))
+    })?;
+    if scratch {
+        let _ = std::fs::remove_file(&path);
+    }
+    if !bytes.starts_with(b"\x89PNG") {
+        return Err(crate::screenshot_unavailable("host wrote a non-PNG"));
+    }
+    if let Some(serde_json::Value::Object(map)) = resp.result.as_mut() {
+        if scratch {
+            map.remove("path");
+        }
+        map.insert("blob".into(), crate::blob::store(bytes));
+    }
+    Ok(())
+}
+
 fn hello_response(host: &dyn AgentHost, id: &str, expected_token: Option<&str>) -> Response {
     let mut resp = Response::ok(id);
     let mut hello = host.hello();
     hello.auth = crate::protocol::HelloAuth::from_token_configured(expected_token);
     crate::discovery::fill_hello_identity(&mut hello);
-    for feature in ["snapshot_since", "snapshot_compact", "expect_fingerprint"] {
+    for feature in [
+        "snapshot_since",
+        "snapshot_compact",
+        "expect_fingerprint",
+        "screenshot_inline",
+    ] {
         if !hello.features.iter().any(|f| f == feature) {
             hello.features.push(feature.to_string());
         }
@@ -564,6 +637,8 @@ mod tests {
         fn hello(&self) -> HelloInfo {
             HelloInfo {
                 protocol: PROTOCOL_VERSION,
+                framework: None,
+                device: None,
                 app: "test".into(),
                 platform: PlatformKind::Headless,
                 os: crate::protocol::host_os(),
@@ -761,6 +836,7 @@ mod tests {
                 mode: crate::protocol::ScreenshotMode::Scrolled,
                 target: None,
                 max_height_px: None,
+                inline: false,
             },
         );
         let resp = handle_request(&mut host, req, None, None);
@@ -808,6 +884,7 @@ mod tests {
                     mode: crate::protocol::ScreenshotMode::Scrolled,
                     target: Some("todo-list-scroll".into()),
                     max_height_px: Some(crate::DEFAULT_MAX_HEIGHT_PX + 1),
+                    inline: false,
                 },
             ),
             None,
@@ -908,6 +985,8 @@ mod tests {
         fn hello(&self) -> HelloInfo {
             HelloInfo {
                 protocol: PROTOCOL_VERSION,
+                framework: None,
+                device: None,
                 app: "test".into(),
                 platform: PlatformKind::Headless,
                 os: crate::protocol::host_os(),
@@ -991,6 +1070,8 @@ mod tests {
             fn hello(&self) -> HelloInfo {
                 HelloInfo {
                     protocol: PROTOCOL_VERSION,
+                    framework: None,
+                    device: None,
                     app: "test".into(),
                     platform: PlatformKind::Headless,
                     os: crate::protocol::host_os(),
@@ -1253,6 +1334,8 @@ mod tests {
         fn hello(&self) -> HelloInfo {
             HelloInfo {
                 protocol: PROTOCOL_VERSION,
+                framework: None,
+                device: None,
                 app: "test".into(),
                 platform: PlatformKind::Headless,
                 os: crate::protocol::host_os(),
@@ -1316,6 +1399,8 @@ mod tests {
             fn hello(&self) -> HelloInfo {
                 HelloInfo {
                     protocol: PROTOCOL_VERSION,
+                    framework: None,
+                    device: None,
                     app: "test".into(),
                     platform: PlatformKind::Headless,
                     os: crate::protocol::host_os(),

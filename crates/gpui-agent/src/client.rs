@@ -23,6 +23,7 @@ pub struct AgentClient {
     timeout: Duration,
     next_id: u64,
     session: Option<LiveSession>,
+    features: Option<Vec<String>>,
 }
 
 struct LiveSession {
@@ -192,6 +193,7 @@ impl AgentClient {
             timeout: Duration::from_secs(8),
             next_id: 1,
             session: None,
+            features: None,
         }
     }
 
@@ -443,7 +445,78 @@ impl AgentClient {
             mode,
             target,
             max_height_px,
+            inline: false,
         })
+    }
+
+    /// Capture the app surface and return the PNG bytes over the wire,
+    /// for hosts whose files this machine cannot read (a device, a
+    /// browser). Needs the `screenshot_inline` feature.
+    pub fn screenshot_bytes(
+        &mut self,
+        mode: ScreenshotMode,
+        target: Option<String>,
+        max_height_px: Option<u32>,
+    ) -> Result<Vec<u8>, String> {
+        let resp = self.expect_ok(Op::Screenshot {
+            path: None,
+            mode,
+            target,
+            max_height_px,
+            inline: true,
+        })?;
+        let blob = resp
+            .result
+            .as_ref()
+            .and_then(|result| result.get("blob"))
+            .ok_or_else(|| crate::protocol::unsupported_op("screenshot_inline"))?;
+        let name = blob
+            .get("blob")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("screenshot blob has no name")?
+            .to_string();
+        let chunks = blob
+            .get("chunks")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or("screenshot blob has no chunk count")? as u32;
+        let mut bytes = Vec::new();
+        for index in 0..chunks {
+            let chunk = self.expect_ok(Op::Blob {
+                blob: name.clone(),
+                index,
+            })?;
+            bytes.extend(crate::blob::decode_chunk(
+                chunk.result.as_ref().ok_or("blob chunk has no result")?,
+            )?);
+        }
+        Ok(bytes)
+    }
+
+    /// The host's `hello.features`, asked once per client.
+    pub fn features(&mut self) -> Result<&[String], String> {
+        if self.features.is_none() {
+            let hello = self.expect_ok(Op::Hello)?.hello.ok_or("hello has no info")?;
+            self.features = Some(hello.features);
+        }
+        Ok(self.features.as_deref().unwrap_or_default())
+    }
+
+    /// Send an op that is gated by a `hello.features` entry (`press`,
+    /// `scroll`, `system`, …). A host that lists the feature gets the op;
+    /// a host built against gpui-agent 0.1 gets the `invoke` spelling it
+    /// knew, where one exists; otherwise the call fails with
+    /// `unsupported_op` and nothing is sent.
+    pub fn gated(&mut self, op: Op) -> Result<Response, String> {
+        let Some(feature) = op.feature() else {
+            return self.expect_ok(op);
+        };
+        if self.features()?.iter().any(|f| f == feature) {
+            return self.expect_ok(op);
+        }
+        match op.legacy_invoke() {
+            Some(legacy) => self.expect_ok(legacy),
+            None => Err(crate::protocol::unsupported_op(feature)),
+        }
     }
 
     pub fn click(&mut self, target: impl Into<String>) -> Result<Response, String> {

@@ -158,6 +158,8 @@ impl AgentHost for RaceHost {
     fn hello(&self) -> HelloInfo {
         HelloInfo {
             protocol: PROTOCOL_VERSION,
+            framework: None,
+            device: None,
             app: "t".into(),
             platform: PlatformKind::Headless,
             os: "test".into(),

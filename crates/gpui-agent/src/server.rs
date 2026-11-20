@@ -541,6 +541,8 @@ mod tests {
             HelloInfo {
                 os: crate::protocol::host_os(),
                 protocol: PROTOCOL_VERSION,
+                framework: None,
+                device: None,
                 app: "test".into(),
                 platform: PlatformKind::Headless,
                 ready: true,

@@ -576,6 +576,8 @@ impl AgentHost for TodoStore {
     fn hello(&self) -> HelloInfo {
         HelloInfo {
             protocol: PROTOCOL_VERSION,
+            framework: None,
+            device: None,
             app: "todo".into(),
             platform: self.platform,
             os: gpui_agent::protocol::host_os(),
@@ -587,7 +589,7 @@ impl AgentHost for TodoStore {
             auth: gpui_agent::HelloAuth::None,
             bundle_id: None,
             executable: None,
-            features: vec![],
+            features: vec!["press".into(), "paste".into()],
         }
     }
 
@@ -659,6 +661,7 @@ impl AgentHost for TodoStore {
                 mode,
                 target,
                 max_height_px,
+                inline: _,
             } => AgentHost::screenshot(
                 self,
                 gpui_agent::ScreenshotSpec::from_op(path, *mode, target, *max_height_px),
@@ -673,7 +676,18 @@ impl AgentHost for TodoStore {
             | Op::Events { .. }
             | Op::Assert { .. }
             | Op::Wait { .. }
+            | Op::Blob { .. }
             | Op::WaitUntil { .. } => Ok(DispatchResult::empty()),
+            // A store has no pointer or clipboard: a press is the
+            // widget's activation and a paste is typed text.
+            Op::Press {
+                target: Some(target),
+                ..
+            } => self.click(target),
+            Op::Paste { target, text } => self.type_into(target, text),
+            other => Err(gpui_agent::unsupported_op(
+                other.feature().unwrap_or("this operation"),
+            )),
         }
     }
 }
