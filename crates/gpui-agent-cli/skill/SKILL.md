@@ -13,25 +13,31 @@ not start the server.
 ## Connect
 
 ```bash
-export GPUI_AGENT_ADDR=127.0.0.1:17421     # the host's address
 export GPUI_AGENT_TOKEN=...                # the value the host was started with
 gpui-agent targets                         # hosts on this machine, adb devices, forwarded ports
-gpui-agent doctor                          # address, token, capabilities, answer time
+gpui-agent --session app attach 127.0.0.1:17421
+gpui-agent --session app doctor            # address, token, capabilities, answer time
 ```
 
 - Android: `adb forward tcp:17421 tcp:17421`, then use `127.0.0.1:17421`.
-- Several apps running: always pass the address of the one you started. Do not
-  rely on `--connect`, which picks whichever matching app is running.
+- For repeated work, keep using `--session app`; `gpui-agent sessions` lists
+  saved sessions without revealing tokens. A session is a stored connection
+  record, not a background process. Use a different name for each app.
+- The saved token takes precedence over `GPUI_AGENT_TOKEN`; pass `--token` to
+  override it.
+- Do not rely on `--connect` for a saved workflow, which picks whichever
+  matching app is running.
 - `no reply from … within 8000 ms` means the app is up but busy. Raise
   `--reply-timeout-ms` (or `GPUI_AGENT_REPLY_TIMEOUT_MS`), or pause what animates.
 
 ## The loop
 
-1. `gpui-agent snapshot --refs` prints one line per node with a ref:
+1. `gpui-agent --session app snapshot --refs` prints one line per node with a ref:
    `@e6 button "Pause the market"`.
-2. Act on a ref: `gpui-agent press @e6`.
-3. Run `snapshot --refs` again and read the result. Refs are renumbered by
-   every `snapshot --refs`; never reuse one from before the screen changed.
+2. Act on a ref: `gpui-agent --session app press @e6`.
+3. Run `gpui-agent --session app snapshot --refs` again and read the result.
+   Refs are renumbered by every `snapshot --refs`; never reuse one from before
+   the screen changed.
 
 Use `gpui-agent snapshot` for the full JSON tree (bounds, states, ids) and
 `gpui-agent assert` / `wait-until` to check a condition without reading the tree.
@@ -50,6 +56,7 @@ Use `gpui-agent snapshot` for the full JSON tree (bounds, states, ids) and
 | `viewport --width W --height H` | Resize the window (desktop, web) |
 | `system back\|home\|rotate\|…` | Platform actions (mobile) |
 | `screenshot --inline --out shot.png` | PNG of the app, written on this machine |
+| `attach`, `detach`, `sessions` | Save, remove or list a reusable address and token with `--session <name>` |
 
 Run `gpui-agent <command> --help` for the options of each.
 

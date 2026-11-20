@@ -7,8 +7,8 @@
 //! to the default address: the saved choice is per user, not per terminal, so
 //! reusing it silently would let one agent drive the app another agent picked.
 
-use std::fs;
-use std::io::{self, ErrorKind};
+use std::fs::{self, OpenOptions};
+use std::io::{self, ErrorKind, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -54,6 +54,16 @@ pub struct SessionRecord {
     pub id: String,
 }
 
+/// A saved address and credentials for a named CLI session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NamedSession {
+    pub name: String,
+    pub addr: String,
+    pub token: Option<String>,
+    pub allow_remote: bool,
+    pub app: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct HostIdentity {
     pub executable: String,
@@ -71,6 +81,14 @@ pub enum ResolveError {
     BadAddr { addr: String },
     #[error("no earlier --connect to reuse; pass --connect <bundle id or executable>")]
     NoSession,
+    #[error(
+        "no session named \"{name}\"; create it with: gpui-agent --session <name> attach <target>"
+    )]
+    NoNamedSession { name: String },
+    #[error("invalid session name \"{name}\"; use 1-64 ASCII letters, digits, '_' or '-'")]
+    BadSessionName { name: String },
+    #[error("could not read session \"{name}\": {detail}")]
+    NamedSessionRead { name: String, detail: String },
 }
 
 /// Where a command goes, and which app that is when discovery chose it.
@@ -128,6 +146,38 @@ fn hosts_dir(root: &Path) -> PathBuf {
 
 fn session_path(root: &Path) -> PathBuf {
     root.join("session.json")
+}
+
+fn named_sessions_dir(root: &Path) -> PathBuf {
+    root.join("sessions")
+}
+
+fn named_session_path(root: &Path, name: &str) -> PathBuf {
+    named_sessions_dir(root).join(format!("{name}.json"))
+}
+
+fn valid_session_name(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn validate_session_name(name: &str) -> io::Result<()> {
+    if valid_session_name(name) {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("invalid session name \"{name}\"; use 1-64 ASCII letters, digits, '_' or '-'"),
+        ))
+    }
+}
+
+fn invalid_session_name(name: &str) -> ResolveError {
+    ResolveError::BadSessionName {
+        name: name.to_string(),
+    }
 }
 
 /// Bundle id (macOS `.app` Info.plist) and executable basename for this process.
@@ -414,6 +464,121 @@ pub fn save_session(root: &Path, addr: &str, id: &str) -> io::Result<()> {
 pub fn load_session(root: &Path) -> Option<SessionRecord> {
     let body = fs::read(session_path(root)).ok()?;
     serde_json::from_slice(&body).ok()
+}
+
+/// Atomically save a named session under `root/sessions`.
+pub fn save_named_session(root: &Path, session: &NamedSession) -> io::Result<()> {
+    validate_session_name(&session.name)?;
+    let dir = named_sessions_dir(root);
+    fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    }
+
+    let body = serde_json::to_vec_pretty(session)
+        .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp = dir.join(format!(
+        ".{}.{}.{}.tmp",
+        session.name,
+        std::process::id(),
+        nonce
+    ));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&tmp)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    let result = (|| {
+        file.write_all(&body)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp, named_session_path(root, &session.name))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(tmp);
+    }
+    result
+}
+
+/// Load a named session, rejecting invalid names and missing records.
+pub fn load_named_session(root: &Path, name: &str) -> Result<NamedSession, ResolveError> {
+    if !valid_session_name(name) {
+        return Err(invalid_session_name(name));
+    }
+    let path = named_session_path(root, name);
+    let body = fs::read(path).map_err(|err| {
+        if err.kind() == ErrorKind::NotFound {
+            ResolveError::NoNamedSession {
+                name: name.to_string(),
+            }
+        } else {
+            ResolveError::NamedSessionRead {
+                name: name.to_string(),
+                detail: err.to_string(),
+            }
+        }
+    })?;
+    let session: NamedSession =
+        serde_json::from_slice(&body).map_err(|err| ResolveError::NamedSessionRead {
+            name: name.to_string(),
+            detail: err.to_string(),
+        })?;
+    if session.name != name {
+        return Err(ResolveError::NamedSessionRead {
+            name: name.to_string(),
+            detail: "stored session name does not match its file name".into(),
+        });
+    }
+    Ok(session)
+}
+
+/// Remove a named session, returning whether a record existed.
+pub fn remove_named_session(root: &Path, name: &str) -> io::Result<bool> {
+    validate_session_name(name)?;
+    match fs::remove_file(named_session_path(root, name)) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+/// List valid saved sessions, ordered by name.
+pub fn list_named_sessions(root: &Path) -> Vec<NamedSession> {
+    let Ok(entries) = fs::read_dir(named_sessions_dir(root)) else {
+        return Vec::new();
+    };
+    let mut sessions: Vec<_> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                return None;
+            }
+            let name = path.file_stem()?.to_str()?.to_string();
+            if !valid_session_name(&name) {
+                return None;
+            }
+            let body = fs::read(&path).ok()?;
+            let session: NamedSession = serde_json::from_slice(&body).ok()?;
+            (session.name == name).then_some(session)
+        })
+        .collect();
+    sessions.sort_by(|left, right| left.name.cmp(&right.name));
+    sessions
 }
 
 fn parse_addr(addr: &str) -> Result<SocketAddr, ResolveError> {
@@ -764,6 +929,123 @@ mod tests {
             resolve_client_target(&root, None, Some(LAST_SESSION)),
             Err(ResolveError::NoSession)
         ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn named_sessions_roundtrip_list_and_remove() {
+        let root = temp_root("named");
+        let session = NamedSession {
+            name: "work_agent".into(),
+            addr: "127.0.0.1:17421".into(),
+            token: Some("not-printed".into()),
+            allow_remote: true,
+            app: Some("NativeChat".into()),
+        };
+        save_named_session(&root, &session).unwrap();
+        assert_eq!(load_named_session(&root, "work_agent").unwrap(), session);
+
+        let another = NamedSession {
+            name: "second".into(),
+            addr: "127.0.0.1:17422".into(),
+            token: None,
+            allow_remote: false,
+            app: None,
+        };
+        save_named_session(&root, &another).unwrap();
+        assert_eq!(
+            list_named_sessions(&root),
+            vec![another.clone(), session.clone()]
+        );
+
+        assert!(remove_named_session(&root, "work_agent").unwrap());
+        assert!(!remove_named_session(&root, "work_agent").unwrap());
+        assert_eq!(list_named_sessions(&root), vec![another]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn named_session_names_are_validated() {
+        let root = temp_root("bad-name");
+        for name in ["../x", "a/b", ""] {
+            let session = NamedSession {
+                name: name.to_string(),
+                addr: "127.0.0.1:17421".into(),
+                token: None,
+                allow_remote: false,
+                app: None,
+            };
+            assert_eq!(
+                save_named_session(&root, &session).unwrap_err().kind(),
+                ErrorKind::InvalidInput
+            );
+            assert!(matches!(
+                load_named_session(&root, name),
+                Err(ResolveError::BadSessionName { .. })
+            ));
+            assert_eq!(
+                remove_named_session(&root, name).unwrap_err().kind(),
+                ErrorKind::InvalidInput
+            );
+        }
+
+        let too_long = "x".repeat(65);
+        let session = NamedSession {
+            name: too_long.clone(),
+            addr: "127.0.0.1:17421".into(),
+            token: None,
+            allow_remote: false,
+            app: None,
+        };
+        assert_eq!(
+            save_named_session(&root, &session).unwrap_err().kind(),
+            ErrorKind::InvalidInput
+        );
+        assert!(matches!(
+            load_named_session(&root, &too_long),
+            Err(ResolveError::BadSessionName { .. })
+        ));
+        assert!(
+            load_named_session(&root, "missing")
+                .unwrap_err()
+                .to_string()
+                .contains(
+                    "no session named \"missing\"; create it with: gpui-agent --session <name> attach <target>"
+                )
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn named_session_storage_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_root("permissions");
+        save_named_session(
+            &root,
+            &NamedSession {
+                name: "private".into(),
+                addr: "127.0.0.1:17421".into(),
+                token: Some("secret".into()),
+                allow_remote: false,
+                app: None,
+            },
+        )
+        .unwrap();
+        let dir = named_sessions_dir(&root);
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(named_session_path(&root, "private"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
         let _ = fs::remove_dir_all(root);
     }
 

@@ -8,12 +8,15 @@ mod refs;
 mod run_cmd;
 
 use std::net::SocketAddr;
+use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use clap::{Parser, Subcommand};
+use clap::parser::ValueSource;
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use gpui_agent::client::AgentClient;
+use gpui_agent::discovery::NamedSession;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, KeybindingScope, Op};
 use recipe_cmd::RecipeCommand;
 
@@ -32,16 +35,25 @@ struct Cli {
     /// Host:port of the automation server. When omitted, `--connect` is used,
     /// then the loopback default. Non-loopback needs `--allow-remote` and a
     /// non-empty token.
-    #[arg(long, env = "GPUI_AGENT_ADDR")]
+    #[arg(long, env = "GPUI_AGENT_ADDR", global = true)]
     addr: Option<SocketAddr>,
     /// Bundle id or executable name of the app to drive. The CLI finds that
     /// app's AgentHost and remembers it; `--connect last` reuses that choice.
     /// A command with neither `--addr` nor `--connect` does not: another agent
     /// on this Mac may have picked a different app.
-    #[arg(long, env = "GPUI_AGENT_CONNECT")]
+    #[arg(long, env = "GPUI_AGENT_CONNECT", global = true)]
     connect: Option<String>,
+    /// Reuse a saved address and token. Create it with `attach`.
+    #[arg(
+        long,
+        env = "GPUI_AGENT_SESSION",
+        conflicts_with_all = ["addr", "connect"],
+        global = true
+    )]
+    session: Option<String>,
     /// Shared secret; must match `GPUI_AGENT_TOKEN` on the host when the host
-    /// has one. Required (non-empty) for `recipe run` and `mcp`.
+    /// has one. With `--session`, the saved token precedes the environment
+    /// value; this command-line flag overrides it. Required for `recipe run` and `mcp`.
     #[arg(long, env = "GPUI_AGENT_TOKEN", hide_env_values = true)]
     token: Option<String>,
     /// Connect to a non-loopback host. Requires a non-empty token. Plaintext
@@ -77,10 +89,21 @@ GPUI_AGENT_TOKEN or --token; set the same value on the host. Non-loopback
 `--addr` also needs `--allow-remote` (or GPUI_AGENT_ALLOW_REMOTE=1) and a
 token so a mistyped address cannot leak the secret (see docs/SECURITY.md).
 `--connect <bundle id or executable>` picks the app; `--connect last` reuses
-the last pick. Every command that discovery routes names its app on stderr.";
+the last pick. Use `--session <name> attach <target>` once, then pass
+`--session <name>` for later commands. `gpui-agent sessions` lists saved
+sessions without printing tokens; `gpui-agent --session <name> detach`
+removes one. With `--session`, the saved token is used before
+`GPUI_AGENT_TOKEN`; a command-line `--token` overrides it. Every command that
+discovery routes names its app on stderr.";
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Save a host address and token under a reusable session name.
+    Attach { target: String },
+    /// Remove the named session.
+    Detach,
+    /// List saved sessions without revealing their tokens.
+    Sessions,
     /// Block until the host answers hello/ready.
     Wait {
         /// How long the client retries connecting (milliseconds).
@@ -422,6 +445,105 @@ fn take_non_empty_token(token: Option<String>) -> Option<String> {
     token.filter(|s| !s.is_empty())
 }
 
+fn parse_cli_from<I, T>(args: I) -> (Cli, bool)
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let matches = Cli::command().get_matches_from(args);
+    let command_line_token = matches.value_source("token") == Some(ValueSource::CommandLine);
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
+    (cli, command_line_token)
+}
+
+fn require_session_name<'a>(cli: &'a Cli, command: &str) -> Result<&'a str> {
+    cli.session
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| anyhow!("{command} requires --session <name> or GPUI_AGENT_SESSION"))
+}
+
+fn resolve_cli_target(
+    root: &Path,
+    cli: &Cli,
+) -> Result<(gpui_agent::ClientTarget, Option<NamedSession>)> {
+    if let Some(name) = cli.session.as_deref() {
+        let session = gpui_agent::discovery::load_named_session(root, name)?;
+        let addr = session
+            .addr
+            .parse::<SocketAddr>()
+            .with_context(|| format!("session {name} has invalid address '{}'", session.addr))?;
+        return Ok((
+            gpui_agent::ClientTarget {
+                addr,
+                app: session.app.clone(),
+                connect: None,
+            },
+            Some(session),
+        ));
+    }
+    Ok((
+        gpui_agent::resolve_client_target(root, cli.addr, cli.connect.as_deref())?,
+        None,
+    ))
+}
+
+fn attach_session(cli: &Cli, target: &str) -> Result<()> {
+    let name = require_session_name(cli, "attach")?;
+    let root = gpui_agent::runtime_root();
+    let addr = match target.parse::<SocketAddr>() {
+        Ok(addr) => addr,
+        Err(_) => gpui_agent::discovery::resolve_id(&root, target)?
+            .addr
+            .parse::<SocketAddr>()
+            .with_context(|| format!("discovery returned an invalid address for {target}"))?,
+    };
+    let token = take_non_empty_token(cli.token.clone());
+    let request_timeout = cli.request_timeout_ms.map(Duration::from_millis);
+    gpui_agent::authorize_client(addr, token.as_deref(), cli.allow_remote)
+        .with_context(|| format!("refusing agent address {addr}"))?;
+
+    let mut client = connect(addr, request_timeout);
+    if let Some(token) = &token {
+        client = client.with_token(token.clone());
+    }
+    let hello = rpc(client.expect_ok(Op::Hello))?
+        .hello
+        .ok_or_else(|| anyhow!("the host returned no hello info"))?;
+    let display = hello
+        .framework
+        .clone()
+        .filter(|framework| !framework.is_empty())
+        .unwrap_or_else(|| hello.app.clone());
+    let session = NamedSession {
+        name: name.to_string(),
+        addr: addr.to_string(),
+        token,
+        allow_remote: cli.allow_remote,
+        app: Some(hello.app),
+    };
+    gpui_agent::discovery::save_named_session(&root, &session).context("saving named session")?;
+    println!("session {}: {} ({display})", session.name, session.addr);
+    Ok(())
+}
+
+fn list_sessions() -> Result<()> {
+    let sessions = gpui_agent::discovery::list_named_sessions(&gpui_agent::runtime_root());
+    let summaries: Vec<_> = sessions
+        .into_iter()
+        .map(|session| {
+            serde_json::json!({
+                "name": session.name,
+                "addr": session.addr,
+                "app": session.app,
+                "token": if session.token.is_some() { "yes" } else { "no" },
+            })
+        })
+        .collect();
+    println!("{}", serde_json::to_string_pretty(&summaries)?);
+    Ok(())
+}
+
 const RECIPE_MCP_TOKEN_REQUIRED: &str = "recipe run and mcp require a non-empty GPUI_AGENT_TOKEN or --token \
      (set the same token on the host)";
 
@@ -433,7 +555,7 @@ fn require_recipe_mcp_token(token: Option<&str>) -> Result<&str> {
 }
 
 fn run() -> Result<()> {
-    let mut cli = Cli::parse();
+    let (mut cli, mut token_from_command_line) = parse_cli_from(std::env::args_os());
     if matches!(cli.command, Command::Skill) {
         print!("{}", skill());
         return Ok(());
@@ -442,17 +564,40 @@ fn run() -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&doctor::targets())?);
         return Ok(());
     }
-    let target = gpui_agent::resolve_client_target(
-        &gpui_agent::runtime_root(),
-        cli.addr,
-        cli.connect.as_deref(),
-    )?;
+    if matches!(cli.command, Command::Sessions) {
+        return list_sessions();
+    }
+    if let Command::Attach { target } = &cli.command {
+        return attach_session(&cli, target);
+    }
+    if matches!(cli.command, Command::Detach) {
+        let name = require_session_name(&cli, "detach")?;
+        let removed =
+            gpui_agent::discovery::remove_named_session(&gpui_agent::runtime_root(), name)?;
+        println!(
+            "session {name}: {}",
+            if removed { "detached" } else { "not found" }
+        );
+        return Ok(());
+    }
+    if matches!(
+        &cli.command,
+        Command::Recipe {
+            action: RecipeCommand::Validate { .. }
+                | RecipeCommand::Plan { .. }
+                | RecipeCommand::Resolve { .. },
+            ..
+        }
+    ) {
+        let Command::Recipe { schema, action } = cli.command else {
+            unreachable!();
+        };
+        return recipe_cmd::run(None, action, &schema);
+    }
+    let root = gpui_agent::runtime_root();
+    let (initial_target, _) = resolve_cli_target(&root, &cli)?;
     // Say which app discovery picked before acting on it, so a command that lands in the wrong
     // window is visible. Stderr keeps stdout (and `mcp`'s protocol) clean.
-    if target.app.is_some() {
-        eprintln!("gpui-agent: {}", target.describe());
-    }
-    let addr = target.addr;
     // `@e3` stands for a node of the last `snapshot --refs` of this host.
     let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     if args
@@ -460,12 +605,27 @@ fn run() -> Result<()> {
         .skip(1)
         .any(|arg| arg.to_str().is_some_and(refs::is_ref))
     {
-        refs::resolve(&gpui_agent::runtime_root(), addr, &mut args[1..]).map_err(|e| anyhow!(e))?;
-        cli = Cli::parse_from(args);
+        refs::resolve(&root, initial_target.addr, &mut args[1..]).map_err(|e| anyhow!(e))?;
+        (cli, token_from_command_line) = parse_cli_from(args);
     }
-    let token = take_non_empty_token(cli.token);
+    let (target, session) = resolve_cli_target(&root, &cli)?;
+    let addr = target.addr;
+    if let Some(session) = &session {
+        eprintln!("gpui-agent: session {} -> {addr}", session.name);
+    } else if target.app.is_some() {
+        eprintln!("gpui-agent: {}", target.describe());
+    }
+    let token = take_non_empty_token(if token_from_command_line {
+        cli.token
+    } else {
+        session
+            .as_ref()
+            .and_then(|session| session.token.clone())
+            .or(cli.token)
+    });
+    let allow_remote = cli.allow_remote || session.is_some_and(|session| session.allow_remote);
     let request_timeout = cli.request_timeout_ms.map(Duration::from_millis);
-    gpui_agent::authorize_client(addr, token.as_deref(), cli.allow_remote)
+    gpui_agent::authorize_client(addr, token.as_deref(), allow_remote)
         .with_context(|| format!("refusing agent address {addr}"))?;
 
     if matches!(cli.command, Command::Doctor) {
@@ -735,6 +895,9 @@ fn run() -> Result<()> {
         Command::Shutdown => print_resp(rpc(client.expect_ok(Op::Shutdown))?),
         Command::Targets
         | Command::Skill
+        | Command::Attach { .. }
+        | Command::Detach
+        | Command::Sessions
         | Command::Doctor
         | Command::Mcp { .. }
         | Command::Recipe { .. } => {
@@ -843,6 +1006,9 @@ mod tests {
             .map(|c| c.get_name().to_string())
             .collect();
         let mut expected = vec![
+            "attach",
+            "detach",
+            "sessions",
             "wait",
             "wait-until",
             "targets",
@@ -1496,6 +1662,52 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(by_exe.connect.as_deref(), Some("eBIRForms"));
+    }
+
+    #[test]
+    fn session_conflicts_with_addr_and_connect() {
+        assert!(
+            Cli::try_parse_from([
+                "gpui-agent",
+                "--session",
+                "work",
+                "--addr",
+                "127.0.0.1:9",
+                "hello",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "gpui-agent",
+                "--session",
+                "work",
+                "--connect",
+                "demo",
+                "hello",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn attach_requires_session() {
+        let missing = Cli::try_parse_from(["gpui-agent", "attach", "127.0.0.1:17421"]).unwrap();
+        let err = require_session_name(&missing, "attach")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("attach requires --session"), "{err}");
+
+        let cli = Cli::try_parse_from([
+            "gpui-agent",
+            "--session",
+            "work",
+            "attach",
+            "127.0.0.1:17421",
+        ])
+        .unwrap();
+        assert_eq!(cli.session.as_deref(), Some("work"));
+        assert!(matches!(cli.command, Command::Attach { .. }));
     }
 
     #[test]

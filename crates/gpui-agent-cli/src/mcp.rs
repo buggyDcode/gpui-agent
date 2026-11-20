@@ -85,6 +85,8 @@ fn write_msg(stdout: &mut std::io::Stdout, value: Value) -> Result<()> {
     Ok(())
 }
 
+// Attach, detach and session listing are CLI-only: an MCP process already
+// holds one address and token for its lifetime.
 pub(crate) fn tools() -> Vec<Value> {
     vec![
         tool(
