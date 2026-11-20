@@ -536,8 +536,14 @@ impl AgentClient {
         let Some(feature) = op.feature() else {
             return Ok(None);
         };
-        if self.features()?.iter().any(|f| f == feature) {
+        let features = self.features()?;
+        if features.iter().any(|f| f == feature) {
             return Ok(None);
+        }
+        // A host on this dispatcher (it lists `screenshot_inline`) that
+        // omits a feature means it: only a 0.1 host gets the old spelling.
+        if features.iter().any(|f| f == "screenshot_inline") {
+            return Err(crate::protocol::unsupported_op(feature));
         }
         op.legacy_invoke()
             .map(Some)

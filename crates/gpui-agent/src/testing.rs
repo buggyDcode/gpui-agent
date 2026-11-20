@@ -153,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn a_host_without_the_feature_gets_the_invoke_spelling_or_a_refusal() {
+    fn a_current_host_that_omits_a_feature_is_never_sent_the_op() {
         let host = TestHost::spawn(PingHost { n: 0 }, None).expect("bind");
         let mut client = host.client();
         let scroll = Op::Scroll {
@@ -163,10 +163,11 @@ mod tests {
             dx: 0.0,
             dy: 40.0,
         };
-        let resp = client.rpc_gated(&scroll).expect("scroll");
-        assert_eq!(resp.result.unwrap()["invoked"], "scroll");
+        // This host runs the current dispatcher, so leaving `scroll` out
+        // of its features is a statement: it is not sent as an `invoke`.
+        let err = client.rpc_gated(&scroll).unwrap_err();
+        assert!(crate::is_unsupported_op(&err), "{err}");
 
-        // No 0.1 spelling exists for a swipe, and none keeps a press's guard.
         for op in [
             Op::Swipe {
                 target: None,
