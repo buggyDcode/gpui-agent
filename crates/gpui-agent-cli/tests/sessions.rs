@@ -205,7 +205,29 @@ fn named_session_conflicts_with_command_line_selectors_but_ignores_env_addr() {
         stderr(&env_addr)
     );
     assert!(serde_json::from_slice::<Value>(&env_addr.stdout).is_ok());
+
+    let detach_conflict = cli(
+        &runtime,
+        &[
+            "--session",
+            "s",
+            "--addr",
+            "127.0.0.1:9",
+            "detach",
+        ],
+    );
+    assert!(!detach_conflict.status.success());
+    assert!(
+        stderr(&detach_conflict).contains("command-line --addr"),
+        "{}",
+        stderr(&detach_conflict)
+    );
+    let listed = cli(&runtime, &["sessions"]);
+    let sessions: Value = serde_json::from_slice(&listed.stdout).expect("sessions JSON");
+    assert_eq!(sessions.as_array().unwrap().len(), 1, "{sessions}");
+    assert_eq!(sessions[0]["name"], "s");
 }
+
 
 #[test]
 fn offline_recipe_validation_ignores_a_missing_session() {
