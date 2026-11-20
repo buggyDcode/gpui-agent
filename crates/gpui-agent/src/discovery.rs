@@ -127,16 +127,9 @@ pub fn runtime_root() -> PathBuf {
             return PathBuf::from(xdg).join("gpui-agent");
         }
     }
-    #[cfg(unix)]
-    {
-        PathBuf::from(format!("/tmp/gpui-agent-{}", current_uid()))
-    }
-    #[cfg(not(unix))]
-    {
-        let mut base = std::env::temp_dir();
-        base.push(format!("gpui-agent-{}", current_uid()));
-        base
-    }
+    let mut base = std::env::temp_dir();
+    base.push(format!("gpui-agent-{}", current_uid()));
+    base
 }
 
 fn current_uid() -> u32 {
