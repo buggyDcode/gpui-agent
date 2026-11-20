@@ -28,21 +28,38 @@ pub fn is_ref(arg: &str) -> bool {
 }
 
 /// A node earns a line when it says something or can be acted on; bare
-/// layout containers only pass their children up.
-fn listed(node: &UiNode) -> bool {
+/// layout containers only pass their children up. Where the host gives
+/// geometry (`sized`), a node without any is not on screen.
+fn listed(node: &UiNode, sized: bool) -> bool {
     node.visible
-        && node.bounds.w > 0.0
-        && node.bounds.h > 0.0
+        && (!sized || has_size(node))
         && (node.role != "generic" || !node.name.is_empty() || node.value.is_some())
 }
 
-fn outline(nodes: &[UiNode], depth: usize, out: &mut String, table: &mut BTreeMap<String, String>) {
+fn has_size(node: &UiNode) -> bool {
+    node.bounds.w > 0.0 && node.bounds.h > 0.0
+}
+
+/// Headless hosts publish no bounds at all.
+fn any_sized(nodes: &[UiNode]) -> bool {
+    nodes
+        .iter()
+        .any(|node| has_size(node) || any_sized(&node.children))
+}
+
+fn outline(
+    nodes: &[UiNode],
+    sized: bool,
+    depth: usize,
+    out: &mut String,
+    table: &mut BTreeMap<String, String>,
+) {
     for node in nodes {
         if !node.visible {
             continue;
         }
         let mut below = depth;
-        if listed(node) {
+        if listed(node, sized) {
             let key = format!("e{}", table.len() + 1);
             let _ = write!(
                 out,
@@ -70,7 +87,7 @@ fn outline(nodes: &[UiNode], depth: usize, out: &mut String, table: &mut BTreeMa
             table.insert(key, node.id.clone());
             below += 1;
         }
-        outline(&node.children, below, out, table);
+        outline(&node.children, sized, below, out, table);
     }
 }
 
@@ -78,7 +95,7 @@ fn outline(nodes: &[UiNode], depth: usize, out: &mut String, table: &mut BTreeMa
 pub fn render(tree: &UiTree) -> (String, BTreeMap<String, String>) {
     let mut out = String::new();
     let mut table = BTreeMap::new();
-    outline(&tree.nodes, 0, &mut out, &mut table);
+    outline(&tree.nodes, any_sized(&tree.nodes), 0, &mut out, &mut table);
     (out, table)
 }
 
@@ -129,7 +146,7 @@ mod tests {
     fn refs_number_the_listed_nodes_and_resolve_back_to_ids() {
         let mut hidden = node("gone", "button", "Hidden", vec![]);
         hidden.visible = false;
-        let tree = UiTree {
+        let mut tree = UiTree {
             app: "t".into(),
             platform: gpui_agent::protocol::PlatformKind::Headless,
             ready: true,
@@ -155,6 +172,21 @@ mod tests {
             text,
             "@e1 button \"Save\"\n@e2 scroll\n  @e3 note \"Row\"\n"
         );
+
+        // A headless host gives no bounds: its nodes are listed all the same.
+        fn unsize(nodes: &mut [UiNode]) {
+            for node in nodes {
+                node.bounds.w = 0.0;
+                node.bounds.h = 0.0;
+                unsize(&mut node.children);
+            }
+        }
+        let mut headless = tree.clone();
+        unsize(&mut headless.nodes);
+        assert_eq!(render(&headless).0, text);
+        // With geometry, a node that has none is off screen.
+        tree.nodes[0].children[0].bounds.w = 0.0;
+        assert_eq!(render(&tree).0, "@e1 scroll\n  @e2 note \"Row\"\n");
 
         let root = std::env::temp_dir().join(format!("gpui-agent-refs-{}", std::process::id()));
         let addr: SocketAddr = "127.0.0.1:17421".parse().unwrap();
