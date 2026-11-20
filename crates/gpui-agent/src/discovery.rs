@@ -34,6 +34,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(200);
 unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
     fn getuid() -> u32;
+    fn geteuid() -> u32;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,6 +88,8 @@ pub enum ResolveError {
     NoNamedSession { name: String },
     #[error("invalid session name \"{name}\"; use [a-z0-9][a-z0-9_-]{{0,63}}")]
     BadSessionName { name: String },
+    #[error("could not use runtime directory: {detail}")]
+    RuntimeDirectory { detail: String },
     #[error("could not read session \"{name}\": {detail}")]
     NamedSessionRead { name: String, detail: String },
 }
@@ -148,6 +151,11 @@ fn current_uid() -> u32 {
 }
 
 #[cfg(unix)]
+fn effective_uid() -> u32 {
+    unsafe { geteuid() }
+}
+
+#[cfg(unix)]
 fn ensure_private_directory(path: &Path, create: bool) -> io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 
@@ -176,23 +184,53 @@ fn ensure_private_directory(path: &Path, create: bool) -> io::Result<()> {
             ),
         ));
     }
-    if metadata.uid() != current_uid() {
+    if metadata.uid() != effective_uid() {
         return Err(io::Error::new(
             ErrorKind::PermissionDenied,
             format!(
-                "unsafe runtime directory '{}': it is not owned by the current user",
+                "unsafe runtime directory '{}': it is not owned by the effective user",
                 path.display()
             ),
         ));
     }
     if metadata.mode() & 0o077 != 0 {
-        return Err(io::Error::new(
-            ErrorKind::PermissionDenied,
-            format!(
-                "unsafe runtime directory '{}': group and other access is not allowed",
-                path.display()
-            ),
-        ));
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|error| {
+            io::Error::new(
+                ErrorKind::PermissionDenied,
+                format!(
+                    "unsafe runtime directory '{}': could not set mode 0700: {error}",
+                    path.display()
+                ),
+            )
+        })?;
+        let tightened = fs::symlink_metadata(path)?;
+        if !tightened.file_type().is_dir() {
+            return Err(io::Error::new(
+                ErrorKind::PermissionDenied,
+                format!(
+                    "unsafe runtime directory '{}': expected a real directory, not a symlink",
+                    path.display()
+                ),
+            ));
+        }
+        if tightened.uid() != effective_uid() {
+            return Err(io::Error::new(
+                ErrorKind::PermissionDenied,
+                format!(
+                    "unsafe runtime directory '{}': it is not owned by the effective user",
+                    path.display()
+                ),
+            ));
+        }
+        if tightened.mode() & 0o077 != 0 {
+            return Err(io::Error::new(
+                ErrorKind::PermissionDenied,
+                format!(
+                    "unsafe runtime directory '{}': group and other access is not allowed; set its mode to 0700",
+                    path.display()
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -203,6 +241,17 @@ fn ensure_private_directory(path: &Path, create: bool) -> io::Result<()> {
         fs::create_dir_all(path)?;
     }
     Ok(())
+}
+
+/// Create or validate the private per-user runtime directory.
+pub fn ensure_runtime_dir(path: &Path) -> io::Result<()> {
+    ensure_private_directory(path, true)
+}
+
+fn ensure_runtime_root_for_discovery(root: &Path) -> Result<(), ResolveError> {
+    ensure_runtime_dir(root).map_err(|error| ResolveError::RuntimeDirectory {
+        detail: error.to_string(),
+    })
 }
 
 #[cfg(unix)]
@@ -219,11 +268,11 @@ fn ensure_private_session_file(path: &Path) -> io::Result<()> {
             ),
         ));
     }
-    if metadata.uid() != current_uid() {
+    if metadata.uid() != effective_uid() {
         return Err(io::Error::new(
             ErrorKind::PermissionDenied,
             format!(
-                "unsafe named session file '{}': it is not owned by the current user",
+                "unsafe named session file '{}': it is not owned by the effective user",
                 path.display()
             ),
         ));
@@ -448,6 +497,7 @@ pub fn resolve_client_target(
         });
     };
     if id == LAST_SESSION {
+        ensure_runtime_root_for_discovery(root)?;
         let session = load_session(root).ok_or(ResolveError::NoSession)?;
         let found = resolve_id(root, &session.id).ok();
         let addr = match &found {
@@ -479,6 +529,7 @@ pub fn resolve_client_target(
 }
 
 pub fn resolve_id(root: &Path, id: &str) -> Result<HostRecord, ResolveError> {
+    ensure_runtime_root_for_discovery(root)?;
     let live = load_live(root);
     let exact: Vec<_> = live
         .iter()
@@ -562,6 +613,10 @@ fn load_live(root: &Path) -> Vec<(PathBuf, HostRecord)> {
 
 /// Every host that published itself under `root` and is still running.
 pub fn live_hosts(root: &Path) -> Vec<HostRecord> {
+    if let Err(error) = ensure_runtime_root_for_discovery(root) {
+        log::warn!("could not list AgentHost discovery records: {error}");
+        return Vec::new();
+    }
     let mut hosts: Vec<_> = load_live(root).into_iter().map(|(_, rec)| rec).collect();
     hosts.sort_by(|a, b| a.addr.cmp(&b.addr));
     hosts
@@ -1155,32 +1210,65 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn named_session_storage_rejects_insecure_root_permissions() {
+    fn named_session_storage_tightens_owned_root_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
         let root = temp_root("insecure-root");
         fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
-        let error = load_named_session(&root, "missing").unwrap_err();
-        assert!(
-            error.to_string().contains("group and other access"),
-            "{error}"
+        assert!(matches!(
+            load_named_session(&root, "missing"),
+            Err(ResolveError::NoNamedSession { .. })
+        ));
+        assert_eq!(
+            fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        save_named_session(
+            &root,
+            &NamedSession {
+                name: "private".into(),
+                addr: "127.0.0.1:17421".into(),
+                token: None,
+                allow_remote: false,
+                app: None,
+            },
+        )
+        .unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_resolution_tightens_owned_runtime_roots() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let client_root = temp_root("resolve-client-root");
+        fs::set_permissions(&client_root, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            resolve_client_target(&client_root, None, Some(LAST_SESSION)).unwrap_err(),
+            ResolveError::NoSession
         );
         assert_eq!(
-            save_named_session(
-                &root,
-                &NamedSession {
-                    name: "private".into(),
-                    addr: "127.0.0.1:17421".into(),
-                    token: None,
-                    allow_remote: false,
-                    app: None,
-                },
-            )
-            .unwrap_err()
-            .kind(),
-            ErrorKind::PermissionDenied
+            fs::metadata(&client_root)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
         );
-        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(client_root);
+
+        let id_root = temp_root("resolve-id-root");
+        fs::set_permissions(&id_root, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(
+            resolve_id(&id_root, "missing"),
+            Err(ResolveError::Missing { .. })
+        ));
+        assert_eq!(
+            fs::metadata(&id_root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let _ = fs::remove_dir_all(id_root);
     }
 
     #[cfg(unix)]
