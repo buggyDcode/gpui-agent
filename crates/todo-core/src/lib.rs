@@ -1460,3 +1460,41 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod gated_op_tests {
+    use super::*;
+    use gpui_agent::dispatch::handle_request;
+    use gpui_agent::protocol::Request;
+
+    #[test]
+    fn an_op_the_host_does_not_list_is_refused_with_unsupported_op() {
+        let mut store = TodoStore::default();
+        let resp = handle_request(
+            &mut store,
+            Request::new(
+                "1",
+                Op::System {
+                    action: gpui_agent::SystemAction::Back,
+                    value: None,
+                },
+            ),
+            None,
+            None,
+        );
+        assert!(!resp.ok);
+        assert!(gpui_agent::is_unsupported_op(&resp.error.unwrap()));
+    }
+
+    #[test]
+    fn hello_lists_the_ops_this_host_implements() {
+        let mut store = TodoStore::default();
+        let hello = handle_request(&mut store, Request::new("1", Op::Hello), None, None)
+            .hello
+            .unwrap();
+        for feature in ["press", "paste", "screenshot_inline"] {
+            assert!(hello.features.iter().any(|f| f == feature), "{feature}");
+        }
+        assert!(!hello.features.iter().any(|f| f == "hover"));
+    }
+}
