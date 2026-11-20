@@ -613,7 +613,7 @@ fn run() -> Result<()> {
         return recipe_cmd::run(None, action, &schema);
     }
     let root = gpui_agent::runtime_root();
-    let (initial_target, _) = resolve_cli_target(&root, &cli, sources)?;
+    let (target, session) = resolve_cli_target(&root, &cli, sources)?;
     // Say which app discovery picked before acting on it, so a command that lands in the wrong
     // window is visible. Stderr keeps stdout (and `mcp`'s protocol) clean.
     // `@e3` stands for a node of the last `snapshot --refs` of this host.
@@ -623,10 +623,9 @@ fn run() -> Result<()> {
         .skip(1)
         .any(|arg| arg.to_str().is_some_and(refs::is_ref))
     {
-        refs::resolve(&root, initial_target.addr, &mut args[1..]).map_err(|e| anyhow!(e))?;
+        refs::resolve(&root, target.addr, &mut args[1..]).map_err(|e| anyhow!(e))?;
         (cli, sources) = parse_cli_from(args);
     }
-    let (target, session) = resolve_cli_target(&root, &cli, sources)?;
     let addr = target.addr;
     if let Some(session) = &session {
         eprintln!("gpui-agent: session {} -> {addr}", session.name);
