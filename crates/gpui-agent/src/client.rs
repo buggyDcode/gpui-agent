@@ -416,6 +416,10 @@ impl AgentClient {
                 Ok(session) => self.session = Some(session),
                 Err(err) => return Err(PipelineError::Retryable(err)),
             }
+        } else if let Some(session) = self.session.as_mut() {
+            session
+                .set_io_timeout(self.timeout)
+                .map_err(PipelineError::Retryable)?;
         }
         match self
             .session
@@ -741,6 +745,9 @@ fn parse_response_line(line: &[u8]) -> Result<Response, String> {
 mod tests {
     use super::*;
     use crate::protocol::Request;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::thread;
 
     #[test]
     fn wire_request_matches_owned_request_json() {
@@ -769,6 +776,68 @@ mod tests {
         );
         assert!(serde_json::to_value(&bare).unwrap().get("token").is_none());
         assert!(serde_json::to_value(&bare).unwrap().get("auth").is_none());
+    }
+
+    #[test]
+    fn pipeline_reapplies_the_current_socket_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            serde_json::to_writer(
+                &mut stream,
+                &serde_json::json!({
+                    "v": PROTOCOL_VERSION,
+                    "id": request["id"],
+                    "ok": true,
+                    "hello": {
+                        "protocol": PROTOCOL_VERSION,
+                        "app": "fake",
+                        "platform": "headless",
+                        "ready": true
+                    }
+                }),
+            )
+            .unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            thread::sleep(Duration::from_millis(500));
+            let _ = serde_json::to_writer(
+                &mut stream,
+                &serde_json::json!({
+                    "v": PROTOCOL_VERSION,
+                    "id": request["id"],
+                    "ok": true
+                }),
+            );
+            let _ = stream.write_all(b"\n");
+        });
+
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(5));
+        client.expect_ok(Op::Hello).unwrap();
+        client.set_timeout(Duration::from_millis(100));
+        let started = std::time::Instant::now();
+        let response = client.pipeline_once(2, &[&Op::Hello]);
+        let elapsed = started.elapsed();
+        server.join().unwrap();
+
+        assert!(response.is_err(), "the changed timeout must bound the read");
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "pipeline took {elapsed:?} with a 100 ms timeout"
+        );
     }
 
     #[test]
