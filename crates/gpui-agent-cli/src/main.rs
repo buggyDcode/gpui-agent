@@ -469,20 +469,25 @@ fn require_session_name<'a>(cli: &'a Cli, command: &str) -> Result<&'a str> {
         .ok_or_else(|| anyhow!("{command} requires --session <name> or GPUI_AGENT_SESSION"))
 }
 
+fn check_cli_target_selector_conflicts(cli: &Cli, sources: CliSources) -> Result<()> {
+    if cli.session.is_some() && sources.addr {
+        return Err(anyhow!("--session cannot be used with command-line --addr"));
+    }
+    if cli.session.is_some() && sources.connect {
+        return Err(anyhow!(
+            "--session cannot be used with command-line --connect"
+        ));
+    }
+    Ok(())
+}
+
 fn resolve_cli_target(
     root: &Path,
     cli: &Cli,
     sources: CliSources,
 ) -> Result<(gpui_agent::ClientTarget, Option<NamedSession>)> {
+    check_cli_target_selector_conflicts(cli, sources)?;
     if let Some(name) = cli.session.as_deref() {
-        if sources.addr {
-            return Err(anyhow!("--session cannot be used with command-line --addr"));
-        }
-        if sources.connect {
-            return Err(anyhow!(
-                "--session cannot be used with command-line --connect"
-            ));
-        }
         let session = gpui_agent::discovery::load_named_session(root, name)?;
         let addr = session
             .addr
@@ -571,6 +576,12 @@ fn require_recipe_mcp_token(token: Option<&str>) -> Result<&str> {
 
 fn run() -> Result<()> {
     let (mut cli, mut sources) = parse_cli_from(std::env::args_os());
+    if matches!(
+        &cli.command,
+        Command::Attach { .. } | Command::Detach
+    ) {
+        check_cli_target_selector_conflicts(&cli, sources)?;
+    }
     if matches!(cli.command, Command::Skill) {
         print!("{}", skill());
         return Ok(());

@@ -105,6 +105,7 @@ pub fn save(
     addr: SocketAddr,
     table: &BTreeMap<String, String>,
 ) -> std::io::Result<()> {
+    gpui_agent::discovery::ensure_runtime_dir(root)?;
     let path = table_path(root, addr);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -144,6 +145,8 @@ pub fn resolve(root: &Path, addr: SocketAddr, args: &mut [OsString]) -> Result<(
     if !args.iter().any(|arg| as_ref(arg).is_some()) {
         return Ok(());
     }
+    gpui_agent::discovery::ensure_runtime_dir(root)
+        .map_err(|error| format!("could not use runtime directory: {error}"))?;
     let table: BTreeMap<String, String> = std::fs::read(table_path(root, addr))
         .ok()
         .and_then(|body| serde_json::from_slice(&body).ok())

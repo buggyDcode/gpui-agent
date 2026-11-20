@@ -29,6 +29,19 @@ pub fn default_addr() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT))
 }
 
+fn publish_discovery_record(
+    addr: SocketAddr,
+    app: &str,
+) -> Option<crate::discovery::PublishedHost> {
+    match crate::discovery::publish_current(addr, app) {
+        Ok(published) => Some(published),
+        Err(error) => {
+            log::warn!("could not publish AgentHost discovery record for {addr}: {error}");
+            None
+        }
+    }
+}
+
 /// Tunables for the localhost server. Defaults are conservative for a
 /// developer control plane; tests may tighten them.
 #[derive(Debug, Clone)]
@@ -103,7 +116,7 @@ impl AgentServer {
                     .lock()
                     .map(|guard| guard.hello().app)
                     .unwrap_or_default();
-                crate::discovery::publish_current(addr, &app).ok()
+                publish_discovery_record(addr, &app)
             }
             Err(_) => None,
         };
@@ -149,7 +162,7 @@ impl AgentServer {
                     .app
                     .clone()
                     .unwrap_or_else(|| crate::discovery::detect_identity().executable);
-                crate::discovery::publish_current(addr, &app).ok()
+                publish_discovery_record(addr, &app)
             }
             Err(_) => None,
         };
