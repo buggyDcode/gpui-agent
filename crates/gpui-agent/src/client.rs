@@ -439,11 +439,18 @@ impl AgentClient {
     }
 
     fn roundtrip_gated_retry(&mut self, op: &Op) -> Result<Response, String> {
-        self.drop_idle_session();
         let timeout = self.timeout_for(op);
         let deadline = std::time::Instant::now() + timeout;
         let mut last_err = String::new();
         while std::time::Instant::now() < deadline {
+            self.drop_idle_session();
+            let peer_closed = self
+                .session
+                .as_ref()
+                .is_some_and(|session| !matches!(session.peer_closed(), Ok(false)));
+            if peer_closed {
+                self.drop_session();
+            }
             if self.session.is_none() {
                 self.features = None;
             }
@@ -587,12 +594,12 @@ impl AgentClient {
                     return Err(WireError::Retryable(error.to_string()));
                 }
             }
-            self.session
-                .as_mut()
-                .expect("session")
-                .set_io_timeout(self.timeout)
-                .map_err(WireError::Retryable)?;
         }
+        self.session
+            .as_mut()
+            .expect("session")
+            .set_io_timeout(self.timeout)
+            .map_err(WireError::Retryable)?;
         let result = self
             .session
             .as_mut()
