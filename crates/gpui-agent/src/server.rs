@@ -377,13 +377,29 @@ fn handle_stream_mailbox(
         }
         let shutdown_op = matches!(req.op, Op::Shutdown);
         let confirmed_quit = crate::op_is_confirmed_quit(&req.op);
-        let mut resp = if matches!(req.op, Op::WaitUntil { .. }) {
+        // Inline screenshots and blob reads are served on this thread, so
+        // a UI-thread host that only writes path screenshots needs no change.
+        let mut req = req;
+        let inline_scratch = crate::dispatch::prepare_inline_screenshot(&mut req.op);
+        let mut resp = if let Op::Blob { blob, index } = &req.op {
+            match crate::blob::read_chunk(blob, *index) {
+                Ok(value) => {
+                    let mut resp = Response::ok(req.id.clone());
+                    resp.result = Some(value);
+                    resp
+                }
+                Err(error) => Response::err(req.id.clone(), error),
+            }
+        } else if matches!(req.op, Op::WaitUntil { .. }) {
             wait_until_via_mailbox(&mailbox, &req, timeout)
         } else {
             mailbox
                 .wait(req, timeout)
                 .unwrap_or_else(|err| Response::err("?", err))
         };
+        if let Some(scratch) = inline_scratch {
+            crate::dispatch::finish_inline_screenshot(&mut resp, scratch);
+        }
         if let Some(hello) = resp.hello.as_mut() {
             hello.auth = crate::protocol::HelloAuth::from_token_configured(token);
         }

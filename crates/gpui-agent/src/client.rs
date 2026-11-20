@@ -241,7 +241,7 @@ impl AgentClient {
 
     /// Drop the live session (next [`rpc`](Self::rpc) reconnects).
     pub fn close_session(&mut self) {
-        self.session = None;
+        self.drop_session();
     }
 
     pub fn rpc(&mut self, op: Op) -> Result<Response, String> {
@@ -286,9 +286,9 @@ impl AgentClient {
     /// This is the historical CLI shape (one TCP handshake per op) and
     /// exists so benches can compare it with session reuse.
     pub fn rpc_once(&mut self, op: Op) -> Result<Response, String> {
-        self.session = None;
+        self.drop_session();
         let resp = self.roundtrip_retry(&op)?;
-        self.session = None;
+        self.drop_session();
         Ok(resp)
     }
 
@@ -305,7 +305,7 @@ impl AgentClient {
                 Ok(resp) => return Ok(resp),
                 Err(err) => {
                     last_err = err;
-                    self.session = None;
+                    self.drop_session();
                     std::thread::sleep(Duration::from_millis(50));
                 }
             }
@@ -334,7 +334,7 @@ impl AgentClient {
         {
             Ok(resp) => Ok(resp),
             Err(err) => {
-                self.session = None;
+                self.drop_session();
                 Err(err)
             }
         }
@@ -350,11 +350,11 @@ impl AgentClient {
                 Ok(resps) => return Ok(resps),
                 Err(PipelineError::Retryable(err)) => {
                     last_err = err;
-                    self.session = None;
+                    self.drop_session();
                     std::thread::sleep(Duration::from_millis(50));
                 }
                 Err(PipelineError::Fatal(err)) => {
-                    self.session = None;
+                    self.drop_session();
                     return Err(err);
                 }
             }
@@ -384,7 +384,7 @@ impl AgentClient {
         {
             Ok(resps) => Ok(resps),
             Err(err) => {
-                self.session = None;
+                self.drop_session();
                 Err(err)
             }
         }
@@ -492,7 +492,14 @@ impl AgentClient {
         Ok(bytes)
     }
 
-    /// The host's `hello.features`, asked once per client.
+    /// A new connection may reach a different build of the host, so what
+    /// the last one advertised is forgotten with it.
+    fn drop_session(&mut self) {
+        self.session = None;
+        self.features = None;
+    }
+
+    /// The host's `hello.features`, asked once per connection.
     pub fn features(&mut self) -> Result<&[String], String> {
         if self.features.is_none() {
             let hello = self
@@ -510,16 +517,31 @@ impl AgentClient {
     /// knew, where one exists; otherwise the call fails with
     /// `unsupported_op` and nothing is sent.
     pub fn gated(&mut self, op: Op) -> Result<Response, String> {
+        let op = self.negotiated(&op)?.unwrap_or(op);
+        self.expect_ok(op)
+    }
+
+    /// [`gated`](Self::gated) for callers that keep the failed response
+    /// (the recipe runner's receipts): `ok: false` is returned, not an `Err`.
+    pub fn rpc_gated(&mut self, op: &Op) -> Result<Response, String> {
+        match self.negotiated(op)? {
+            Some(legacy) => self.rpc_op(&legacy),
+            None => self.rpc_op(op),
+        }
+    }
+
+    /// `Some(invoke)` when the host needs the 0.1 spelling, `None` when
+    /// `op` goes as written, `Err(unsupported_op)` when it cannot be sent.
+    fn negotiated(&mut self, op: &Op) -> Result<Option<Op>, String> {
         let Some(feature) = op.feature() else {
-            return self.expect_ok(op);
+            return Ok(None);
         };
         if self.features()?.iter().any(|f| f == feature) {
-            return self.expect_ok(op);
+            return Ok(None);
         }
-        match op.legacy_invoke() {
-            Some(legacy) => self.expect_ok(legacy),
-            None => Err(crate::protocol::unsupported_op(feature)),
-        }
+        op.legacy_invoke()
+            .map(Some)
+            .ok_or_else(|| crate::protocol::unsupported_op(feature))
     }
 
     pub fn click(&mut self, target: impl Into<String>) -> Result<Response, String> {

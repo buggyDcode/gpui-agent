@@ -104,8 +104,20 @@ mod tests {
                     Ok(DispatchResult::empty())
                 }
                 Op::Shutdown => Ok(DispatchResult::empty()),
+                // What a 0.1 host does with a gesture: an `invoke` name.
+                Op::Invoke { name, .. } => {
+                    Ok(DispatchResult::json(serde_json::json!({ "invoked": name })))
+                }
                 _ => Ok(DispatchResult::empty()),
             }
+        }
+
+        fn screenshot(
+            &self,
+            spec: crate::scroll_capture::ScreenshotSpec<'_>,
+        ) -> Result<DispatchResult, String> {
+            let path = crate::require_screenshot_path(spec.path)?;
+            crate::write_png(path, crate::TEST_PNG).map(DispatchResult::json)
         }
     }
 
@@ -121,5 +133,55 @@ mod tests {
             Some("1")
         );
         assert_eq!(host.host().lock().unwrap().n, 1);
+    }
+
+    #[test]
+    fn inline_screenshot_returns_the_png_and_leaves_no_file() {
+        let host = TestHost::spawn(PingHost { n: 0 }, None).expect("bind");
+        let mut client = host.client();
+        let before = std::fs::read_dir(crate::screenshot_base_dir())
+            .map(|dir| dir.count())
+            .unwrap_or(0);
+        let png = client
+            .screenshot_bytes(crate::ScreenshotMode::Viewport, None, None)
+            .expect("inline screenshot");
+        assert_eq!(png, crate::TEST_PNG);
+        let after = std::fs::read_dir(crate::screenshot_base_dir())
+            .map(|dir| dir.count())
+            .unwrap_or(0);
+        assert_eq!(before, after, "the scratch file is removed");
+    }
+
+    #[test]
+    fn a_host_without_the_feature_gets_the_invoke_spelling_or_a_refusal() {
+        let host = TestHost::spawn(PingHost { n: 0 }, None).expect("bind");
+        let mut client = host.client();
+        let scroll = Op::Scroll {
+            target: Some("list".into()),
+            x: None,
+            y: None,
+            dx: 0.0,
+            dy: 40.0,
+        };
+        let resp = client.rpc_gated(&scroll).expect("scroll");
+        assert_eq!(resp.result.unwrap()["invoked"], "scroll");
+
+        // No 0.1 spelling exists for a swipe, and none keeps a press's guard.
+        for op in [
+            Op::Swipe {
+                target: None,
+                direction: crate::SwipeDirection::Up,
+                distance: None,
+            },
+            Op::Press {
+                target: Some("save".into()),
+                x: None,
+                y: None,
+                expect_fingerprint: Some(42),
+            },
+        ] {
+            let err = client.gated(op).unwrap_err();
+            assert!(crate::is_unsupported_op(&err), "{err}");
+        }
     }
 }

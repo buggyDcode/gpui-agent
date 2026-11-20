@@ -996,6 +996,12 @@ impl Op {
         let text = |value: &Option<String>| value.clone().map(serde_json::Value::from);
         let num = |value: &Option<f64>| value.map(serde_json::Value::from);
         let (name, args) = match self {
+            // A 0.1 host has no fingerprint gate on `invoke`: a guarded
+            // press is refused rather than sent without its guard.
+            Self::Press {
+                expect_fingerprint: Some(_),
+                ..
+            } => return None,
             Self::Press { target, x, y, .. } => (
                 "press",
                 args(&[("target", text(target)), ("x", num(x)), ("y", num(y))]),

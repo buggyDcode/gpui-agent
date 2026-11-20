@@ -25,13 +25,16 @@ fn chunk_count(len: usize) -> usize {
 
 /// Keep `bytes` for the client and return the `result.blob` announcement.
 pub fn store(bytes: Vec<u8>) -> serde_json::Value {
-    // Unguessable enough for a token-authenticated loopback session: the
-    // name only tells two concurrent clients' blobs apart.
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    let name = format!("b{}-{nanos:08x}", NEXT.fetch_add(1, Ordering::Relaxed));
+    // The name is the only thing a reader needs, and one process can
+    // serve several hosts, so it must not be guessable from another
+    // blob's name: 128 bits from the OS-seeded std hasher keys.
+    use std::hash::{BuildHasher, Hasher};
+    let word = || {
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_u64(NEXT.fetch_add(1, Ordering::Relaxed));
+        hasher.finish()
+    };
+    let name = format!("b{:016x}{:016x}", word(), word());
     let announce = serde_json::json!({
         "blob": name,
         "bytes": bytes.len(),

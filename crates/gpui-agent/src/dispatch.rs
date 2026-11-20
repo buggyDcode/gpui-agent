@@ -211,11 +211,7 @@ pub fn handle_request_cached(
             // travel as a blob, and the scratch file is removed.
             let scratch = inline && path.is_none();
             let path = if scratch {
-                Some(format!(
-                    "gpui-agent-inline-{}-{}.png",
-                    std::process::id(),
-                    INLINE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                ))
+                Some(inline_scratch_name())
             } else {
                 path
             };
@@ -383,6 +379,50 @@ fn snapshot_response(
 }
 
 static INLINE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn inline_scratch_name() -> String {
+    format!(
+        "gpui-agent-inline-{}-{}.png",
+        std::process::id(),
+        INLINE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
+/// For a server that hands requests to a UI-thread mailbox: give an
+/// inline screenshot a scratch path before it is posted, so a host that
+/// only knows path screenshots serves it unchanged. Returns `Some(scratch)`
+/// when the reply must go through [`finish_inline_screenshot`].
+pub fn prepare_inline_screenshot(op: &mut Op) -> Option<bool> {
+    let Op::Screenshot { path, inline, .. } = op else {
+        return None;
+    };
+    if !*inline {
+        return None;
+    }
+    let scratch = path.is_none();
+    if scratch {
+        *path = Some(inline_scratch_name());
+    }
+    Some(scratch)
+}
+
+/// Attach the blob to a mailbox host's screenshot reply. A reply that
+/// already carries one (the host went through [`handle_request`]) is kept.
+pub fn finish_inline_screenshot(resp: &mut Response, scratch: bool) {
+    if !resp.ok {
+        return;
+    }
+    let has_blob = resp
+        .result
+        .as_ref()
+        .is_some_and(|result| result.get("blob").is_some());
+    if has_blob {
+        return;
+    }
+    if let Err(error) = attach_screenshot_blob(resp, scratch) {
+        *resp = Response::err(resp.id.clone(), error);
+    }
+}
 
 /// Read the PNG the host just wrote (`result.path`) into a blob and
 /// announce it as `result.blob`. A scratch file is removed and its path
