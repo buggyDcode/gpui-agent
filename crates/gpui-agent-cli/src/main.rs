@@ -111,6 +111,10 @@ enum Command {
     /// List the hosts published on this machine and the devices `adb`
     /// sees, with the local addresses forwarded to them.
     Targets,
+    /// Print the skill that teaches a coding agent to use this CLI, for the
+    /// version of the CLI that prints it. Save it where your agent reads
+    /// skills (for example `.agents/skills/gpui-agent/SKILL.md`).
+    Skill,
     /// Check the address, the token, the host's capabilities and how fast
     /// it answers; says what to fix when a step fails.
     Doctor,
@@ -370,6 +374,15 @@ enum Command {
     },
 }
 
+/// The skill text, stamped with this build's version.
+fn skill() -> String {
+    include_str!("../skill/SKILL.md").replacen(
+        "\n---\n",
+        concat!("\nversion: ", env!("CARGO_PKG_VERSION"), "\n---\n"),
+        1,
+    )
+}
+
 fn connect(addr: SocketAddr, timeout: Option<Duration>) -> AgentClient {
     let client = AgentClient::connect(addr);
     match timeout {
@@ -404,6 +417,10 @@ fn require_recipe_mcp_token(token: Option<&str>) -> Result<&str> {
 
 fn run() -> Result<()> {
     let mut cli = Cli::parse();
+    if matches!(cli.command, Command::Skill) {
+        print!("{}", skill());
+        return Ok(());
+    }
     if matches!(cli.command, Command::Targets) {
         println!("{}", serde_json::to_string_pretty(&doctor::targets())?);
         return Ok(());
@@ -697,7 +714,11 @@ fn run() -> Result<()> {
         }
         Command::Invoke { name, args } => print_resp(rpc(client.invoke(name, parse_args(&args)?))?),
         Command::Shutdown => print_resp(rpc(client.expect_ok(Op::Shutdown))?),
-        Command::Targets | Command::Doctor | Command::Mcp { .. } | Command::Recipe { .. } => {
+        Command::Targets
+        | Command::Skill
+        | Command::Doctor
+        | Command::Mcp { .. }
+        | Command::Recipe { .. } => {
             unreachable!()
         }
         #[cfg(feature = "instinct")]
@@ -734,6 +755,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_skill_names_only_commands_this_cli_has() {
+        let text = skill();
+        assert!(text.contains(concat!("\nversion: ", env!("CARGO_PKG_VERSION"), "\n")));
+        let cmd = Cli::command();
+        let known: Vec<&str> = cmd.get_subcommands().map(|c| c.get_name()).collect();
+        // The first word of each command cell in the actions table.
+        let named = text
+            .lines()
+            .filter(|line| line.starts_with("| `"))
+            .flat_map(|line| line.split('|').nth(1).unwrap_or("").split(", "))
+            .filter_map(|cell| cell.trim().strip_prefix('`'))
+            .filter_map(|cell| cell.split([' ', '`']).next());
+        let mut seen = 0;
+        for name in named {
+            assert!(known.contains(&name), "the skill names `{name}`");
+            seen += 1;
+        }
+        assert!(seen >= 12, "{seen} commands found in the skill's table");
+    }
+
+    #[test]
     fn first_class_commands_are_generic_ops() {
         let cmd = Cli::command();
         let names: Vec<String> = cmd
@@ -744,6 +786,7 @@ mod tests {
             "wait",
             "wait-until",
             "targets",
+            "skill",
             "doctor",
             "hello",
             "snapshot",
