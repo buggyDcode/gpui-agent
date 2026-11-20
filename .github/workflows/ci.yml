@@ -78,8 +78,12 @@ jobs:
       - name: Wait for gpui-agent hello
         run: |
           pid="$(cat "$RUNNER_TEMP/todo-headless.pid")"
-          for attempt in {1..30}; do
-            if target/debug/gpui-agent --addr "$GPUI_AGENT_ADDR" --reply-timeout-ms 1000 hello >/dev/null 2>&1; then
+          attempts=30
+          reply_timeout_ms=1000
+          per_attempt_seconds=$(((reply_timeout_ms + 999) / 1000 + 1))
+          wait_bound_seconds=$((attempts * per_attempt_seconds))
+          for ((attempt = 1; attempt <= attempts; attempt++)); do
+            if target/debug/gpui-agent --addr "$GPUI_AGENT_ADDR" --reply-timeout-ms "$reply_timeout_ms" hello >/dev/null 2>&1; then
               echo "gpui-agent hello answered"
               exit 0
             fi
@@ -89,7 +93,7 @@ jobs:
             fi
             sleep 1
           done
-          echo "todo-headless did not answer hello within 30 seconds" >&2
+          echo "todo-headless did not answer hello within ${wait_bound_seconds} seconds" >&2
           cat "$RUNNER_TEMP/todo-headless.log" >&2
           exit 1
       - name: Run conformance
