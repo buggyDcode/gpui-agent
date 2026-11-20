@@ -109,7 +109,32 @@ pub fn save(
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, serde_json::to_vec(table)?)
+    let body = serde_json::to_vec(table)?;
+    let mut n = 0u32;
+    let (tmp, mut file) = loop {
+        let candidate = path.with_extension(format!("{}.{}.tmp", std::process::id(), n));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => break (candidate, file),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                n = n.checked_add(1).ok_or(err)?;
+            }
+            Err(err) => return Err(err),
+        }
+    };
+    let result = (|| {
+        std::io::Write::write_all(&mut file, &body)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&tmp, &path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(tmp);
+    }
+    result
 }
 
 /// Replaces every ref among `args` with the node id it stands for. The
@@ -211,6 +236,13 @@ mod tests {
                 .unwrap_err()
                 .contains("no refs saved")
         );
+        save(&root, addr, &BTreeMap::new()).unwrap();
+        assert_eq!(std::fs::read(table_path(&root, addr)).unwrap(), b"{}");
+        save(&root, addr, &table).unwrap();
+        assert_eq!(std::fs::read_dir(root.join("refs")).unwrap().count(), 1);
+        let blocked = root.join("not-a-directory");
+        std::fs::write(&blocked, b"blocked").unwrap();
+        assert!(save(&blocked, addr, &table).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 }

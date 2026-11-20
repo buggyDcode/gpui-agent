@@ -381,7 +381,11 @@ enum Command {
 
 /// The skill text, stamped with this build's version.
 fn skill() -> String {
-    include_str!("../skill/SKILL.md").replacen(
+    stamp_skill(include_str!("../skill/SKILL.md"))
+}
+
+fn stamp_skill(text: &str) -> String {
+    text.replace("\r\n", "\n").replacen(
         "\n---\n",
         concat!("\nversion: ", env!("CARGO_PKG_VERSION"), "\n---\n"),
         1,
@@ -769,7 +773,10 @@ mod tests {
     #[test]
     fn the_skill_names_only_commands_this_cli_has() {
         let text = skill();
-        assert!(text.contains(concat!("\nversion: ", env!("CARGO_PKG_VERSION"), "\n")));
+        assert!(
+            text.lines()
+                .any(|line| line == concat!("version: ", env!("CARGO_PKG_VERSION")))
+        );
         let cmd = Cli::command();
         let known: Vec<&str> = cmd.get_subcommands().map(|c| c.get_name()).collect();
         // The first word of each command cell in the actions table.
@@ -785,6 +792,23 @@ mod tests {
             seen += 1;
         }
         assert!(seen >= 12, "{seen} commands found in the skill's table");
+    }
+
+    #[test]
+    fn skill_version_stamp_accepts_lf_and_crlf() {
+        for text in [
+            "---\nname: demo\n---\nbody\n",
+            "---\r\nname: demo\r\n---\r\nbody\r\n",
+        ] {
+            assert_eq!(
+                stamp_skill(text),
+                concat!(
+                    "---\nname: demo\nversion: ",
+                    env!("CARGO_PKG_VERSION"),
+                    "\n---\nbody\n"
+                )
+            );
+        }
     }
 
     #[test]

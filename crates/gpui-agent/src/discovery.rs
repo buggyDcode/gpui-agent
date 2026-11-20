@@ -349,7 +349,18 @@ fn basename_match(rec: &HostRecord, id: &str) -> bool {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(rec.executable.as_str());
-    exec == want || exec == id
+    #[cfg(windows)]
+    {
+        let normalize = |name: &str| {
+            let name = name.to_ascii_lowercase();
+            name.strip_suffix(".exe").unwrap_or(&name).to_owned()
+        };
+        normalize(exec) == normalize(want)
+    }
+    #[cfg(not(windows))]
+    {
+        exec == want || exec == id
+    }
 }
 
 fn load_live(root: &Path) -> Vec<(PathBuf, HostRecord)> {
@@ -421,11 +432,14 @@ pub fn tcp_open(addr: &str) -> bool {
 pub fn pid_alive(pid: u32) -> bool {
     // `kill(-1, 0)` targets every process. Refuse pids that do not fit in a
     // positive pid_t.
-    if pid == 0 || pid > i32::MAX as u32 {
+    if pid == 0 {
         return false;
     }
     #[cfg(unix)]
     {
+        if pid > i32::MAX as u32 {
+            return false;
+        }
         let rc = unsafe { kill(pid as i32, 0) };
         if rc == 0 {
             return true;
@@ -574,6 +588,23 @@ mod tests {
             resolve_client_addr(&root, Some(explicit), Some("dev.example.nativechat")).unwrap(),
             explicit
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_executable_matching_preserves_logical_id_priority() {
+        let root = temp_root("windows-exe");
+        let listener = listen();
+        let addr = listener.local_addr().unwrap();
+        let rec = record(addr, "Demo", r"C:\Program Files\Demo\DEMO.EXE", None);
+        let _keep = publish_record(&root, &rec).unwrap();
+        for id in ["demo", "demo.exe", "DEMO.EXE", r"C:\other\Demo.exe"] {
+            assert_eq!(resolve_id(&root, id).unwrap().addr, addr.to_string());
+        }
+        assert!(!basename_match(&rec, "other.exe"));
+        assert!(!basename_match(&rec, ""));
+        assert!(!exact_match(&rec, "demo"));
         let _ = fs::remove_dir_all(root);
     }
 

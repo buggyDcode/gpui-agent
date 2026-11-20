@@ -13,6 +13,7 @@ fn assert_py() -> PathBuf {
     repo_root().join("scripts/ci_recipe_assert.py")
 }
 
+#[cfg(unix)]
 fn ci_recipe_sh() -> PathBuf {
     repo_root().join("scripts/ci-recipe.sh")
 }
@@ -34,7 +35,7 @@ fn run_assert(json: &str) -> std::process::Output {
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join("receipt.json");
     fs::write(&path, json).unwrap();
-    let output = Command::new("python3")
+    let output = Command::new(if cfg!(windows) { "python" } else { "python3" })
         .arg(assert_py())
         .arg(&path)
         .output()
@@ -89,6 +90,7 @@ fn receipt_session_reused_false_fails() {
 }
 
 #[test]
+#[cfg(unix)]
 fn ci_recipe_sh_fails_without_token_before_build() {
     let output = Command::new("bash")
         .arg(ci_recipe_sh())

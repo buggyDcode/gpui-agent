@@ -144,6 +144,34 @@ jobs:
         run: cargo build --release -p gpui-agent-cli
       - name: Agent tests
         run: cargo test -p gpui-agent
+      - name: CLI tests
+        run: cargo test -p gpui-agent-cli
+      - name: Build conformance host and debug CLI
+        run: cargo build -p gpui-agent-cli -p todo-headless
+      - name: Windows conformance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:GPUI_AGENT = '1'
+          $env:GPUI_AGENT_ADDR = '127.0.0.1:17422'
+          $env:GPUI_AGENT_TOKEN = [Convert]::ToHexString([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+          Write-Output "::add-mask::$env:GPUI_AGENT_TOKEN"
+          $hostProcess = Start-Process -FilePath target/debug/todo-headless.exe -PassThru -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP/todo-headless.log" -RedirectStandardError "$env:RUNNER_TEMP/todo-headless.err"
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              & target/debug/gpui-agent.exe --reply-timeout-ms 1000 hello
+              if ($LASTEXITCODE -eq 0) { $ready = $true; break }
+              if ($hostProcess.HasExited) { throw 'todo-headless exited before hello' }
+              Start-Sleep -Seconds 1
+            }
+            if (-not $ready) { throw 'todo-headless did not answer hello within 30 seconds' }
+            python scripts/conformance.py --cli target/debug/gpui-agent.exe --addr $env:GPUI_AGENT_ADDR
+            if ($LASTEXITCODE -ne 0) { throw 'Windows conformance failed' }
+          } finally {
+            if (-not $hostProcess.HasExited) { Stop-Process -Id $hostProcess.Id -Force }
+            Get-Content "$env:RUNNER_TEMP/todo-headless.log", "$env:RUNNER_TEMP/todo-headless.err"
+          }
 
   deps-guard:
     name: no forbidden deps in gpui-agent (I3)
