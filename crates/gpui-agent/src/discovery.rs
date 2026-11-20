@@ -633,8 +633,8 @@ pub fn load_named_session(root: &Path, name: &str) -> Result<NamedSession, Resol
     if !valid_session_name(name) {
         return Err(invalid_session_name(name));
     }
-    let dir =
-        checked_named_sessions_dir(root, false).map_err(|err| named_session_read_error(name, err))?;
+    let dir = checked_named_sessions_dir(root, false)
+        .map_err(|err| named_session_read_error(name, err))?;
     let path = dir.join(format!("{name}.json"));
     ensure_private_session_file(&path).map_err(|err| named_session_read_error(name, err))?;
     let body = fs::read(&path).map_err(|err| named_session_read_error(name, err))?;
@@ -1161,7 +1161,10 @@ mod tests {
         let root = temp_root("insecure-root");
         fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
         let error = load_named_session(&root, "missing").unwrap_err();
-        assert!(error.to_string().contains("group and other access"), "{error}");
+        assert!(
+            error.to_string().contains("group and other access"),
+            "{error}"
+        );
         assert_eq!(
             save_named_session(
                 &root,
@@ -1226,7 +1229,10 @@ mod tests {
         let path = named_session_path(&root, "private");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
         let error = load_named_session(&root, "private").unwrap_err();
-        assert!(error.to_string().contains("group and other read access"), "{error}");
+        assert!(
+            error.to_string().contains("group and other read access"),
+            "{error}"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
