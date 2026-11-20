@@ -44,12 +44,7 @@ struct Cli {
     #[arg(long, env = "GPUI_AGENT_CONNECT", global = true)]
     connect: Option<String>,
     /// Reuse a saved address and token. Create it with `attach`.
-    #[arg(
-        long,
-        env = "GPUI_AGENT_SESSION",
-        conflicts_with_all = ["addr", "connect"],
-        global = true
-    )]
+    #[arg(long, env = "GPUI_AGENT_SESSION", global = true)]
     session: Option<String>,
     /// Shared secret; must match `GPUI_AGENT_TOKEN` on the host when the host
     /// has one. With `--session`, the saved token precedes the environment
@@ -1661,27 +1656,30 @@ mod tests {
 
     #[test]
     fn session_conflicts_with_addr_and_connect() {
+        let (addr_cli, addr_sources) = parse_cli_from([
+            "gpui-agent",
+            "--session",
+            "work",
+            "--addr",
+            "127.0.0.1:9",
+            "hello",
+        ]);
+        let addr_error = match resolve_cli_target(Path::new("unused"), &addr_cli, addr_sources) {
+            Ok(_) => panic!("--session and command-line --addr should conflict"),
+            Err(error) => error.to_string(),
+        };
+        assert!(addr_error.contains("command-line --addr"), "{addr_error}");
+
+        let (connect_cli, connect_sources) =
+            parse_cli_from(["gpui-agent", "--session", "work", "--connect", "demo", "hello"]);
+        let connect_error =
+            match resolve_cli_target(Path::new("unused"), &connect_cli, connect_sources) {
+                Ok(_) => panic!("--session and command-line --connect should conflict"),
+                Err(error) => error.to_string(),
+            };
         assert!(
-            Cli::try_parse_from([
-                "gpui-agent",
-                "--session",
-                "work",
-                "--addr",
-                "127.0.0.1:9",
-                "hello",
-            ])
-            .is_err()
-        );
-        assert!(
-            Cli::try_parse_from([
-                "gpui-agent",
-                "--session",
-                "work",
-                "--connect",
-                "demo",
-                "hello",
-            ])
-            .is_err()
+            connect_error.contains("command-line --connect"),
+            "{connect_error}"
         );
     }
 
