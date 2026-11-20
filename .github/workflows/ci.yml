@@ -79,7 +79,7 @@ jobs:
         run: |
           pid="$(cat "$RUNNER_TEMP/todo-headless.pid")"
           for attempt in {1..30}; do
-            if target/debug/gpui-agent --addr "$GPUI_AGENT_ADDR" hello >/dev/null 2>&1; then
+            if target/debug/gpui-agent --addr "$GPUI_AGENT_ADDR" --reply-timeout-ms 1000 hello >/dev/null 2>&1; then
               echo "gpui-agent hello answered"
               exit 0
             fi
