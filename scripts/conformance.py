@@ -96,9 +96,9 @@ class Run:
 
 
 def walk(nodes):
-    for node in nodes:
+    for node in nodes or []:
         yield node
-        yield from walk(node.get("children", []))
+        yield from walk(node.get("children") or [])
 
 
 def find(nodes, node_id):
