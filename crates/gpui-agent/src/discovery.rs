@@ -1273,11 +1273,7 @@ mod tests {
             ResolveError::NoSession
         );
         assert_eq!(
-            fs::metadata(&client_root)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
+            fs::metadata(&client_root).unwrap().permissions().mode() & 0o777,
             0o700
         );
         let _ = fs::remove_dir_all(client_root);

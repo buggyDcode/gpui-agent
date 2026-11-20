@@ -34,14 +34,7 @@ fn snapshot_refs_tightens_legacy_runtime_root_before_attach() {
 
     let snapshot = cli(
         &runtime,
-        &[
-            "--token",
-            TOKEN,
-            "--addr",
-            &todo.addr,
-            "snapshot",
-            "--refs",
-        ],
+        &["--token", TOKEN, "--addr", &todo.addr, "snapshot", "--refs"],
     );
     assert!(
         snapshot.status.success(),

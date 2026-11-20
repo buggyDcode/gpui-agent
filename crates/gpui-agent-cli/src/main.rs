@@ -576,10 +576,7 @@ fn require_recipe_mcp_token(token: Option<&str>) -> Result<&str> {
 
 fn run() -> Result<()> {
     let (mut cli, mut sources) = parse_cli_from(std::env::args_os());
-    if matches!(
-        &cli.command,
-        Command::Attach { .. } | Command::Detach
-    ) {
+    if matches!(&cli.command, Command::Attach { .. } | Command::Detach) {
         check_cli_target_selector_conflicts(&cli, sources)?;
     }
     if matches!(cli.command, Command::Skill) {
