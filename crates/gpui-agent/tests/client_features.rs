@@ -127,8 +127,78 @@ fn gated_call_renegotiates_after_the_host_restarts() {
     let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(3));
     assert!(client.gated(press()).unwrap().ok);
     closed_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    client.close_session();
 
     let error = client.gated(press()).unwrap_err();
     assert!(is_unsupported_op(&error), "{error}");
+    server.join().unwrap();
+}
+
+#[test]
+fn gated_no_reply_is_reported_once_within_the_shared_deadline() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut writer, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(writer.try_clone().unwrap());
+        let request = read_request(&mut reader);
+        assert_eq!(request["op"], "hello");
+        thread::sleep(Duration::from_millis(220));
+        respond(&mut writer, &request, Some(hello(&["press"])));
+
+        let request = read_request(&mut reader);
+        assert_eq!(request["op"], "press");
+        thread::sleep(Duration::from_millis(700));
+        listener.set_nonblocking(true).unwrap();
+        assert!(
+            matches!(
+                listener.accept(),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+            ),
+            "the client opened another session after sending press"
+        );
+    });
+
+    let mut client = AgentClient::connect(addr).with_timeout(Duration::from_millis(300));
+    let started = std::time::Instant::now();
+    let error = client.gated(press()).unwrap_err();
+    let elapsed = started.elapsed();
+    assert!(error.contains("no reply"), "{error}");
+    assert!(
+        elapsed < Duration::from_millis(450),
+        "gated call exceeded its shared timeout: {elapsed:?}"
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn gated_call_does_not_retry_after_the_request_was_written() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut writer, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(writer.try_clone().unwrap());
+        let request = read_request(&mut reader);
+        assert_eq!(request["op"], "hello");
+        respond(&mut writer, &request, Some(hello(&["press"])));
+        let request = read_request(&mut reader);
+        assert_eq!(request["op"], "press");
+        drop(reader);
+        drop(writer);
+
+        thread::sleep(Duration::from_millis(200));
+        listener.set_nonblocking(true).unwrap();
+        assert!(
+            matches!(
+                listener.accept(),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+            ),
+            "the client retried after the host had received press"
+        );
+    });
+
+    let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(1));
+    let error = client.gated(press()).unwrap_err();
+    assert!(error.contains("connection closed"), "{error}");
     server.join().unwrap();
 }
