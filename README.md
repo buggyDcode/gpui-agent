@@ -84,6 +84,10 @@ handshake). `AgentClient` reuses one loopback session; each step is
 still a normal token-bearing request. Semantic delivery stays the
 default. **`recipe run` and `mcp` require a non-empty token**
 (`GPUI_AGENT_TOKEN` or `--token`). Set the **same** value on the host.
+
+A request waits 8 seconds for the host's reply. On a slow device or emulator raise it
+with `--timeout-ms` or `GPUI_AGENT_TIMEOUT_MS`; a `no reply from …` error means the
+host is up but was too busy to answer in time.
 One-off `click` / `snapshot` / `hello` must send that token too.
 `GPUI_AGENT_INSECURE_NO_TOKEN=1` is the only untokened loopback (demo).
 

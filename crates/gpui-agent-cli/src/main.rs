@@ -46,6 +46,10 @@ struct Cli {
     /// TCP — lab / trusted network only. Prefer SSH or Tailscale until TLS.
     #[arg(long, env = "GPUI_AGENT_ALLOW_REMOTE")]
     allow_remote: bool,
+    /// How long to wait for the host's reply to one request, in
+    /// milliseconds (default 8000). Raise it for a slow device or emulator.
+    #[arg(long = "timeout-ms", env = "GPUI_AGENT_TIMEOUT_MS", global = true)]
+    request_timeout_ms: Option<u64>,
     #[command(subcommand)]
     command: Command,
 }
@@ -348,6 +352,14 @@ enum Command {
     },
 }
 
+fn connect(addr: SocketAddr, timeout: Option<Duration>) -> AgentClient {
+    let client = AgentClient::connect(addr);
+    match timeout {
+        Some(timeout) => client.with_timeout(timeout),
+        None => client,
+    }
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -386,17 +398,18 @@ fn run() -> Result<()> {
     }
     let addr = target.addr;
     let token = take_non_empty_token(cli.token);
+    let request_timeout = cli.request_timeout_ms.map(Duration::from_millis);
     gpui_agent::authorize_client(addr, token.as_deref(), cli.allow_remote)
         .with_context(|| format!("refusing agent address {addr}"))?;
 
     if let Command::Mcp { schema } = cli.command {
         let token = require_recipe_mcp_token(token.as_deref())?;
-        return mcp::run(addr, token.to_string(), schema);
+        return mcp::run(addr, token.to_string(), request_timeout, schema);
     }
     if let Command::Recipe { schema, action } = cli.command {
         let client = if matches!(action, RecipeCommand::Run { .. }) {
             let token = require_recipe_mcp_token(token.as_deref())?;
-            Some(AgentClient::connect(addr).with_token(token))
+            Some(connect(addr, request_timeout).with_token(token))
         } else {
             None
         };
@@ -415,7 +428,7 @@ fn run() -> Result<()> {
     } = cli.command
     {
         let token = require_recipe_mcp_token(token.as_deref())?;
-        let client = AgentClient::connect(addr).with_token(token);
+        let client = connect(addr, request_timeout).with_token(token);
         return run_cmd::run(
             client,
             run_cmd::RunOpts {
@@ -430,7 +443,7 @@ fn run() -> Result<()> {
         );
     }
 
-    let mut client = AgentClient::connect(addr);
+    let mut client = connect(addr, request_timeout);
     if let Some(token) = token {
         client = client.with_token(token);
     }

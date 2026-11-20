@@ -185,6 +185,35 @@ fn fmt_u64(n: u64, buf: &mut [u8; 20]) -> &str {
     std::str::from_utf8(&buf[i..]).unwrap()
 }
 
+/// Error prefix when the host took the request and sent no reply in time.
+pub const NO_REPLY: &str = "no reply";
+
+/// The message for an exchange that never produced a response.
+///
+/// A read that ran out of time (the OS spells it differently on each
+/// platform) means the host is there and busy, which calls for a longer
+/// timeout, not for checking the address.
+fn no_answer(addr: SocketAddr, timeout: Duration, last_err: &str) -> String {
+    let timed_out = [
+        "timed out",
+        "os error 11)",
+        "os error 35)",
+        "os error 10060)",
+    ]
+    .iter()
+    .any(|mark| last_err.contains(mark));
+    let refused = last_err.contains("refused");
+    if timed_out && !refused {
+        format!(
+            "{NO_REPLY} from {addr} within {ms} ms: the host is up but did not answer \
+             (busy or animating); raise the timeout",
+            ms = timeout.as_millis()
+        )
+    } else {
+        format!("connect {addr} failed: {last_err}")
+    }
+}
+
 impl AgentClient {
     pub fn connect(addr: SocketAddr) -> Self {
         Self {
@@ -310,10 +339,7 @@ impl AgentClient {
                 }
             }
         }
-        Err(format!(
-            "connect {addr} failed: {last_err}",
-            addr = self.addr
-        ))
+        Err(no_answer(self.addr, timeout, &last_err))
     }
 
     fn roundtrip_wire(&mut self, id: &str, op: &Op, timeout: Duration) -> Result<Response, String> {
@@ -359,10 +385,7 @@ impl AgentClient {
                 }
             }
         }
-        Err(format!(
-            "connect {addr} failed: {last_err}",
-            addr = self.addr
-        ))
+        Err(no_answer(self.addr, self.timeout, &last_err))
     }
 
     fn pipeline_once(
@@ -743,5 +766,25 @@ mod tests {
     fn rpc_pipeline_empty_is_ok() {
         let mut client = AgentClient::default_bind();
         assert!(client.rpc_pipeline(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_read_that_ran_out_of_time_is_not_reported_as_a_failed_connect() {
+        let addr: SocketAddr = "127.0.0.1:17421".parse().unwrap();
+        let timeout = Duration::from_millis(1500);
+        for err in [
+            "Resource temporarily unavailable (os error 11)",
+            "Resource temporarily unavailable (os error 35)",
+            "operation timed out",
+        ] {
+            let message = no_answer(addr, timeout, err);
+            assert!(message.starts_with(NO_REPLY), "{message}");
+            assert!(message.contains("1500 ms"), "{message}");
+        }
+        let refused = no_answer(addr, timeout, "Connection refused (os error 111)");
+        assert!(
+            refused.starts_with("connect 127.0.0.1:17421 failed"),
+            "{refused}"
+        );
     }
 }

@@ -20,8 +20,16 @@ use serde_json::{Value, json};
 ///
 /// One [`AgentClient`] lives for the process: protocol `rpc` reuses a single
 /// TCP session across `tools/call` (no per-tool reconnect).
-pub fn run(addr: SocketAddr, token: String, schema_paths: Vec<PathBuf>) -> Result<()> {
+pub fn run(
+    addr: SocketAddr,
+    token: String,
+    timeout: Option<std::time::Duration>,
+    schema_paths: Vec<PathBuf>,
+) -> Result<()> {
     let mut client = AgentClient::connect(addr).with_token(token);
+    if let Some(timeout) = timeout {
+        client = client.with_timeout(timeout);
+    }
 
     let mut stdin = BufReader::new(std::io::stdin());
     let mut stdout = std::io::stdout();
