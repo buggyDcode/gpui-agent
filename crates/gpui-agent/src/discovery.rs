@@ -85,7 +85,7 @@ pub enum ResolveError {
         "no session named \"{name}\"; create it with: gpui-agent --session <name> attach <target>"
     )]
     NoNamedSession { name: String },
-    #[error("invalid session name \"{name}\"; use 1-64 ASCII letters, digits, '_' or '-'")]
+    #[error("invalid session name \"{name}\"; use [a-z0-9][a-z0-9_-]{0,63}")]
     BadSessionName { name: String },
     #[error("could not read session \"{name}\": {detail}")]
     NamedSessionRead { name: String, detail: String },
@@ -269,10 +269,15 @@ fn checked_named_sessions_dir(root: &Path, create: bool) -> io::Result<PathBuf> 
 }
 
 fn valid_session_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
     (1..=64).contains(&name.len())
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        && (first.is_ascii_lowercase() || first.is_ascii_digit())
+        && bytes.all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+        })
 }
 
 fn validate_session_name(name: &str) -> io::Result<()> {
@@ -281,7 +286,7 @@ fn validate_session_name(name: &str) -> io::Result<()> {
     } else {
         Err(io::Error::new(
             ErrorKind::InvalidInput,
-            format!("invalid session name \"{name}\"; use 1-64 ASCII letters, digits, '_' or '-'"),
+            format!("invalid session name \"{name}\"; use [a-z0-9][a-z0-9_-]{{0,63}}"),
         ))
     }
 }
@@ -1062,7 +1067,7 @@ mod tests {
     #[test]
     fn named_session_names_are_validated() {
         let root = temp_root("bad-name");
-        for name in ["../x", "a/b", ""] {
+        for name in ["../x", "a/b", "", "Work"] {
             let session = NamedSession {
                 name: name.to_string(),
                 addr: "127.0.0.1:17421".into(),
