@@ -248,6 +248,31 @@ fn pipeline_wait_uses_the_longest_operation_timeout() {
 }
 
 #[test]
+fn zero_timeout_wait_still_attempts_the_host() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let mut writer = accept_with_timeout(&listener);
+        let mut reader = BufReader::new(writer.try_clone().unwrap());
+        let request = read_request(&mut reader);
+        assert_eq!(request["op"], "wait");
+        assert_eq!(request["timeout_ms"], 0);
+        respond(&mut writer, &request, None);
+    });
+
+    let mut client = AgentClient::connect(addr).with_timeout(Duration::ZERO);
+    assert!(
+        client
+            .expect_ok(Op::Wait {
+                timeout_ms: Some(0),
+            })
+            .unwrap()
+            .ok
+    );
+    server.join().unwrap();
+}
+
+#[test]
 fn long_wait_does_not_extend_connection_retry_budget() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
