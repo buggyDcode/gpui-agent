@@ -7,11 +7,14 @@ or --addr / --token passed through) and checks that:
 - `hello` states the protocol, a platform and a feature list (a missing
   `framework`, which the protocol makes optional, is a warning);
 - `snapshot` returns a non-empty tree with unique node ids;
-- every capability-gated op the host does NOT list is refused with
-  `unsupported_op`, and never acted on;
+- every capability-gated op the host does NOT list is refused by the host
+  with `unsupported_op`. The probes are sent with `--as-written`, so the
+  CLI does not refuse them itself; they are skipped on a 0.1 host, whose
+  dispatcher does not know the ops;
 - the listed ops that are safe to try on any screen work: `scroll` and
-  `swipe` on the first scroller (there and back), `hover` on the first button,
-  `viewport` to the current size, and an inline screenshot that is a PNG.
+  `swipe` on the first usable scroller (then back by what actually moved),
+  `hover` on the first usable button, `viewport` to the current size, and
+  an inline screenshot that is a complete PNG.
 
 `press` is only tried with --press <node id>, since it changes the app.
 Exit code 0 when every check passed; 1 otherwise.
@@ -20,10 +23,13 @@ Exit code 0 when every check passed; 1 otherwise.
 import argparse
 import json
 import os
+import struct
 import subprocess
 import sys
 import tempfile
 
+# Feature -> a probe for it. Each is refused before the host looks at its
+# arguments, so none can act on the app.
 GATED = {
     "press": ["press", "--x", "1", "--y", "1"],
     "scroll": ["scroll", "--x", "1", "--y", "1", "--dy", "1"],
@@ -33,9 +39,15 @@ GATED = {
     "long_press": ["long-press", "--x", "1", "--y", "1"],
     "pinch": ["pinch", "--scale", "1.1"],
     "viewport": ["viewport", "--width", "800", "--height", "600"],
+    "paste": ["paste", "conformance-no-such-node", "x"],
     "system.back": ["system", "back"],
     "system.home": ["system", "home"],
     "system.rotate": ["system", "rotate", "landscape"],
+    "system.keyboard_show": ["system", "keyboard-show"],
+    "system.keyboard_hide": ["system", "keyboard-hide"],
+    "system.background": ["system", "background"],
+    "system.foreground": ["system", "foreground"],
+    "system.open_url": ["system", "open-url", "about:blank"],
 }
 
 
@@ -45,7 +57,13 @@ class Run:
         self.failed = 0
 
     def cli(self, *args):
-        proc = subprocess.run(self.base + list(args), capture_output=True, text=True)
+        # The CLI writes UTF-8 whatever the locale of this process.
+        proc = subprocess.run(
+            self.base + list(args),
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         return proc.returncode, proc.stdout, proc.stderr.strip()
 
     def json(self, *args):
@@ -56,6 +74,10 @@ class Run:
             return json.loads(out), ""
         except ValueError as exc:
             return None, f"not JSON: {exc}"
+
+    def nodes(self):
+        reply, err = self.json("snapshot")
+        return ((reply or {}).get("tree") or {}).get("nodes") or [], err
 
     def check(self, name, ok, detail=""):
         print(f"{'ok  ' if ok else 'FAIL'}  {name}{': ' + detail if detail else ''}")
@@ -76,17 +98,109 @@ def walk(nodes):
         yield from walk(node.get("children", []))
 
 
-def first(nodes, role):
-    for node in walk(nodes):
-        bounds = node.get("bounds") or {}
-        if (
-            node.get("role") == role
-            and node.get("visible", True)
-            and bounds.get("w", 0) > 0
-            and bounds.get("h", 0) > 0
-        ):
-            return node["id"]
-    return None
+def find(nodes, node_id):
+    return next((node for node in walk(nodes) if node["id"] == node_id), None)
+
+
+def usable(node, size):
+    """Enabled, visible, and, where the host gives geometry, on screen."""
+    if not node.get("enabled", False) or not node.get("visible", True):
+        return False
+    bounds = node.get("bounds") or {}
+    width, height = bounds.get("w", 0), bounds.get("h", 0)
+    if width <= 0 or height <= 0:
+        return False
+    if size:
+        x = bounds.get("x", 0) + width / 2
+        y = bounds.get("y", 0) + height / 2
+        return 0 <= x <= size[0] and 0 <= y <= size[1]
+    return True
+
+
+def first(nodes, role, size):
+    return next(
+        (node for node in walk(nodes) if node.get("role") == role and usable(node, size)),
+        None,
+    )
+
+
+def marker(scroller):
+    """A descendant whose position tells how far the scroller moved."""
+    return next(
+        (
+            node
+            for node in walk(scroller.get("children", []))
+            if (node.get("bounds") or {}).get("h", 0) > 0
+        ),
+        None,
+    )
+
+
+def top(nodes, node):
+    found = find(nodes, node["id"]) if node else None
+    return (found.get("bounds") or {}).get("y") if found else None
+
+
+def valid_png(path):
+    """The signature, a first IHDR chunk with a size, and a final IEND."""
+    try:
+        with open(path, "rb") as file:
+            data = file.read()
+    except OSError:
+        return False
+    if len(data) < 45 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        return False
+    width, height = struct.unpack(">II", data[16:24])
+    return width > 0 and height > 0 and data[-8:-4] == b"IEND"
+
+
+def number(value):
+    """A size as the host stated it: 399.75 stays 399.75."""
+    return repr(float(value))
+
+
+def scroll_probes(run, features, nodes, size):
+    scroller = first(nodes, "scroll", size)
+    probes = (
+        ("scroll", lambda amount: ["scroll", scroller["id"], "--dy", number(amount)]),
+        (
+            "swipe",
+            lambda amount: [
+                "swipe",
+                "up" if amount > 0 else "down",
+                "--target",
+                scroller["id"],
+                "--distance",
+                number(abs(amount)),
+            ],
+        ),
+    )
+    for feature, command in probes:
+        if feature not in features:
+            continue
+        if scroller is None:
+            run.skip(feature, "no usable scroller on this screen")
+            continue
+        mark = marker(scroller)
+        before = top(nodes, mark)
+        code, _, err = run.cli(*command(40))
+        run.check(f"{feature} on {scroller['id']}", code == 0, err)
+        if code != 0:
+            continue
+        # Put the content back by what it moved, which at an edge of the
+        # list is less than what was asked for, and may be nothing.
+        after = top(run.nodes()[0], mark)
+        if before is None or after is None:
+            run.warn(f"{feature}: could not measure the move; the list may have shifted")
+            continue
+        moved = before - after
+        if abs(moved) < 0.5:
+            continue
+        restore = ["scroll", scroller["id"], "--dy", number(-moved)]
+        if "scroll" not in features:
+            restore = command(-moved)
+        code, _, err = run.cli(*restore)
+        run.check(f"{feature} back on {scroller['id']}", code == 0, err)
 
 
 def main():
@@ -110,49 +224,41 @@ def main():
         run.check("hello.framework is stated", True, hello["framework"])
     else:
         run.warn("hello.framework is not stated (optional)")
+    device = hello.get("device") or {}
+    size = None
+    if device.get("width") and device.get("height"):
+        size = (device["width"], device["height"])
 
-    reply, err = run.json("snapshot")
-    nodes = ((reply or {}).get("tree") or {}).get("nodes") or []
+    nodes, err = run.nodes()
     ids = [node["id"] for node in walk(nodes)]
     run.check("snapshot has nodes", bool(ids), err or f"{len(ids)} nodes")
     run.check("node ids are unique", len(ids) == len(set(ids)))
 
-    for feature, command in GATED.items():
-        if feature in features:
-            continue
-        code, _, err = run.cli(*command)
-        run.check(
-            f"{feature} is refused (not listed)",
-            code != 0 and "unsupported_op" in err,
-            "" if code != 0 else "the host acted on it",
-        )
+    if current:
+        for feature, command in GATED.items():
+            if feature in features:
+                continue
+            code, _, err = run.cli("--as-written", *command)
+            run.check(
+                f"the host refuses {feature} (not listed)",
+                code != 0 and "unsupported_op" in err,
+                "the host acted on it" if code == 0 else ("" if "unsupported_op" in err else err),
+            )
+    else:
+        run.skip("refusal of unlisted ops", "a 0.1 host does not know them")
 
-    scroller = first(nodes, "scroll")
-    button = first(nodes, "button")
-    for feature, there, back in (
-        ("scroll", ["scroll", "{}", "--dy", "40"], ["scroll", "{}", "--dy", "-40"]),
-        ("swipe", ["swipe", "up", "--target", "{}", "--distance", "40"],
-         ["swipe", "down", "--target", "{}", "--distance", "40"]),
-    ):
-        if feature not in features:
-            continue
-        if scroller is None:
-            run.skip(feature, "no visible scroller on this screen")
-            continue
-        for command in (there, back):
-            code, _, err = run.cli(*[part.format(scroller) for part in command])
-            run.check(f"{feature} {command[1] if feature == 'swipe' else command[3]} on {scroller}", code == 0, err)
+    scroll_probes(run, features, nodes, size)
     if "hover" in features:
+        button = first(nodes, "button", size)
         if button is None:
-            run.skip("hover", "no visible button on this screen")
+            run.skip("hover", "no usable button on this screen")
         else:
-            code, _, err = run.cli("hover", button)
-            run.check(f"hover {button}", code == 0, err)
-    device = hello.get("device") or {}
+            code, _, err = run.cli("hover", button["id"])
+            run.check(f"hover {button['id']}", code == 0, err)
     if "viewport" in features:
-        if device.get("width") and device.get("height"):
+        if size:
             code, _, err = run.cli(
-                "viewport", "--width", str(int(device["width"])), "--height", str(int(device["height"]))
+                "viewport", "--width", number(size[0]), "--height", number(size[1])
             )
             run.check("viewport to the current size", code == 0, err)
         else:
@@ -165,12 +271,16 @@ def main():
         with tempfile.TemporaryDirectory() as scratch:
             path = os.path.join(scratch, "shot.png")
             code, _, err = run.cli("screenshot", "--inline", "--out", path)
-            png = code == 0 and open(path, "rb").read(8) == b"\x89PNG\r\n\x1a\n"
-            unavailable = "screenshot_unavailable" in err
-            if unavailable:
-                run.skip("inline screenshot", "the host has no surface to capture")
+            # Only a host with no surface may decline; the same error from a
+            # host that draws is a capture that broke.
+            if hello.get("platform") == "headless" and "screenshot_unavailable" in err:
+                run.skip("inline screenshot", "a headless host has no surface")
             else:
-                run.check("inline screenshot is a PNG on this machine", png, err)
+                run.check(
+                    "inline screenshot is a complete PNG on this machine",
+                    code == 0 and valid_png(path),
+                    err,
+                )
 
     print(f"\n{'PASS' if run.failed == 0 else f'{run.failed} FAILED'}")
     return 1 if run.failed else 0
