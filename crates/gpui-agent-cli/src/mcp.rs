@@ -439,10 +439,15 @@ fn call_tool(
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
     let resp = match name {
         "wait" => {
+            // The wait's bound holds for this call only: the tools after it
+            // get the server's reply timeout back.
+            let reply_timeout = client.timeout();
             if let Some(ms) = args.get("timeout_ms").and_then(Value::as_u64) {
                 client.set_timeout(Duration::from_millis(ms));
             }
-            client.wait_ready()?
+            let ready = client.wait_ready();
+            client.set_timeout(reply_timeout);
+            ready?
         }
         "wait_until" => {
             let timeout_ms = args

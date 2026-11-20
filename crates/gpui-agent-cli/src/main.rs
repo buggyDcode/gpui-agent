@@ -475,7 +475,9 @@ fn run() -> Result<()> {
 
     match cli.command {
         Command::Wait { timeout_ms } => {
-            if let Some(ms) = timeout_ms {
+            // Without an explicit reply timeout the wait's own bounds the
+            // call; with one, the client takes the longer of the two.
+            if let (Some(ms), None) = (timeout_ms, request_timeout) {
                 client = client.with_timeout(Duration::from_millis(ms));
             }
             print_resp(rpc(client.expect_ok(Op::Wait { timeout_ms }))?)
@@ -492,7 +494,10 @@ fn run() -> Result<()> {
             visible,
             in_viewport,
         } => {
-            client = client.with_timeout(Duration::from_millis(timeout_ms.saturating_add(2_000)));
+            if request_timeout.is_none() {
+                client =
+                    client.with_timeout(Duration::from_millis(timeout_ms.saturating_add(2_000)));
+            }
             let spec = AssertSpec {
                 target: id,
                 name,
