@@ -154,10 +154,7 @@ pub fn save(
 /// Replaces every ref among `args` with the node id it stands for. The
 /// arguments stay as the OS gave them: a path need not be UTF-8.
 pub fn resolve(root: &Path, addr: SocketAddr, args: &mut [OsString]) -> Result<(), String> {
-    if !args
-        .iter()
-        .any(|arg| arg.to_str().is_some_and(has_ref))
-    {
+    if !args.iter().any(|arg| arg.to_str().is_some_and(has_ref)) {
         return Ok(());
     }
     gpui_agent::discovery::ensure_runtime_dir(root)
