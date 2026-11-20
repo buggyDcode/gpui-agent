@@ -58,9 +58,8 @@ pub use mailbox::{AgentMailbox, MAX_MAILBOX_DEPTH, MailboxRequest};
 pub use ndjson::{line_is_blank, read_limited_line, read_limited_line_into, write_json_line};
 pub use protocol::{
     AssertSpec, DeliveryMode, DeviceInfo, HelloAuth, HelloInfo, KeybindingScope, Op,
-    PROTOCOL_VERSION, SwipeDirection, SystemAction, UNSUPPORTED_OP, is_unsupported_op,
-    unsupported_op,
-    PlatformKind, Request, Response, ScreenshotMode, SnapshotFormat,
+    PROTOCOL_VERSION, PlatformKind, Request, Response, ScreenshotMode, SnapshotFormat,
+    SwipeDirection, SystemAction, UNSUPPORTED_OP, is_unsupported_op, unsupported_op,
 };
 pub use screenshot::{
     SCREENSHOT_BACKEND_SCREENCAPTURE, SCREENSHOT_UNAVAILABLE, TEST_PNG, accept_written_png,

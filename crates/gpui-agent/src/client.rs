@@ -495,7 +495,10 @@ impl AgentClient {
     /// The host's `hello.features`, asked once per client.
     pub fn features(&mut self) -> Result<&[String], String> {
         if self.features.is_none() {
-            let hello = self.expect_ok(Op::Hello)?.hello.ok_or("hello has no info")?;
+            let hello = self
+                .expect_ok(Op::Hello)?
+                .hello
+                .ok_or("hello has no info")?;
             self.features = Some(hello.features);
         }
         Ok(self.features.as_deref().unwrap_or_default())

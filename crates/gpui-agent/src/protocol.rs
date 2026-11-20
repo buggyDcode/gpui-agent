@@ -347,7 +347,10 @@ pub enum Op {
     /// (`result.blob = {blob, bytes, chunks}`). Each chunk is base64 and
     /// fits the 1 MiB line cap. The host drops the blob after its last
     /// chunk is read.
-    Blob { blob: String, index: u32 },
+    Blob {
+        blob: String,
+        index: u32,
+    },
     /// A pointer press (a tap on touch hosts) at a node or a point, as the
     /// platform delivers it: refused when the target is hidden, disabled,
     /// off screen or covered. Feature `press`.
@@ -444,7 +447,10 @@ pub enum Op {
     },
     /// Insert text into an editable node as a paste does (one edit, not
     /// key by key). Feature `paste`.
-    Paste { target: String, text: String },
+    Paste {
+        target: String,
+        text: String,
+    },
     /// A device or system action outside the app's own tree. Each action
     /// is its own feature: `system.back`, `system.rotate`, …
     System {

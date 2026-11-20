@@ -156,6 +156,56 @@ pub(crate) fn tools() -> Vec<Value> {
             object_schema(&["target", "value"]),
         ),
         tool(
+            "press",
+            "Press (tap) a node by id, or a point with x and y, as the platform delivers it. Fails when the target is hidden, disabled or covered. Needs the host feature `press`.",
+            json!({ "type": "object", "properties": { "target": { "type": "string" }, "x": { "type": "number" }, "y": { "type": "number" } }, "required": [] }),
+        ),
+        tool(
+            "scroll",
+            "Scroll a scrollable node, or what is under x,y, by dx,dy logical points.",
+            json!({ "type": "object", "properties": { "target": { "type": "string" }, "x": { "type": "number" }, "y": { "type": "number" }, "dx": { "type": "number" }, "dy": { "type": "number" } }, "required": [] }),
+        ),
+        tool(
+            "hover",
+            "Move the pointer over a node or point (hosts with a pointer).",
+            json!({ "type": "object", "properties": { "target": { "type": "string" }, "x": { "type": "number" }, "y": { "type": "number" } }, "required": [] }),
+        ),
+        tool(
+            "drag",
+            "Drag node `from` onto node `to`, or drag `target` (or the point x,y) by dx,dy.",
+            json!({ "type": "object", "properties": { "from": { "type": "string" }, "to": { "type": "string" }, "target": { "type": "string" }, "x": { "type": "number" }, "y": { "type": "number" }, "dx": { "type": "number" }, "dy": { "type": "number" } }, "required": [] }),
+        ),
+        tool(
+            "swipe",
+            "One-finger swipe (up, down, left, right) across a node, or the surface when target is omitted.",
+            json!({ "type": "object", "properties": { "direction": { "type": "string" }, "target": { "type": "string" }, "distance": { "type": "number" } }, "required": ["direction"] }),
+        ),
+        tool(
+            "long_press",
+            "Press and hold a node or point.",
+            json!({ "type": "object", "properties": { "target": { "type": "string" }, "x": { "type": "number" }, "y": { "type": "number" }, "duration_ms": { "type": "integer" } }, "required": [] }),
+        ),
+        tool(
+            "pinch",
+            "Two-finger pinch on a node: scale above 1 spreads, below 1 pinches in.",
+            json!({ "type": "object", "properties": { "target": { "type": "string" }, "scale": { "type": "number" } }, "required": ["scale"] }),
+        ),
+        tool(
+            "viewport",
+            "Resize the app's content area to width,height points or a host preset (phone, tablet, desktop).",
+            json!({ "type": "object", "properties": { "width": { "type": "number" }, "height": { "type": "number" }, "preset": { "type": "string" } }, "required": [] }),
+        ),
+        tool(
+            "paste",
+            "Insert text into an editable node as one paste.",
+            json!({ "type": "object", "properties": { "target": { "type": "string" }, "text": { "type": "string" } }, "required": ["target", "text"] }),
+        ),
+        tool(
+            "system",
+            "Device action: back, home, rotate, keyboard_show, keyboard_hide, background, foreground, open_url. `value` is the orientation for rotate or the URL for open_url.",
+            json!({ "type": "object", "properties": { "action": { "type": "string" }, "value": { "type": "string" } }, "required": ["action"] }),
+        ),
+        tool(
             "key",
             "Send a key (Enter, Backspace, …) to a widget. No modifiers. Optional delivery=virtual uses GPUI dispatch_keystroke. Modifier chords use the keybinding tool.",
             input_schema_with_delivery(&["target", "key"]),
@@ -478,6 +528,19 @@ fn call_tool(
             client.invoke(invoke_name, invoke_args)?
         }
         "shutdown" => client.expect_ok(Op::Shutdown)?,
+        "press" | "scroll" | "hover" | "drag" | "swipe" | "long_press" | "pinch" | "viewport"
+        | "paste" | "system" => {
+            // The tool arguments are the op's own wire fields, so the MCP
+            // surface cannot drift from the protocol or the CLI.
+            let mut wire = match args {
+                Value::Object(map) => map,
+                _ => return Err(format!("{name} takes an object")),
+            };
+            wire.insert("op".into(), json!(name));
+            let op: Op = serde_json::from_value(Value::Object(wire))
+                .map_err(|err| format!("{name}: {err}"))?;
+            client.gated(op)?
+        }
         "recipe_validate" => return recipe_validate(&args, schema_paths),
         "recipe_plan" => return recipe_plan(&args, schema_paths),
         "recipe_run" => return recipe_run_tool(client, &args, schema_paths),
@@ -1021,6 +1084,16 @@ mod tests {
             "assert",
             "invoke",
             "shutdown",
+            "press",
+            "scroll",
+            "hover",
+            "drag",
+            "swipe",
+            "long_press",
+            "pinch",
+            "viewport",
+            "paste",
+            "system",
             "recipe_validate",
             "recipe_plan",
             "recipe_run",

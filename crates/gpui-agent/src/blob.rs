@@ -57,7 +57,10 @@ pub fn read_chunk(name: &str, index: u32) -> Result<serde_json::Value, String> {
     let chunks = chunk_count(bytes.len());
     let index = index as usize;
     if index >= chunks {
-        return Err(format!("blob `{name}` has {chunks} chunks, not {}", index + 1));
+        return Err(format!(
+            "blob `{name}` has {chunks} chunks, not {}",
+            index + 1
+        ));
     }
     let start = index * BLOB_CHUNK_BYTES;
     let end = (start + BLOB_CHUNK_BYTES).min(bytes.len());
@@ -111,6 +114,9 @@ mod tests {
         let announce = store(vec![1, 2, 3]);
         let name = announce["blob"].as_str().unwrap();
         assert!(read_chunk(name, 5).is_err());
-        assert_eq!(decode_chunk(&read_chunk(name, 0).unwrap()).unwrap(), [1, 2, 3]);
+        assert_eq!(
+            decode_chunk(&read_chunk(name, 0).unwrap()).unwrap(),
+            [1, 2, 3]
+        );
     }
 }
