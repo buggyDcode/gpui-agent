@@ -86,8 +86,16 @@ default. **`recipe run` and `mcp` require a non-empty token**
 (`GPUI_AGENT_TOKEN` or `--token`). Set the **same** value on the host.
 
 A request waits 8 seconds for the host's reply. On a slow device or emulator raise it
-with `--timeout-ms` or `GPUI_AGENT_TIMEOUT_MS`; a `no reply from …` error means the
+with `--reply-timeout-ms` or
+`GPUI_AGENT_REPLY_TIMEOUT_MS`; a `no reply from …` error means the
 host is up but was too busy to answer in time.
+
+When a host does not answer, two commands say why:
+
+```bash
+gpui-agent targets   # hosts published on this machine, adb devices and their forwarded ports
+gpui-agent doctor    # address, token, capabilities and answer time, with what to fix
+```
 One-off `click` / `snapshot` / `hello` must send that token too.
 `GPUI_AGENT_INSECURE_NO_TOKEN=1` is the only untokened loopback (demo).
 

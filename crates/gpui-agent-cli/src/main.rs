@@ -1,3 +1,4 @@
+mod doctor;
 #[cfg(feature = "instinct")]
 mod instinct_wiring;
 mod mcp;
@@ -48,7 +49,11 @@ struct Cli {
     allow_remote: bool,
     /// How long to wait for the host's reply to one request, in
     /// milliseconds (default 8000). Raise it for a slow device or emulator.
-    #[arg(long = "timeout-ms", env = "GPUI_AGENT_TIMEOUT_MS", global = true)]
+    #[arg(
+        long = "reply-timeout-ms",
+        env = "GPUI_AGENT_REPLY_TIMEOUT_MS",
+        global = true
+    )]
     request_timeout_ms: Option<u64>,
     #[command(subcommand)]
     command: Command,
@@ -102,6 +107,12 @@ enum Command {
         #[arg(long = "in-viewport", num_args = 0..=1, default_missing_value = "true")]
         in_viewport: Option<bool>,
     },
+    /// List the hosts published on this machine and the devices `adb`
+    /// sees, with the local addresses forwarded to them.
+    Targets,
+    /// Check the address, the token, the host's capabilities and how fast
+    /// it answers; says what to fix when a step fails.
+    Doctor,
     /// Handshake: protocol version, app name, platform, ready.
     Hello,
     /// Print the semantic UI tree as JSON.
@@ -386,6 +397,10 @@ fn require_recipe_mcp_token(token: Option<&str>) -> Result<&str> {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    if matches!(cli.command, Command::Targets) {
+        println!("{}", serde_json::to_string_pretty(&doctor::targets())?);
+        return Ok(());
+    }
     let target = gpui_agent::resolve_client_target(
         &gpui_agent::runtime_root(),
         cli.addr,
@@ -402,6 +417,16 @@ fn run() -> Result<()> {
     gpui_agent::authorize_client(addr, token.as_deref(), cli.allow_remote)
         .with_context(|| format!("refusing agent address {addr}"))?;
 
+    if matches!(cli.command, Command::Doctor) {
+        let mut client = connect(addr, request_timeout);
+        if let Some(token) = token.clone() {
+            client = client.with_token(token);
+        }
+        if doctor::doctor(addr, client, token.is_some()) {
+            return Ok(());
+        }
+        return Err(anyhow!("the host cannot be driven as it stands"));
+    }
     if let Command::Mcp { schema } = cli.command {
         let token = require_recipe_mcp_token(token.as_deref())?;
         return mcp::run(addr, token.to_string(), request_timeout, schema);
@@ -646,7 +671,9 @@ fn run() -> Result<()> {
         }
         Command::Invoke { name, args } => print_resp(rpc(client.invoke(name, parse_args(&args)?))?),
         Command::Shutdown => print_resp(rpc(client.expect_ok(Op::Shutdown))?),
-        Command::Mcp { .. } | Command::Recipe { .. } => unreachable!(),
+        Command::Targets | Command::Doctor | Command::Mcp { .. } | Command::Recipe { .. } => {
+            unreachable!()
+        }
         #[cfg(feature = "instinct")]
         Command::Run { .. } => unreachable!(),
     }
@@ -690,6 +717,8 @@ mod tests {
         let mut expected = vec![
             "wait",
             "wait-until",
+            "targets",
+            "doctor",
             "hello",
             "snapshot",
             "screenshot",
