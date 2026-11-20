@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::hmac_auth::{NONCE_LEN, hmac_verify};
 use crate::host::AgentHost;
@@ -495,23 +496,19 @@ fn wait_until_ready(
     expected_token: Option<&str>,
     timeout_ms: u64,
 ) -> Response {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
-    loop {
-        let hello = host.hello();
-        if hello.ready {
-            let mut resp = Response::ok(id);
-            let mut hello = hello;
-            hello.auth = crate::protocol::HelloAuth::from_token_configured(expected_token);
-            crate::discovery::fill_hello_identity(&mut hello);
-            resp.hello = Some(hello);
-            return resp;
-        }
-        if std::time::Instant::now() >= deadline {
-            return Response::err(id, "wait timed out");
-        }
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        std::thread::sleep(remaining.min(std::time::Duration::from_millis(10)));
-    }
+    let req = Request::new(
+        id,
+        Op::Wait {
+            timeout_ms: Some(timeout_ms),
+        },
+    );
+    wait_for(
+        host,
+        &mut TreeCache::new(),
+        &req,
+        expected_token,
+        timeout_ms,
+    )
 }
 
 fn wait_until_assert(
@@ -521,22 +518,71 @@ fn wait_until_assert(
     timeout_ms: u64,
     cache: &mut TreeCache,
 ) -> Response {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    let req = Request::new(id, Op::WaitUntil { timeout_ms, spec });
+    wait_for(host, cache, &req, None, timeout_ms)
+}
+
+fn wait_for(
+    host: &dyn AgentHost,
+    cache: &mut TreeCache,
+    req: &Request,
+    expected_token: Option<&str>,
+    timeout_ms: u64,
+) -> Response {
+    let deadline = Instant::now() + std::time::Duration::from_millis(timeout_ms);
     loop {
-        let tree = cache.snapshot(host);
-        match assert_tree(&tree, &spec) {
-            Ok(()) => return Response::ok(id),
-            Err(error) => {
-                if is_in_viewport_unavailable(&error) && tree.platform == PlatformKind::Headless {
-                    return Response::err(id, error);
-                }
-                if std::time::Instant::now() >= deadline {
-                    return Response::err(id, format!("wait_until timed out: {error}"));
+        if let Some(response) = wait_step(host, cache, req, expected_token, deadline) {
+            return response;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        std::thread::sleep(remaining.min(std::time::Duration::from_millis(10)));
+    }
+}
+
+pub(crate) fn wait_step(
+    host: &dyn AgentHost,
+    cache: &mut TreeCache,
+    req: &Request,
+    expected_token: Option<&str>,
+    deadline: Instant,
+) -> Option<Response> {
+    match &req.op {
+        Op::Wait {
+            timeout_ms: Some(_),
+        } => {
+            let mut hello = host.hello();
+            if hello.ready {
+                hello.auth = crate::protocol::HelloAuth::from_token_configured(expected_token);
+                crate::discovery::fill_hello_identity(&mut hello);
+                let mut response = Response::ok(&req.id);
+                response.hello = Some(hello);
+                Some(response)
+            } else if Instant::now() >= deadline {
+                Some(Response::err(&req.id, "wait timed out"))
+            } else {
+                None
+            }
+        }
+        Op::WaitUntil { spec, .. } => {
+            let tree = cache.snapshot(host);
+            match assert_tree(&tree, spec) {
+                Ok(()) => Some(Response::ok(&req.id)),
+                Err(error) => {
+                    if is_in_viewport_unavailable(&error) && tree.platform == PlatformKind::Headless
+                    {
+                        return Some(Response::err(&req.id, error));
+                    }
+                    if Instant::now() >= deadline {
+                        return Some(Response::err(
+                            &req.id,
+                            format!("wait_until timed out: {error}"),
+                        ));
+                    }
+                    None
                 }
             }
         }
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        std::thread::sleep(remaining.min(std::time::Duration::from_millis(10)));
+        _ => unreachable!("wait_step requires a timed wait op"),
     }
 }
 
