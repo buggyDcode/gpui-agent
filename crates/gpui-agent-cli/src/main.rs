@@ -481,9 +481,7 @@ fn resolve_cli_target(
 ) -> Result<(gpui_agent::ClientTarget, Option<NamedSession>)> {
     if let Some(name) = cli.session.as_deref() {
         if sources.addr {
-            return Err(anyhow!(
-                "--session cannot be used with command-line --addr"
-            ));
+            return Err(anyhow!("--session cannot be used with command-line --addr"));
         }
         if sources.connect {
             return Err(anyhow!(
