@@ -21,6 +21,8 @@ impl AgentHost for EmptyHost {
         HelloInfo {
             os: gpui_agent::protocol::host_os(),
             protocol: PROTOCOL_VERSION,
+            framework: None,
+            device: None,
             app: "bench".into(),
             platform: PlatformKind::Headless,
             ready: true,

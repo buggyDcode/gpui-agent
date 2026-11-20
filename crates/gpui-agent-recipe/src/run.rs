@@ -157,7 +157,7 @@ pub fn run_plan_with_screenshots(
         for step in wave_steps {
             let step_started = Instant::now();
             shot_index += 1;
-            match client.rpc_op(&step.op) {
+            match client.rpc_gated(&step.op) {
                 Ok(resp) => {
                     receipt.session_reused = client.has_session();
                     let ok = resp.ok;
@@ -237,6 +237,7 @@ fn capture_screenshot(
         mode: gpui_agent::ScreenshotMode::Viewport,
         target: None,
         max_height_px: None,
+        inline: false,
     }) {
         Ok(resp) if resp.ok => Some(ScreenshotReceipt {
             path: path_str,

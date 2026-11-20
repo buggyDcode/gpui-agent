@@ -134,6 +134,7 @@ fn materialize(
                     mode: gpui_agent::ScreenshotMode::Viewport,
                     target: None,
                     max_height_px: None,
+                    inline: false,
                 },
                 fills,
             )),
