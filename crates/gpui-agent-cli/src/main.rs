@@ -633,7 +633,7 @@ fn run() -> Result<()> {
     if args
         .iter()
         .skip(1)
-        .any(|arg| arg.to_str().is_some_and(refs::is_ref))
+        .any(|arg| arg.to_str().is_some_and(refs::has_ref))
     {
         refs::resolve(&root, target.addr, &mut args[1..]).map_err(|e| anyhow!(e))?;
         (cli, sources) = parse_cli_from(args);

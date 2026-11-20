@@ -28,6 +28,19 @@ pub fn is_ref(arg: &str) -> bool {
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
+fn ref_arg(arg: &str) -> Option<(&str, &str)> {
+    if is_ref(arg) {
+        return Some(("", arg));
+    }
+    let (option, value) = arg.split_once('=')?;
+    (option.starts_with("--") && is_ref(value)).then_some((&arg[..option.len() + 1], value))
+}
+
+/// `true` for an exact ref argument or a `--long=@eN` argument.
+pub fn has_ref(arg: &str) -> bool {
+    ref_arg(arg).is_some()
+}
+
 /// A node earns a line when it says something or can be acted on; bare
 /// layout containers only pass their children up. Where the host gives
 /// geometry (`sized`), a node without any is not on screen.
@@ -141,8 +154,10 @@ pub fn save(
 /// Replaces every ref among `args` with the node id it stands for. The
 /// arguments stay as the OS gave them: a path need not be UTF-8.
 pub fn resolve(root: &Path, addr: SocketAddr, args: &mut [OsString]) -> Result<(), String> {
-    let as_ref = |arg: &OsString| arg.to_str().filter(|arg| is_ref(arg)).map(str::to_owned);
-    if !args.iter().any(|arg| as_ref(arg).is_some()) {
+    if !args
+        .iter()
+        .any(|arg| arg.to_str().is_some_and(has_ref))
+    {
         return Ok(());
     }
     gpui_agent::discovery::ensure_runtime_dir(root)
@@ -154,11 +169,13 @@ pub fn resolve(root: &Path, addr: SocketAddr, args: &mut [OsString]) -> Result<(
             format!("no refs saved for {addr}: run `gpui-agent snapshot --refs` first")
         })?;
     for arg in args.iter_mut() {
-        let Some(name) = as_ref(arg) else { continue };
+        let Some((prefix, name)) = arg.to_str().and_then(ref_arg) else {
+            continue;
+        };
         let id = table.get(&name[1..]).ok_or_else(|| {
             format!("unknown ref {name}: it is not in the last `gpui-agent snapshot --refs`")
         })?;
-        *arg = OsString::from(id);
+        *arg = OsString::from(format!("{prefix}{id}"));
     }
     Ok(())
 }
@@ -224,9 +241,18 @@ mod tests {
         let root = std::env::temp_dir().join(format!("gpui-agent-refs-{}", std::process::id()));
         let addr: SocketAddr = "127.0.0.1:17421".parse().unwrap();
         save(&root, addr, &table).unwrap();
-        let mut args: Vec<OsString> = vec!["press".into(), "@e3".into(), "@everyone".into()];
+        let mut args: Vec<OsString> = vec![
+            "press".into(),
+            "@e3".into(),
+            "--id=@e1".into(),
+            "--text=hi @e1".into(),
+            "@everyone".into(),
+        ];
         resolve(&root, addr, &mut args).unwrap();
-        assert_eq!(args, ["press", "n40", "@everyone"]);
+        assert_eq!(
+            args,
+            ["press", "n40", "--id=n12", "--text=hi @e1", "@everyone"]
+        );
         let mut stale: Vec<OsString> = vec!["@e9".into()];
         assert!(
             resolve(&root, addr, &mut stale)
