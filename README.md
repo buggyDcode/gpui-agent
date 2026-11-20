@@ -48,11 +48,24 @@ gpui-agent events --since 0
 gpui-agent shutdown
 ```
 
-Navigation between pages is **click + assert** on stable ids (or `invoke` if the host registered a go-to command). There is no `open-page` CLI verb.
-
 ```bash
 gpui-agent click nav-settings
 gpui-agent assert --id page-settings --role page
+```
+
+Navigation between pages is **click + assert** on stable ids (or `invoke` if the host registered a go-to command). There is no `open-page` CLI verb.
+
+For repeated agent work, attach once with the host's token, then pass the same
+`--session <name>` to later commands. A named session stores an address and
+credentials on disk; it is a record, not a background process. On Unix, its
+token file is private to the current user. The saved token takes precedence
+over `GPUI_AGENT_TOKEN`; pass `--token` to override it.
+
+```bash
+GPUI_AGENT_TOKEN=dev-secret gpui-agent --session todo attach 127.0.0.1:17421
+gpui-agent --session todo hello
+gpui-agent sessions
+gpui-agent --session todo detach
 ```
 
 ### Sample todo app (demo only)
@@ -84,6 +97,34 @@ handshake). `AgentClient` reuses one loopback session; each step is
 still a normal token-bearing request. Semantic delivery stays the
 default. **`recipe run` and `mcp` require a non-empty token**
 (`GPUI_AGENT_TOKEN` or `--token`). Set the **same** value on the host.
+
+A request waits 8 seconds for the host's reply. On a slow device or emulator raise it
+with `--reply-timeout-ms` or
+`GPUI_AGENT_REPLY_TIMEOUT_MS`; a `no reply from …` error means the
+host is up but was too busy to answer in time.
+
+`snapshot --refs` prints an outline with a short ref per node, and every command takes a
+ref where it takes a node id. Refs hold until the next `snapshot --refs` of that host.
+
+```bash
+gpui-agent snapshot --refs   # @e1 button "Save" …
+gpui-agent press @e1
+```
+
+An argument spelled exactly like a ref (`@e1`) is always read as one, text to type included.
+
+`scripts/conformance.py` runs the required protocol and host checks against the host at
+`--addr`: `python3 scripts/conformance.py --addr 127.0.0.1:17421`. Protocol versions
+other than 2 fail. A host that does not advertise `screenshot_inline` warns and skips
+screenshot checks; `--require-screenshot` makes that a failure. CI runs it against
+`todo-headless` without requiring a screenshot.
+
+When a host does not answer, two commands say why:
+
+```bash
+gpui-agent targets   # hosts published on this machine, adb devices and their forwarded ports
+gpui-agent doctor    # address, token, capabilities and answer time, with what to fix
+```
 One-off `click` / `snapshot` / `hello` must send that token too.
 `GPUI_AGENT_INSECURE_NO_TOKEN=1` is the only untokened loopback (demo).
 
@@ -314,6 +355,7 @@ Automation is **opt-in and off by default**. Full audit: [docs/SECURITY.md](docs
 | Release binaries | Also require `GPUI_AGENT_ALLOW_RELEASE=1` |
 | Bind address | Loopback default (`127.0.0.1:17421`). Non-loopback needs `GPUI_AGENT_REMOTE=1` **and** a token. The CLI refuses a non-loopback `--addr` unless `--allow-remote` / `GPUI_AGENT_ALLOW_REMOTE=1` **and** a token. Plaintext TCP+token is lab-only. |
 | `--connect` | Bundle id or executable name. The CLI finds that app's AgentHost (no fixed app port). `--connect last` reuses the last pick; a command with neither `--connect` nor `--addr` goes to the default address, so one agent never drives the app another agent picked. A command routed by `--connect` names its app on stderr. `--addr` / `GPUI_AGENT_ADDR` still wins. |
+| `--session` | Reuse a saved address and token; set it with `gpui-agent --session <name> attach <target>`. Conflicts with `--addr` and `--connect`; `GPUI_AGENT_SESSION` is also accepted. |
 | Host token | **Required** to bind (`GPUI_AGENT_TOKEN`). `GPUI_AGENT_INSECURE_NO_TOKEN=1` restores untokened loopback for local demos (loud banner). |
 | Required for `recipe run` / `mcp` | Non-empty `GPUI_AGENT_TOKEN` or `--token` on the **client**. Set the **same** value on the host. `hello.auth` is `"required"` or `"none"`. |
 | DoS caps | 1 MiB NDJSON line, 32 concurrent connections, 128 mailbox depth, 30s idle timeout |

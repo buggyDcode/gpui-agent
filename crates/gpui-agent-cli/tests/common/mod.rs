@@ -3,6 +3,7 @@
 //! binary uses every helper.
 #![allow(dead_code)]
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -18,6 +19,41 @@ pub struct Todo {
     pub addr: String,
     shutdown: Arc<AtomicBool>,
     store: Arc<Mutex<TodoStore>>,
+}
+
+pub struct RuntimeRoot {
+    path: PathBuf,
+}
+
+impl RuntimeRoot {
+    pub fn new() -> Self {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gpui-agent-cli-runtime-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).expect("create isolated runtime root");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                .expect("make isolated runtime root private");
+        }
+        Self { path }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for RuntimeRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }
 
 impl Todo {
