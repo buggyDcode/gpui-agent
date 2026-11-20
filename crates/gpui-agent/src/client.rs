@@ -37,7 +37,7 @@ struct LiveSession {
 impl LiveSession {
     fn open(addr: SocketAddr, timeout: Duration, token: Option<&str>) -> Result<Self, String> {
         let stream = TcpStream::connect_timeout(&addr, Duration::from_millis(400))
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| format!("{TCP_CONNECT}{err}"))?;
         let _ = stream.set_nodelay(true);
         stream
             .set_read_timeout(Some(timeout))
@@ -194,24 +194,34 @@ pub const NO_REPLY: &str = "no reply";
 /// platform) means the host is there and busy, which calls for a longer
 /// timeout, not for checking the address.
 fn no_answer(addr: SocketAddr, timeout: Duration, last_err: &str) -> String {
-    let timed_out = [
-        "timed out",
-        "os error 11)",
-        "os error 35)",
-        "os error 10060)",
-    ]
-    .iter()
-    .any(|mark| last_err.contains(mark));
-    let refused = last_err.contains("refused");
-    if timed_out && !refused {
+    if read_timed_out(last_err) {
         format!(
             "{NO_REPLY} from {addr} within {ms} ms: the host is up but did not answer \
              (busy or animating); raise the timeout",
             ms = timeout.as_millis()
         )
     } else {
-        format!("connect {addr} failed: {last_err}")
+        let cause = last_err.strip_prefix(TCP_CONNECT).unwrap_or(last_err);
+        format!("connect {addr} failed: {cause}")
     }
+}
+
+/// Marks an error from opening the TCP connection, where running out of
+/// time means the host was never reached.
+const TCP_CONNECT: &str = "tcp connect: ";
+
+/// `true` for an error of reading or writing on an open connection that ran
+/// out of time.
+fn read_timed_out(err: &str) -> bool {
+    !err.starts_with(TCP_CONNECT)
+        && [
+            "timed out",
+            "os error 11)",
+            "os error 35)",
+            "os error 10060)",
+        ]
+        .iter()
+        .any(|mark| err.contains(mark))
 }
 
 impl AgentClient {
@@ -238,6 +248,10 @@ impl AgentClient {
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
+    }
+
+    pub fn timeout(&self) -> Duration {
+        self.timeout
     }
 
     pub fn set_timeout(&mut self, timeout: Duration) {
@@ -381,7 +395,11 @@ impl AgentClient {
                 }
                 Err(PipelineError::Fatal(err)) => {
                     self.drop_session();
-                    return Err(err);
+                    return Err(if read_timed_out(&err) {
+                        no_answer(self.addr, self.timeout, &err)
+                    } else {
+                        err
+                    });
                 }
             }
         }
@@ -781,6 +799,11 @@ mod tests {
             assert!(message.starts_with(NO_REPLY), "{message}");
             assert!(message.contains("1500 ms"), "{message}");
         }
+        let unreachable = no_answer(addr, timeout, "tcp connect: connection timed out");
+        assert_eq!(
+            unreachable,
+            "connect 127.0.0.1:17421 failed: connection timed out"
+        );
         let refused = no_answer(addr, timeout, "Connection refused (os error 111)");
         assert!(
             refused.starts_with("connect 127.0.0.1:17421 failed"),
