@@ -589,7 +589,11 @@ impl AgentHost for TodoStore {
             auth: gpui_agent::HelloAuth::None,
             bundle_id: None,
             executable: None,
-            features: vec!["press".into(), "paste".into()],
+            features: if self.platform == PlatformKind::Desktop {
+                vec!["press".into()]
+            } else {
+                vec!["press".into(), "paste".into()]
+            },
         }
     }
 
@@ -684,7 +688,13 @@ impl AgentHost for TodoStore {
                 target: Some(target),
                 ..
             } => self.click(target),
-            Op::Paste { target, text } => self.type_into(target, text),
+            Op::Press { target: None, .. } => {
+                Err("this host presses named targets only; pass a target".into())
+            }
+            Op::Paste { target, text } if self.platform != PlatformKind::Desktop => {
+                self.type_into(target, text)
+            }
+            Op::Paste { .. } => Err(gpui_agent::unsupported_op("paste")),
             other => Err(gpui_agent::unsupported_op(
                 other.feature().unwrap_or("this operation"),
             )),
@@ -1496,5 +1506,57 @@ mod gated_op_tests {
             assert!(hello.features.iter().any(|f| f == feature), "{feature}");
         }
         assert!(!hello.features.iter().any(|f| f == "hover"));
+    }
+
+    #[test]
+    fn targetless_press_is_a_request_error_not_an_unsupported_op() {
+        let mut store = TodoStore::default();
+        let resp = handle_request(
+            &mut store,
+            Request::new(
+                "2",
+                Op::Press {
+                    target: None,
+                    x: None,
+                    y: None,
+                    expect_fingerprint: None,
+                },
+            ),
+            None,
+            None,
+        );
+        assert!(!resp.ok);
+        let error = resp.error.unwrap();
+        assert_eq!(
+            error,
+            "this host presses named targets only; pass a target"
+        );
+        assert!(!gpui_agent::is_unsupported_op(&error));
+    }
+
+    #[test]
+    fn desktop_host_does_not_advertise_or_dispatch_paste() {
+        let mut store = TodoStore::new(PlatformKind::Desktop);
+        let hello = handle_request(&mut store, Request::new("1", Op::Hello), None, None)
+            .hello
+            .unwrap();
+        assert!(!hello.features.iter().any(|feature| feature == "paste"));
+
+        let response = handle_request(
+            &mut store,
+            Request::new(
+                "2",
+                Op::Paste {
+                    target: ids::INPUT.into(),
+                    text: "replacement".into(),
+                },
+            ),
+            None,
+            None,
+        );
+        assert!(!response.ok);
+        assert!(gpui_agent::is_unsupported_op(
+            response.error.as_deref().unwrap()
+        ));
     }
 }

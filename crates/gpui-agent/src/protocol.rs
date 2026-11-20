@@ -217,7 +217,11 @@ pub enum Op {
     /// adds an `id → UiNode::fingerprint` map (M5). Omitting all three
     /// keeps the v2 response byte-identical.
     Snapshot {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "integers::optional_u64"
+        )]
         since: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         format: Option<SnapshotFormat>,
@@ -233,9 +237,17 @@ pub enum Op {
     /// `{"events":[{seq,level,target,message}…],"latest":N,"lagged":bool}`.
     /// Hosts without a ring fail closed with "events unsupported".
     Events {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "integers::optional_u64"
+        )]
         since: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "integers::optional_u32"
+        )]
         limit: Option<u32>,
     },
     Click {
@@ -247,7 +259,11 @@ pub enum Op {
         /// [`crate::tree::UiNode::fingerprint`] on the dispatch path; mismatch →
         /// `stale_target`, missing node → `target_gone`. Nothing
         /// dispatches on a mismatch.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "integers::optional_u64"
+        )]
         expect_fingerprint: Option<u64>,
     },
     Type {
@@ -255,13 +271,21 @@ pub enum Op {
         text: String,
         #[serde(default, skip_serializing_if = "DeliveryMode::is_semantic")]
         delivery: DeliveryMode,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "integers::optional_u64"
+        )]
         expect_fingerprint: Option<u64>,
     },
     SetValue {
         target: String,
         value: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "integers::optional_u64"
+        )]
         expect_fingerprint: Option<u64>,
     },
     Key {
@@ -269,7 +293,11 @@ pub enum Op {
         key: String,
         #[serde(default, skip_serializing_if = "DeliveryMode::is_semantic")]
         delivery: DeliveryMode,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "integers::optional_u64"
+        )]
         expect_fingerprint: Option<u64>,
     },
     /// Fire a GPUI **Action** by stable id (keymap path). Never OS HID.
@@ -302,7 +330,7 @@ pub enum Op {
         args: serde_json::Value,
     },
     Wait {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "integers::optional_u64")]
         timeout_ms: Option<u64>,
     },
     /// Poll [`AssertSpec`] until it succeeds or `timeout_ms` elapses.
@@ -310,6 +338,7 @@ pub enum Op {
     /// Distinct from [`Op::Wait`], which only polls `hello.ready` / first
     /// paint. Use this for toasts, overlays, and post-keybinding UI.
     WaitUntil {
+        #[serde(deserialize_with = "integers::required_u64")]
         timeout_ms: u64,
         #[serde(flatten)]
         spec: AssertSpec,
@@ -334,7 +363,11 @@ pub enum Op {
         /// Required when `mode` is `scrolled`. Ignored for viewport.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "integers::optional_u32"
+        )]
         max_height_px: Option<u32>,
         /// Return the PNG to the client over the wire instead of only a
         /// host path: the response carries a `blob` handle the client
@@ -349,6 +382,7 @@ pub enum Op {
     /// chunk is read.
     Blob {
         blob: String,
+        #[serde(deserialize_with = "integers::required_u32")]
         index: u32,
     },
     /// A pointer press (a tap on touch hosts) at a node or a point, as the
@@ -369,7 +403,11 @@ pub enum Op {
             deserialize_with = "points::optional"
         )]
         y: Option<f64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "integers::optional_u64"
+        )]
         expect_fingerprint: Option<u64>,
     },
     /// Scroll a scrollable node, or whatever is under a point, by a delta
@@ -476,7 +514,11 @@ pub enum Op {
             deserialize_with = "points::optional"
         )]
         y: Option<f64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "integers::optional_u64"
+        )]
         duration_ms: Option<u64>,
     },
     /// Two-finger pinch centred on a node: `scale > 1` spreads, `< 1`
@@ -653,6 +695,59 @@ mod points {
             serde_json::Value::Null => Ok(None),
             value => finite(&value).map(Some),
         }
+    }
+}
+
+mod integers {
+    use serde::{Deserialize, Deserializer, de::Error};
+
+    const PRIVATE_NUMBER: &str = "$serde_json::private::Number";
+
+    fn unsigned<E: Error>(value: serde_json::Value) -> Result<u64, E> {
+        match value {
+            serde_json::Value::Number(number) => number
+                .as_u64()
+                .ok_or_else(|| E::custom("expected an unsigned integer")),
+            serde_json::Value::Object(mut object) if object.len() == 1 => {
+                match object.remove(PRIVATE_NUMBER) {
+                    Some(serde_json::Value::String(number)) => number
+                        .parse()
+                        .map_err(|_| E::custom("expected an unsigned integer")),
+                    _ => Err(E::custom("expected an unsigned integer")),
+                }
+            }
+            value => Err(E::custom(format!(
+                "expected an unsigned integer, got {value}"
+            ))),
+        }
+    }
+
+    pub fn required_u64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+        unsigned(serde_json::Value::deserialize(deserializer)?)
+    }
+
+    pub fn optional_u64<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<u64>, D::Error> {
+        match serde_json::Value::deserialize(deserializer)? {
+            serde_json::Value::Null => Ok(None),
+            value => unsigned(value).map(Some),
+        }
+    }
+
+    pub fn required_u32<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+        u32::try_from(required_u64(deserializer)?)
+            .map_err(|_| D::Error::custom("unsigned integer exceeds u32"))
+    }
+
+    pub fn optional_u32<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<u32>, D::Error> {
+        optional_u64(deserializer)?
+            .map(|value| {
+                u32::try_from(value).map_err(|_| D::Error::custom("unsigned integer exceeds u32"))
+            })
+            .transpose()
     }
 }
 
@@ -910,7 +1005,7 @@ impl Op {
     }
 
     /// Attach the M5 `expect_fingerprint` gate to a mutating op
-    /// (`click`/`type`/`set_value`/`key`); a no-op for other variants.
+    /// (`click`/`press`/`type`/`set_value`/`key`); a no-op for other variants.
     pub fn with_fingerprint(self, fingerprint: u64) -> Self {
         match self {
             Self::Click {
@@ -918,6 +1013,14 @@ impl Op {
             } => Self::Click {
                 target,
                 delivery,
+                expect_fingerprint: Some(fingerprint),
+            },
+            Self::Press {
+                target, x, y, ..
+            } => Self::Press {
+                target,
+                x,
+                y,
                 expect_fingerprint: Some(fingerprint),
             },
             Self::Type {
@@ -1057,6 +1160,7 @@ impl Op {
     /// the first protocol 2 release. `None` for the original ops.
     pub fn feature(&self) -> Option<&'static str> {
         Some(match self {
+            Self::Screenshot { inline: true, .. } => "screenshot_inline",
             Self::Press { .. } => "press",
             Self::Scroll { .. } => "scroll",
             Self::Hover { .. } => "hover",
@@ -1209,6 +1313,127 @@ impl Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flattened_op_integers_accept_private_number_maps_and_plain_values() {
+        let cases = [
+            (
+                Op::Snapshot {
+                    since: None,
+                    format: None,
+                    fingerprints: None,
+                },
+                "since",
+            ),
+            (
+                Op::Events {
+                    since: None,
+                    limit: None,
+                },
+                "since",
+            ),
+            (
+                Op::Events {
+                    since: None,
+                    limit: None,
+                },
+                "limit",
+            ),
+            (
+                Op::Click {
+                    target: "x".into(),
+                    delivery: DeliveryMode::Semantic,
+                    expect_fingerprint: None,
+                },
+                "expect_fingerprint",
+            ),
+            (
+                Op::Type {
+                    target: "x".into(),
+                    text: "y".into(),
+                    delivery: DeliveryMode::Semantic,
+                    expect_fingerprint: None,
+                },
+                "expect_fingerprint",
+            ),
+            (
+                Op::SetValue {
+                    target: "x".into(),
+                    value: "y".into(),
+                    expect_fingerprint: None,
+                },
+                "expect_fingerprint",
+            ),
+            (
+                Op::Key {
+                    target: "x".into(),
+                    key: "Enter".into(),
+                    delivery: DeliveryMode::Semantic,
+                    expect_fingerprint: None,
+                },
+                "expect_fingerprint",
+            ),
+            (
+                Op::Press {
+                    target: Some("x".into()),
+                    x: None,
+                    y: None,
+                    expect_fingerprint: None,
+                },
+                "expect_fingerprint",
+            ),
+            (Op::Wait { timeout_ms: None }, "timeout_ms"),
+            (
+                Op::wait_until(
+                    AssertSpec {
+                        target: "x".into(),
+                        ..AssertSpec::default()
+                    },
+                    0,
+                ),
+                "timeout_ms",
+            ),
+            (
+                Op::Screenshot {
+                    path: None,
+                    mode: ScreenshotMode::Viewport,
+                    target: None,
+                    max_height_px: None,
+                    inline: false,
+                },
+                "max_height_px",
+            ),
+            (
+                Op::Blob {
+                    blob: "b".into(),
+                    index: 0,
+                },
+                "index",
+            ),
+            (
+                Op::LongPress {
+                    target: None,
+                    x: None,
+                    y: None,
+                    duration_ms: None,
+                },
+                "duration_ms",
+            ),
+        ];
+
+        for (op, field) in cases {
+            let request = Request::new("1", op);
+            for number in [
+                serde_json::json!({"$serde_json::private::Number": "123"}),
+                serde_json::json!(123),
+            ] {
+                let mut value = serde_json::to_value(&request).unwrap();
+                value[field] = number;
+                let decoded: Request = serde_json::from_value(value).unwrap();
+                assert_eq!(serde_json::to_value(decoded).unwrap()[field], 123);
+            }
+        }
+    }
 
     #[test]
     fn screenshot_op_roundtrip() {
