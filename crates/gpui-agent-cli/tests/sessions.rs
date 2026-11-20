@@ -52,6 +52,20 @@ fn stderr(output: &Output) -> String {
 }
 
 #[test]
+fn runtime_roots_created_concurrently_are_distinct() {
+    let threads: Vec<_> = (0..16)
+        .map(|_| std::thread::spawn(RuntimeRoot::new))
+        .collect();
+    let roots: Vec<_> = threads
+        .into_iter()
+        .map(|thread| thread.join().expect("create isolated runtime root"))
+        .collect();
+    let paths: std::collections::HashSet<_> =
+        roots.iter().map(|root| root.path().to_path_buf()).collect();
+    assert_eq!(paths.len(), roots.len());
+}
+
+#[test]
 fn named_sessions_attach_reuse_list_detach_and_do_not_save_failed_attach() {
     let todo = Todo::spawn(TOKEN);
     let runtime = RuntimeRoot::new();
