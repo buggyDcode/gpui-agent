@@ -441,15 +441,26 @@ fn take_non_empty_token(token: Option<String>) -> Option<String> {
     token.filter(|s| !s.is_empty())
 }
 
-fn parse_cli_from<I, T>(args: I) -> (Cli, bool)
+#[derive(Clone, Copy)]
+struct CliSources {
+    token: bool,
+    addr: bool,
+    connect: bool,
+}
+
+fn parse_cli_from<I, T>(args: I) -> (Cli, CliSources)
 where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
 {
     let matches = Cli::command().get_matches_from(args);
-    let command_line_token = matches.value_source("token") == Some(ValueSource::CommandLine);
+    let sources = CliSources {
+        token: matches.value_source("token") == Some(ValueSource::CommandLine),
+        addr: matches.value_source("addr") == Some(ValueSource::CommandLine),
+        connect: matches.value_source("connect") == Some(ValueSource::CommandLine),
+    };
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
-    (cli, command_line_token)
+    (cli, sources)
 }
 
 fn require_session_name<'a>(cli: &'a Cli, command: &str) -> Result<&'a str> {
@@ -462,8 +473,19 @@ fn require_session_name<'a>(cli: &'a Cli, command: &str) -> Result<&'a str> {
 fn resolve_cli_target(
     root: &Path,
     cli: &Cli,
+    sources: CliSources,
 ) -> Result<(gpui_agent::ClientTarget, Option<NamedSession>)> {
     if let Some(name) = cli.session.as_deref() {
+        if sources.addr {
+            return Err(anyhow!(
+                "--session cannot be used with command-line --addr"
+            ));
+        }
+        if sources.connect {
+            return Err(anyhow!(
+                "--session cannot be used with command-line --connect"
+            ));
+        }
         let session = gpui_agent::discovery::load_named_session(root, name)?;
         let addr = session
             .addr
@@ -551,7 +573,7 @@ fn require_recipe_mcp_token(token: Option<&str>) -> Result<&str> {
 }
 
 fn run() -> Result<()> {
-    let (mut cli, mut token_from_command_line) = parse_cli_from(std::env::args_os());
+    let (mut cli, mut sources) = parse_cli_from(std::env::args_os());
     if matches!(cli.command, Command::Skill) {
         print!("{}", skill());
         return Ok(());
@@ -591,7 +613,7 @@ fn run() -> Result<()> {
         return recipe_cmd::run(None, action, &schema);
     }
     let root = gpui_agent::runtime_root();
-    let (initial_target, _) = resolve_cli_target(&root, &cli)?;
+    let (initial_target, _) = resolve_cli_target(&root, &cli, sources)?;
     // Say which app discovery picked before acting on it, so a command that lands in the wrong
     // window is visible. Stderr keeps stdout (and `mcp`'s protocol) clean.
     // `@e3` stands for a node of the last `snapshot --refs` of this host.
@@ -602,16 +624,16 @@ fn run() -> Result<()> {
         .any(|arg| arg.to_str().is_some_and(refs::is_ref))
     {
         refs::resolve(&root, initial_target.addr, &mut args[1..]).map_err(|e| anyhow!(e))?;
-        (cli, token_from_command_line) = parse_cli_from(args);
+        (cli, sources) = parse_cli_from(args);
     }
-    let (target, session) = resolve_cli_target(&root, &cli)?;
+    let (target, session) = resolve_cli_target(&root, &cli, sources)?;
     let addr = target.addr;
     if let Some(session) = &session {
         eprintln!("gpui-agent: session {} -> {addr}", session.name);
     } else if target.app.is_some() {
         eprintln!("gpui-agent: {}", target.describe());
     }
-    let token = take_non_empty_token(if token_from_command_line {
+    let token = take_non_empty_token(if sources.token {
         cli.token
     } else {
         session

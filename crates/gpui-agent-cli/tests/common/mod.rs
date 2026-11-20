@@ -36,6 +36,12 @@ impl RuntimeRoot {
             std::process::id()
         ));
         std::fs::create_dir_all(&path).expect("create isolated runtime root");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                .expect("make isolated runtime root private");
+        }
         Self { path }
     }
 

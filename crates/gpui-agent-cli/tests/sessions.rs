@@ -30,6 +30,19 @@ fn cli_with_env_token(runtime: &RuntimeRoot, args: &[&str], token: Option<&str>)
     command.output().expect("spawn gpui-agent")
 }
 
+fn cli_with_env_addr(runtime: &RuntimeRoot, args: &[&str], addr: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_gpui-agent"))
+        .args(args)
+        .env("GPUI_AGENT_RUNTIME_DIR", runtime.path())
+        .env("GPUI_AGENT_ADDR", addr)
+        .env_remove("GPUI_AGENT_SESSION")
+        .env_remove("GPUI_AGENT_CONNECT")
+        .env_remove("GPUI_AGENT_TOKEN")
+        .env_remove("GPUI_AGENT_ALLOW_REMOTE")
+        .output()
+        .expect("spawn gpui-agent")
+}
+
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
@@ -147,6 +160,51 @@ fn saved_token_precedes_environment_but_command_line_token_overrides_it() {
         !explicit_wrong.status.success(),
         "a command-line token should override the saved token"
     );
+}
+
+#[test]
+fn named_session_conflicts_with_command_line_selectors_but_ignores_env_addr() {
+    let todo = Todo::spawn(TOKEN);
+    let runtime = RuntimeRoot::new();
+    let attached = cli(
+        &runtime,
+        &["--session", "s", "--token", TOKEN, "attach", &todo.addr],
+    );
+    assert!(
+        attached.status.success(),
+        "attach failed: {}",
+        stderr(&attached)
+    );
+
+    let addr_conflict = cli(
+        &runtime,
+        &["--session", "s", "hello", "--addr", "127.0.0.1:9"],
+    );
+    assert!(!addr_conflict.status.success());
+    assert!(
+        stderr(&addr_conflict).contains("command-line --addr"),
+        "{}",
+        stderr(&addr_conflict)
+    );
+
+    let connect_conflict = cli(
+        &runtime,
+        &["--connect", "some-app", "hello", "--session", "s"],
+    );
+    assert!(!connect_conflict.status.success());
+    assert!(
+        stderr(&connect_conflict).contains("command-line --connect"),
+        "{}",
+        stderr(&connect_conflict)
+    );
+
+    let env_addr = cli_with_env_addr(&runtime, &["--session", "s", "hello"], "127.0.0.1:9");
+    assert!(
+        env_addr.status.success(),
+        "the saved session should override GPUI_AGENT_ADDR: {}",
+        stderr(&env_addr)
+    );
+    assert!(serde_json::from_slice::<Value>(&env_addr.stdout).is_ok());
 }
 
 #[test]
