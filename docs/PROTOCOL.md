@@ -365,6 +365,50 @@ Point Claude Code at the binary (`args: ["mcp"]` or
 the host). `GPUI_AGENT_SCHEMA` is still honored. Document your app’s ids and `invoke` names in the project
 prompt — do not add per-app MCP tools to this repo.
 
+## Pointer, touch and system ops (feature-gated)
+
+These ops were added after the first protocol 2 release. The wire version is
+still 2: a host lists each one it implements in `hello.features`, and answers
+any it does not list with `unsupported_op: …` before the op reaches the app.
+
+| Op | Fields | Feature |
+|---|---|---|
+| `press` | `target` or `x`,`y`; optional `expect_fingerprint` | `press` |
+| `scroll` | `target` or `x`,`y`; `dx`,`dy` in logical points | `scroll` |
+| `hover` | `target` or `x`,`y` | `hover` |
+| `drag` | `from`,`to`, or `target` / `x`,`y` with `dx`,`dy` | `drag` |
+| `swipe` | `direction` (`up`/`down`/`left`/`right`); optional `target`, `distance` | `swipe` |
+| `long_press` | `target` or `x`,`y`; optional `duration_ms` | `long_press` |
+| `pinch` | `scale`; optional `target` | `pinch` |
+| `viewport` | `width`,`height` or `preset` | `viewport` |
+| `paste` | `target`, `text` | `paste` |
+| `system` | `action`; `value` for `rotate` and `open_url` | `system.<action>` |
+
+`system` actions: `back`, `home`, `rotate`, `keyboard_show`, `keyboard_hide`,
+`background`, `foreground`, `open_url`.
+
+A pointer or touch op must be refused when its target is hidden, disabled,
+outside the viewport or covered by another node; a host never moves the press
+to a different node to make it succeed.
+
+Hosts built against gpui-agent 0.1 (the nsh adapter) exposed `press`,
+`scroll`, `hover`, `drag` and `viewport` as `invoke` names. `AgentClient::gated`
+sends that spelling to a host that does not list the feature, so a new client
+still drives them.
+
+`hello` also carries optional `framework` (`gpui`, `nsh`) and `device`
+(`model`, `form_factor`, `scale`, `width`, `height`, `orientation`,
+`safe_area`, `input`). A host fills what it knows and omits the rest.
+
+### Screenshots over the connection
+
+`screenshot` with `inline: true` (feature `screenshot_inline`) is for a host
+whose files the client cannot read: a device or a browser. `path` may be
+omitted. The response's `result.blob` is `{blob, bytes, chunks}`; the client
+reads each chunk with `{"op":"blob","blob":"…","index":N}`, which returns
+`{data, index, last}` with `data` in base64. Each chunk fits the 1 MiB line.
+The host drops the blob after its last chunk and holds at most four.
+
 ## Named commands (`invoke`)
 
 `invoke.name` is an **app-defined** string. The protocol does not
