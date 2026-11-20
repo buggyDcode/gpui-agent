@@ -1149,12 +1149,8 @@ mod tests {
         client.set_timeout(Duration::from_millis(100));
         let started = std::time::Instant::now();
         let timeout = client.timeout;
-        let response = client.pipeline_once_until(
-            2,
-            &[&Op::Hello],
-            Instant::now() + timeout,
-            timeout,
-        );
+        let response =
+            client.pipeline_once_until(2, &[&Op::Hello], Instant::now() + timeout, timeout);
         let elapsed = started.elapsed();
         server.join().unwrap();
 
