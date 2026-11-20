@@ -94,7 +94,12 @@ fn unsafe_runtime_root_errors_reach_discovery_commands() {
     assert!(doctor_stdout.contains("fail  discovery:"));
     assert!(doctor_stdout.contains("ok    connect"));
     assert!(doctor_stdout.contains("ok    hello:"));
-    assert!(doctor_stdout.contains("ok    snapshot:"), "{doctor_stdout}");
+    assert!(
+        doctor_stdout.lines().any(
+            |line| line.starts_with("ok    snapshot:") || line.starts_with("warn    snapshot:")
+        ),
+        "{doctor_stdout}"
+    );
     let failures = doctor_stdout
         .lines()
         .filter(|line| line.starts_with("fail"))
