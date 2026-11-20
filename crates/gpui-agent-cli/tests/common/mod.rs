@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use gpui_agent::AgentHost;
@@ -25,17 +25,22 @@ pub struct RuntimeRoot {
     path: PathBuf,
 }
 
+static NEXT_RUNTIME_ROOT_ID: AtomicU64 = AtomicU64::new(0);
+
 impl RuntimeRoot {
     pub fn new() -> Self {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "gpui-agent-cli-runtime-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&path).expect("create isolated runtime root");
+        let path = loop {
+            let id = NEXT_RUNTIME_ROOT_ID.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "gpui-agent-cli-runtime-{}-{id}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => break path,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create isolated runtime root: {error}"),
+            }
+        };
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

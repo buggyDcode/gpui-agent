@@ -28,6 +28,22 @@ pub fn is_ref(arg: &str) -> bool {
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
+fn ref_arg(arg: &str) -> Option<(&str, &str)> {
+    if is_ref(arg) {
+        return Some(("", arg));
+    }
+    let (option, value) = arg.split_once('=')?;
+    (NODE_ID_OPTIONS.contains(&option) && is_ref(value))
+        .then_some((&arg[..option.len() + 1], value))
+}
+
+const NODE_ID_OPTIONS: &[&str] = &["--id", "--target", "--from", "--to"];
+
+/// `true` for an exact ref argument or a node-id option with a ref value.
+pub fn has_ref(arg: &str) -> bool {
+    ref_arg(arg).is_some()
+}
+
 /// A node earns a line when it says something or can be acted on; bare
 /// layout containers only pass their children up. Where the host gives
 /// geometry (`sized`), a node without any is not on screen.
@@ -110,14 +126,38 @@ pub fn save(
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, serde_json::to_vec(table)?)
+    let body = serde_json::to_vec(table)?;
+    let mut n = 0u32;
+    let (tmp, mut file) = loop {
+        let candidate = path.with_extension(format!("{}.{}.tmp", std::process::id(), n));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => break (candidate, file),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                n = n.checked_add(1).ok_or(err)?;
+            }
+            Err(err) => return Err(err),
+        }
+    };
+    let result = (|| {
+        std::io::Write::write_all(&mut file, &body)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&tmp, &path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(tmp);
+    }
+    result
 }
 
 /// Replaces every ref among `args` with the node id it stands for. The
 /// arguments stay as the OS gave them: a path need not be UTF-8.
 pub fn resolve(root: &Path, addr: SocketAddr, args: &mut [OsString]) -> Result<(), String> {
-    let as_ref = |arg: &OsString| arg.to_str().filter(|arg| is_ref(arg)).map(str::to_owned);
-    if !args.iter().any(|arg| as_ref(arg).is_some()) {
+    if !args.iter().any(|arg| arg.to_str().is_some_and(has_ref)) {
         return Ok(());
     }
     gpui_agent::discovery::ensure_runtime_dir(root)
@@ -129,11 +169,13 @@ pub fn resolve(root: &Path, addr: SocketAddr, args: &mut [OsString]) -> Result<(
             format!("no refs saved for {addr}: run `gpui-agent snapshot --refs` first")
         })?;
     for arg in args.iter_mut() {
-        let Some(name) = as_ref(arg) else { continue };
+        let Some((prefix, name)) = arg.to_str().and_then(ref_arg) else {
+            continue;
+        };
         let id = table.get(&name[1..]).ok_or_else(|| {
             format!("unknown ref {name}: it is not in the last `gpui-agent snapshot --refs`")
         })?;
-        *arg = OsString::from(id);
+        *arg = OsString::from(format!("{prefix}{id}"));
     }
     Ok(())
 }
@@ -199,9 +241,34 @@ mod tests {
         let root = std::env::temp_dir().join(format!("gpui-agent-refs-{}", std::process::id()));
         let addr: SocketAddr = "127.0.0.1:17421".parse().unwrap();
         save(&root, addr, &table).unwrap();
-        let mut args: Vec<OsString> = vec!["press".into(), "@e3".into(), "@everyone".into()];
+        let mut args: Vec<OsString> = vec![
+            "press".into(),
+            "@e3".into(),
+            "--id=@e1".into(),
+            "--target=@e1".into(),
+            "--from=@e1".into(),
+            "--to=@e1".into(),
+            "--name=@e1".into(),
+            "--value=@e1".into(),
+            "--text=hi @e1".into(),
+            "@everyone".into(),
+        ];
         resolve(&root, addr, &mut args).unwrap();
-        assert_eq!(args, ["press", "n40", "@everyone"]);
+        assert_eq!(
+            args,
+            [
+                "press",
+                "n40",
+                "--id=n12",
+                "--target=n12",
+                "--from=n12",
+                "--to=n12",
+                "--name=@e1",
+                "--value=@e1",
+                "--text=hi @e1",
+                "@everyone"
+            ]
+        );
         let mut stale: Vec<OsString> = vec!["@e9".into()];
         assert!(
             resolve(&root, addr, &mut stale)
@@ -214,6 +281,13 @@ mod tests {
                 .unwrap_err()
                 .contains("no refs saved")
         );
+        save(&root, addr, &BTreeMap::new()).unwrap();
+        assert_eq!(std::fs::read(table_path(&root, addr)).unwrap(), b"{}");
+        save(&root, addr, &table).unwrap();
+        assert_eq!(std::fs::read_dir(root.join("refs")).unwrap().count(), 1);
+        let blocked = root.join("not-a-directory");
+        std::fs::write(&blocked, b"blocked").unwrap();
+        assert!(save(&blocked, addr, &table).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 }

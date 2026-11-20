@@ -574,7 +574,18 @@ fn basename_match(rec: &HostRecord, id: &str) -> bool {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(rec.executable.as_str());
-    exec == want || exec == id
+    #[cfg(windows)]
+    {
+        let normalize = |name: &str| {
+            let name = name.to_ascii_lowercase();
+            name.strip_suffix(".exe").unwrap_or(&name).to_owned()
+        };
+        normalize(exec) == normalize(want)
+    }
+    #[cfg(not(windows))]
+    {
+        exec == want || exec == id
+    }
 }
 
 fn load_live(root: &Path) -> Vec<(PathBuf, HostRecord)> {
@@ -715,32 +726,78 @@ pub fn remove_named_session(root: &Path, name: &str) -> io::Result<bool> {
 }
 
 /// List valid saved sessions, ordered by name.
-pub fn list_named_sessions(root: &Path) -> Vec<NamedSession> {
-    let Ok(dir) = checked_named_sessions_dir(root, false) else {
-        return Vec::new();
+///
+/// Returns an error when session storage is unreadable or unsafe.
+pub fn list_named_sessions(root: &Path) -> Result<Vec<NamedSession>, ResolveError> {
+    let dir = match checked_named_sessions_dir(root, false) {
+        Ok(dir) => dir,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => {
+            return Err(ResolveError::RuntimeDirectory {
+                detail: err.to_string(),
+            });
+        }
     };
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => {
+            return Err(ResolveError::RuntimeDirectory {
+                detail: err.to_string(),
+            });
+        }
     };
-    let mut sessions: Vec<_> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-                return None;
+    let entries =
+        entries
+            .collect::<io::Result<Vec<_>>>()
+            .map_err(|err| ResolveError::RuntimeDirectory {
+                detail: err.to_string(),
+            })?;
+    let mut sessions = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(name) = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        if !valid_session_name(&name) {
+            continue;
+        }
+        match ensure_private_session_file(&path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => continue,
+            Err(err) => {
+                return Err(ResolveError::NamedSessionRead {
+                    name,
+                    detail: err.to_string(),
+                });
             }
-            let name = path.file_stem()?.to_str()?.to_string();
-            if !valid_session_name(&name) {
-                return None;
+        }
+        let body = match fs::read(&path) {
+            Ok(body) => body,
+            Err(err) if err.kind() == ErrorKind::NotFound => continue,
+            Err(err) => {
+                return Err(ResolveError::NamedSessionRead {
+                    name,
+                    detail: err.to_string(),
+                });
             }
-            ensure_private_session_file(&path).ok()?;
-            let body = fs::read(&path).ok()?;
-            let session: NamedSession = serde_json::from_slice(&body).ok()?;
-            (session.name == name).then_some(session)
-        })
-        .collect();
+        };
+        let Ok(session) = serde_json::from_slice::<NamedSession>(&body) else {
+            continue;
+        };
+        if session.name == name {
+            sessions.push(session);
+        }
+    }
     sessions.sort_by(|left, right| left.name.cmp(&right.name));
-    sessions
+    Ok(sessions)
 }
 
 fn parse_addr(addr: &str) -> Result<SocketAddr, ResolveError> {
@@ -759,11 +816,14 @@ pub fn tcp_open(addr: &str) -> bool {
 pub fn pid_alive(pid: u32) -> bool {
     // `kill(-1, 0)` targets every process. Refuse pids that do not fit in a
     // positive pid_t.
-    if pid == 0 || pid > i32::MAX as u32 {
+    if pid == 0 {
         return false;
     }
     #[cfg(unix)]
     {
+        if pid > i32::MAX as u32 {
+            return false;
+        }
         let rc = unsafe { kill(pid as i32, 0) };
         if rc == 0 {
             return true;
@@ -917,6 +977,23 @@ mod tests {
             resolve_client_addr(&root, Some(explicit), Some("dev.example.nativechat")).unwrap(),
             explicit
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_executable_matching_preserves_logical_id_priority() {
+        let root = temp_root("windows-exe");
+        let listener = listen();
+        let addr = listener.local_addr().unwrap();
+        let rec = record(addr, "Demo", r"C:\Program Files\Demo\DEMO.EXE", None);
+        let _keep = publish_record(&root, &rec).unwrap();
+        for id in ["demo", "demo.exe", "DEMO.EXE", r"C:\other\Demo.exe"] {
+            assert_eq!(resolve_id(&root, id).unwrap().addr, addr.to_string());
+        }
+        assert!(!basename_match(&rec, "other.exe"));
+        assert!(!basename_match(&rec, ""));
+        assert!(!exact_match(&rec, "demo"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1101,13 +1178,13 @@ mod tests {
         };
         save_named_session(&root, &another).unwrap();
         assert_eq!(
-            list_named_sessions(&root),
+            list_named_sessions(&root).unwrap(),
             vec![another.clone(), session.clone()]
         );
 
         assert!(remove_named_session(&root, "work_agent").unwrap());
         assert!(!remove_named_session(&root, "work_agent").unwrap());
-        assert_eq!(list_named_sessions(&root), vec![another]);
+        assert_eq!(list_named_sessions(&root).unwrap(), vec![another]);
         let _ = fs::remove_dir_all(root);
     }
 
