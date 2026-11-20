@@ -791,15 +791,7 @@ mod tests {
 
     #[test]
     fn reply_timeout_rejects_zero_during_parsing() {
-        assert!(
-            Cli::try_parse_from([
-                "gpui-agent",
-                "--reply-timeout-ms",
-                "0",
-                "hello"
-            ])
-            .is_err()
-        );
+        assert!(Cli::try_parse_from(["gpui-agent", "--reply-timeout-ms", "0", "hello"]).is_err());
     }
 
     #[test]

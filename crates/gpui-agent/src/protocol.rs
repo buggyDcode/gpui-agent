@@ -1015,9 +1015,7 @@ impl Op {
                 delivery,
                 expect_fingerprint: Some(fingerprint),
             },
-            Self::Press {
-                target, x, y, ..
-            } => Self::Press {
+            Self::Press { target, x, y, .. } => Self::Press {
                 target,
                 x,
                 y,

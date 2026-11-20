@@ -1527,10 +1527,7 @@ mod gated_op_tests {
         );
         assert!(!resp.ok);
         let error = resp.error.unwrap();
-        assert_eq!(
-            error,
-            "this host presses named targets only; pass a target"
-        );
+        assert_eq!(error, "this host presses named targets only; pass a target");
         assert!(!gpui_agent::is_unsupported_op(&error));
     }
 
