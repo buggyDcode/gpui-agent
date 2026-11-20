@@ -65,7 +65,8 @@ struct Cli {
     #[arg(
         long = "reply-timeout-ms",
         env = "GPUI_AGENT_REPLY_TIMEOUT_MS",
-        global = true
+        global = true,
+        value_parser = clap::value_parser!(u64).range(1..)
     )]
     request_timeout_ms: Option<u64>,
     /// Send the op as written, without checking the host's feature list
@@ -419,6 +420,13 @@ fn connect(addr: SocketAddr, timeout: Option<Duration>) -> AgentClient {
     }
 }
 
+fn wait_reply_timeout(reply_timeout: Duration, bound_ms: Option<u64>) -> Duration {
+    let bound = bound_ms
+        .map(|ms| Duration::from_millis(ms.saturating_add(2_000)))
+        .unwrap_or_default();
+    reply_timeout.max(bound)
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -677,11 +685,8 @@ fn run() -> Result<()> {
 
     match cli.command {
         Command::Wait { timeout_ms } => {
-            // Without an explicit reply timeout the wait's own bounds the
-            // call; with one, the client takes the longer of the two.
-            if let (Some(ms), None) = (timeout_ms, request_timeout) {
-                client = client.with_timeout(Duration::from_millis(ms));
-            }
+            let reply_timeout = request_timeout.unwrap_or_else(|| client.timeout());
+            client.set_timeout(wait_reply_timeout(reply_timeout, timeout_ms));
             print_resp(rpc(client.expect_ok(Op::Wait { timeout_ms }))?)
         }
         Command::WaitUntil {
@@ -696,10 +701,8 @@ fn run() -> Result<()> {
             visible,
             in_viewport,
         } => {
-            if request_timeout.is_none() {
-                client =
-                    client.with_timeout(Duration::from_millis(timeout_ms.saturating_add(2_000)));
-            }
+            let reply_timeout = request_timeout.unwrap_or_else(|| client.timeout());
+            client.set_timeout(wait_reply_timeout(reply_timeout, Some(timeout_ms)));
             let spec = AssertSpec {
                 target: id,
                 name,
@@ -928,6 +931,35 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     use super::*;
+
+    #[test]
+    fn wait_reply_timeout_covers_the_bound_and_preserves_longer_explicit_values() {
+        assert_eq!(
+            wait_reply_timeout(Duration::from_secs(8), Some(20_000)),
+            Duration::from_secs(22)
+        );
+        assert_eq!(
+            wait_reply_timeout(Duration::from_secs(30), Some(20_000)),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            wait_reply_timeout(Duration::from_secs(8), None),
+            Duration::from_secs(8)
+        );
+    }
+
+    #[test]
+    fn reply_timeout_rejects_zero_during_parsing() {
+        assert!(
+            Cli::try_parse_from([
+                "gpui-agent",
+                "--reply-timeout-ms",
+                "0",
+                "hello"
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn the_skill_names_only_commands_this_cli_has() {

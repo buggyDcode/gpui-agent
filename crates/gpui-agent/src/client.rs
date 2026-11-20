@@ -367,8 +367,37 @@ impl AgentClient {
         Err(no_answer(self.addr, timeout, &last_err))
     }
 
+    fn roundtrip_gated_retry(&mut self, op: &Op) -> Result<Response, String> {
+        let timeout = self.timeout_for(op);
+        let deadline = std::time::Instant::now() + timeout;
+        let mut last_err = String::new();
+        while std::time::Instant::now() < deadline {
+            if self.session.is_none() {
+                self.features = None;
+            }
+            let request = self.negotiated(op)?.unwrap_or_else(|| op.clone());
+            let id_num = self.next_id;
+            self.next_id += 1;
+            let mut id_buf = [0u8; 20];
+            let id = fmt_u64(id_num, &mut id_buf);
+            match self.roundtrip_wire(id, &request, timeout) {
+                Ok(response) => return Ok(response),
+                Err(err) => {
+                    last_err = err;
+                    self.drop_session();
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+        Err(format!(
+            "connect {addr} failed: {last_err}",
+            addr = self.addr
+        ))
+    }
+
     fn roundtrip_wire(&mut self, id: &str, op: &Op, timeout: Duration) -> Result<Response, String> {
         if self.session.is_none() {
+            self.features = None;
             self.session = Some(LiveSession::open(
                 self.addr,
                 timeout,
@@ -423,10 +452,15 @@ impl AgentClient {
         ops: &[&Op],
     ) -> Result<Vec<Response>, PipelineError> {
         if self.session.is_none() {
+            self.features = None;
             match LiveSession::open(self.addr, self.timeout, self.token.as_deref()) {
                 Ok(session) => self.session = Some(session),
                 Err(err) => return Err(PipelineError::Retryable(err)),
             }
+        } else if let Some(session) = self.session.as_mut() {
+            session
+                .set_io_timeout(self.timeout)
+                .map_err(PipelineError::Retryable)?;
         }
         match self
             .session
@@ -510,7 +544,7 @@ impl AgentClient {
         target: Option<String>,
         max_height_px: Option<u32>,
     ) -> Result<Vec<u8>, String> {
-        let resp = self.expect_ok(Op::Screenshot {
+        let resp = self.gated(Op::Screenshot {
             path: None,
             mode,
             target,
@@ -569,16 +603,27 @@ impl AgentClient {
     /// knew, where one exists; otherwise the call fails with
     /// `unsupported_op` and nothing is sent.
     pub fn gated(&mut self, op: Op) -> Result<Response, String> {
-        let op = self.negotiated(&op)?.unwrap_or(op);
-        self.expect_ok(op)
+        let response = if op.feature().is_some() {
+            self.roundtrip_gated_retry(&op)?
+        } else {
+            self.rpc_op(&op)?
+        };
+        if response.ok {
+            Ok(response)
+        } else {
+            Err(response
+                .error
+                .unwrap_or_else(|| "request failed".into()))
+        }
     }
 
     /// [`gated`](Self::gated) for callers that keep the failed response
     /// (the recipe runner's receipts): `ok: false` is returned, not an `Err`.
     pub fn rpc_gated(&mut self, op: &Op) -> Result<Response, String> {
-        match self.negotiated(op)? {
-            Some(legacy) => self.rpc_op(&legacy),
-            None => self.rpc_op(op),
+        if op.feature().is_some() {
+            self.roundtrip_gated_retry(op)
+        } else {
+            self.rpc_op(op)
         }
     }
 
@@ -755,6 +800,9 @@ fn parse_response_line(line: &[u8]) -> Result<Response, String> {
 mod tests {
     use super::*;
     use crate::protocol::Request;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::thread;
 
     #[test]
     fn wire_request_matches_owned_request_json() {
@@ -783,6 +831,68 @@ mod tests {
         );
         assert!(serde_json::to_value(&bare).unwrap().get("token").is_none());
         assert!(serde_json::to_value(&bare).unwrap().get("auth").is_none());
+    }
+
+    #[test]
+    fn pipeline_reapplies_the_current_socket_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            serde_json::to_writer(
+                &mut stream,
+                &serde_json::json!({
+                    "v": PROTOCOL_VERSION,
+                    "id": request["id"],
+                    "ok": true,
+                    "hello": {
+                        "protocol": PROTOCOL_VERSION,
+                        "app": "fake",
+                        "platform": "headless",
+                        "ready": true
+                    }
+                }),
+            )
+            .unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            thread::sleep(Duration::from_millis(500));
+            let _ = serde_json::to_writer(
+                &mut stream,
+                &serde_json::json!({
+                    "v": PROTOCOL_VERSION,
+                    "id": request["id"],
+                    "ok": true
+                }),
+            );
+            let _ = stream.write_all(b"\n");
+        });
+
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(5));
+        client.expect_ok(Op::Hello).unwrap();
+        client.set_timeout(Duration::from_millis(100));
+        let started = std::time::Instant::now();
+        let response = client.pipeline_once(2, &[&Op::Hello]);
+        let elapsed = started.elapsed();
+        server.join().unwrap();
+
+        assert!(response.is_err(), "the changed timeout must bound the read");
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "pipeline took {elapsed:?} with a 100 ms timeout"
+        );
     }
 
     #[test]

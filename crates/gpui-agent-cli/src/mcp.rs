@@ -429,6 +429,13 @@ fn parse_screenshot_mode(args: &Value) -> Result<gpui_agent::ScreenshotMode, Str
     }
 }
 
+fn wait_reply_timeout(reply_timeout: Duration, bound_ms: Option<u64>) -> Duration {
+    let bound = bound_ms
+        .map(|ms| Duration::from_millis(ms.saturating_add(2_000)))
+        .unwrap_or_default();
+    reply_timeout.max(bound)
+}
+
 fn call_tool(
     client: &mut AgentClient,
     params: &Value,
@@ -444,9 +451,8 @@ fn call_tool(
             // The wait's bound holds for this call only: the tools after it
             // get the server's reply timeout back.
             let reply_timeout = client.timeout();
-            if let Some(ms) = args.get("timeout_ms").and_then(Value::as_u64) {
-                client.set_timeout(Duration::from_millis(ms));
-            }
+            let bound_ms = args.get("timeout_ms").and_then(Value::as_u64);
+            client.set_timeout(wait_reply_timeout(reply_timeout, bound_ms));
             let ready = client.wait_ready();
             client.set_timeout(reply_timeout);
             ready?
@@ -457,7 +463,11 @@ fn call_tool(
                 .and_then(Value::as_u64)
                 .ok_or_else(|| "missing integer `timeout_ms`".to_string())?;
             let spec = parse_assert_spec(&args)?;
-            client.wait_until(spec, timeout_ms)?
+            let reply_timeout = client.timeout();
+            client.set_timeout(wait_reply_timeout(reply_timeout, Some(timeout_ms)));
+            let ready = client.wait_until(spec, timeout_ms);
+            client.set_timeout(reply_timeout);
+            ready?
         }
         "hello" => client.expect_ok(Op::Hello)?,
         "snapshot" => {
@@ -1155,6 +1165,22 @@ mod tests {
             .find(|t| t["name"] == "wait_until")
             .unwrap();
         assert_eq!(wait_until["inputSchema"]["required"], json!(["timeout_ms"]));
+    }
+
+    #[test]
+    fn mcp_wait_reply_timeout_covers_the_bound_and_preserves_longer_values() {
+        assert_eq!(
+            wait_reply_timeout(Duration::from_secs(8), Some(20_000)),
+            Duration::from_secs(22)
+        );
+        assert_eq!(
+            wait_reply_timeout(Duration::from_secs(30), Some(20_000)),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            wait_reply_timeout(Duration::from_secs(8), None),
+            Duration::from_secs(8)
+        );
     }
 
     #[test]
