@@ -36,10 +36,6 @@ struct LiveSession {
 }
 
 impl LiveSession {
-    fn open(addr: SocketAddr, timeout: Duration, token: Option<&str>) -> Result<Self, String> {
-        Self::open_until(addr, Instant::now() + timeout, token)
-    }
-
     fn open_until(
         addr: SocketAddr,
         deadline: Instant,
@@ -677,15 +673,6 @@ impl AgentClient {
             }
         }
         Err(no_answer(self.addr, self.timeout, &last_err))
-    }
-
-    fn pipeline_once(
-        &mut self,
-        start_id: u64,
-        ops: &[&Op],
-        reply_timeout: Duration,
-    ) -> Result<Vec<Response>, WireError> {
-        self.pipeline_once_until(start_id, ops, Instant::now() + self.timeout, reply_timeout)
     }
 
     fn pipeline_once_until(
