@@ -550,6 +550,11 @@ impl AgentClient {
                 }
             }
         }
+        self.session
+            .as_mut()
+            .expect("session")
+            .set_io_timeout(self.timeout)
+            .map_err(WireError::Retryable)?;
         let result = self
             .session
             .as_mut()
