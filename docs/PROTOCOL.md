@@ -393,8 +393,9 @@ to a different node to make it succeed.
 
 Hosts built against gpui-agent 0.1 (the nsh adapter) exposed `press`,
 `scroll`, `hover`, `drag` and `viewport` as `invoke` names. `AgentClient::gated`
-sends that spelling to a host that does not list the feature, so a new client
-still drives them.
+sends that spelling to such a host (one that lists neither the feature nor
+`screenshot_inline`), so a new client still drives them. A current host that
+omits a feature is never sent the op.
 
 `hello` also carries optional `framework` (`gpui`, `nsh`) and `device`
 (`model`, `form_factor`, `scale`, `width`, `height`, `orientation`,
