@@ -22,6 +22,7 @@ pub const DEFAULT_PORT: u16 = 17421;
 pub const MAX_LINE_BYTES: usize = 1024 * 1024;
 /// Drop new TCP clients when this many handler threads are already running.
 pub const MAX_CONNECTIONS: usize = 32;
+pub(crate) const CLIENT_SESSION_IDLE_RECONNECT_AFTER: Duration = Duration::from_secs(20);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn default_addr() -> SocketAddr {
