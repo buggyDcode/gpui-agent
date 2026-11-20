@@ -67,6 +67,21 @@ fn scalar_fields(node: &UiNode) -> serde_json::Map<String, serde_json::Value> {
         .collect()
 }
 
+fn scalar_field_value(node: &UiNode, field: &str) -> Option<serde_json::Value> {
+    match field {
+        "role" => serde_json::to_value(&node.role).ok(),
+        "name" => serde_json::to_value(&node.name).ok(),
+        "value" => serde_json::to_value(&node.value).ok(),
+        "checked" => serde_json::to_value(node.checked).ok(),
+        "enabled" => serde_json::to_value(node.enabled).ok(),
+        "focused" => serde_json::to_value(node.focused).ok(),
+        "visible" => serde_json::to_value(node.visible).ok(),
+        "bounds" => serde_json::to_value(node.bounds).ok(),
+        "states" => serde_json::to_value(&node.states).ok(),
+        _ => None,
+    }
+}
+
 /// `diff_trees(old, new)` — what a client at `old` needs to reach `new`.
 ///
 /// Ids are stable across revisions by contract; a node that changed
@@ -99,10 +114,21 @@ pub fn diff_trees(old: &UiTree, new: &UiTree) -> TreeDiff {
                     continue;
                 }
                 let old_fields = scalar_fields(old_node);
-                let fields: serde_json::Map<String, serde_json::Value> = scalar_fields(node)
-                    .into_iter()
-                    .filter(|(k, v)| old_fields.get(k) != Some(v))
+                let new_fields = scalar_fields(node);
+                let mut fields: serde_json::Map<String, serde_json::Value> = new_fields
+                    .iter()
+                    .filter(|(k, v)| old_fields.get(*k) != Some(*v))
+                    .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
+                for (key, old_value) in &old_fields {
+                    if !new_fields.contains_key(key) {
+                        if let Some(value) = scalar_field_value(node, key) {
+                            if old_value != &value {
+                                fields.insert(key.clone(), value);
+                            }
+                        }
+                    }
+                }
                 if !fields.is_empty() {
                     diff.changed.push(ChangedNode {
                         id: id.clone(),
@@ -277,5 +303,87 @@ fn compact_node(node: &UiNode, depth: usize, out: &mut String) {
     out.push('\n');
     for child in &node.children {
         compact_node(child, depth + 1, out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::PlatformKind;
+
+    fn tree(node: UiNode) -> UiTree {
+        UiTree {
+            app: "test".into(),
+            platform: PlatformKind::Headless,
+            ready: true,
+            nodes: vec![node],
+            rev: Some(1),
+        }
+    }
+
+    fn changed_fields<'a>(
+        diff: &'a TreeDiff,
+        id: &str,
+    ) -> &'a serde_json::Map<String, serde_json::Value> {
+        &diff
+            .changed
+            .iter()
+            .find(|change| change.id == id)
+            .expect("changed node")
+            .fields
+    }
+
+    #[test]
+    fn diff_reports_visibility_reset_to_default_and_applies_it() {
+        let mut hidden = UiNode::navigation("nav", "Navigation");
+        hidden.visible = false;
+        let old = tree(hidden);
+        let new = tree(UiNode::navigation("nav", "Navigation"));
+
+        let diff = diff_trees(&old, &new);
+        assert_eq!(changed_fields(&diff, "nav")["visible"], true);
+
+        let applied = apply_diff(&old, &diff);
+        assert_eq!(
+            applied.find("nav").unwrap().visible,
+            new.find("nav").unwrap().visible
+        );
+    }
+
+    #[test]
+    fn diff_reports_checked_reset_to_none_and_applies_it() {
+        let mut checked = UiNode::checkbox("confirm", "Confirm");
+        checked.checked = Some(true);
+        let old = tree(checked);
+        let new = tree(UiNode::checkbox("confirm", "Confirm"));
+
+        let diff = diff_trees(&old, &new);
+        assert!(changed_fields(&diff, "confirm")["checked"].is_null());
+
+        let applied = apply_diff(&old, &diff);
+        assert_eq!(
+            applied.find("confirm").unwrap().checked,
+            new.find("confirm").unwrap().checked
+        );
+    }
+
+    #[test]
+    fn diff_reports_states_reset_to_empty_and_applies_it() {
+        let mut selected = UiNode::button("item", "Item");
+        selected.states.push("selected".into());
+        let old = tree(selected);
+        let new = tree(UiNode::button("item", "Item"));
+
+        let diff = diff_trees(&old, &new);
+        assert_eq!(
+            changed_fields(&diff, "item")["states"],
+            serde_json::json!([])
+        );
+
+        let applied = apply_diff(&old, &diff);
+        assert_eq!(
+            applied.find("item").unwrap().states,
+            new.find("item").unwrap().states
+        );
     }
 }
