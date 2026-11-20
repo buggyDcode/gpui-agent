@@ -85,7 +85,7 @@ pub enum ResolveError {
         "no session named \"{name}\"; create it with: gpui-agent --session <name> attach <target>"
     )]
     NoNamedSession { name: String },
-    #[error("invalid session name \"{name}\"; use [a-z0-9][a-z0-9_-]{0,63}")]
+    #[error("invalid session name \"{name}\"; use [a-z0-9][a-z0-9_-]{{0,63}}")]
     BadSessionName { name: String },
     #[error("could not read session \"{name}\": {detail}")]
     NamedSessionRead { name: String, detail: String },
