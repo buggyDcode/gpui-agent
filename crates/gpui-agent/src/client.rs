@@ -1,6 +1,6 @@
-use std::io::{BufReader, Write};
+use std::io::{BufReader, ErrorKind, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::hmac_auth::{hmac_hex, parse_challenge_line};
 use crate::mailbox::MAX_MAILBOX_DEPTH;
@@ -8,7 +8,7 @@ use crate::ndjson::{read_limited_line_into, write_json_line};
 use crate::protocol::{
     AssertSpec, DeliveryMode, Op, PROTOCOL_VERSION, Response, ScreenshotMode, SnapshotFormat,
 };
-use crate::server::{MAX_LINE_BYTES, default_addr};
+use crate::server::{CLIENT_SESSION_IDLE_RECONNECT_AFTER, MAX_LINE_BYTES, default_addr};
 
 /// Blocking NDJSON client used by the CLI, MCP shim, recipes, and tests.
 ///
@@ -32,6 +32,7 @@ struct LiveSession {
     encode_buf: Vec<u8>,
     line_buf: Vec<u8>,
     auth: Option<String>,
+    last_used: Instant,
 }
 
 impl LiveSession {
@@ -56,6 +57,7 @@ impl LiveSession {
             encode_buf: Vec::with_capacity(4096),
             line_buf: Vec::with_capacity(4096),
             auth: None,
+            last_used: Instant::now(),
         };
         if let Some(token) = token {
             if !read_limited_line_into(&mut session.reader, &mut session.line_buf, MAX_LINE_BYTES)
@@ -66,6 +68,7 @@ impl LiveSession {
             let nonce = parse_challenge_line(&session.line_buf)?;
             session.auth = Some(hmac_hex(token, &nonce)?);
         }
+        session.last_used = Instant::now();
         Ok(session)
     }
 
@@ -79,6 +82,20 @@ impl LiveSession {
                 .map_err(|err| err.to_string())?;
         }
         Ok(())
+    }
+
+    fn peer_closed(&self) -> std::io::Result<bool> {
+        let stream = self.reader.get_ref();
+        stream.set_nonblocking(true)?;
+        let mut byte = [0u8; 1];
+        let peek = stream.peek(&mut byte);
+        stream.set_nonblocking(false)?;
+        match peek {
+            Ok(0) => Ok(true),
+            Ok(_) => Ok(false),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 
     fn exchange_wire(&mut self, id: &str, op: &Op) -> Result<Response, WireError> {
@@ -323,6 +340,7 @@ impl AgentClient {
     }
 
     fn roundtrip_retry(&mut self, op: &Op) -> Result<Response, String> {
+        self.drop_idle_session();
         let timeout = self.timeout_for(op);
         let deadline = std::time::Instant::now() + timeout;
         self.roundtrip_retry_until(op, deadline, timeout)
@@ -364,6 +382,7 @@ impl AgentClient {
     }
 
     fn roundtrip_gated_retry(&mut self, op: &Op) -> Result<Response, String> {
+        self.drop_idle_session();
         let timeout = self.timeout_for(op);
         let deadline = std::time::Instant::now() + timeout;
         let mut last_err = String::new();
@@ -415,18 +434,40 @@ impl AgentClient {
                 LiveSession::open(self.addr, timeout, self.token.as_deref())
                     .map_err(WireError::Retryable)?,
             );
-        } else if let Some(session) = self.session.as_mut() {
+        } else {
+            let peer_closed = self
+                .session
+                .as_ref()
+                .expect("session")
+                .peer_closed();
+            match peer_closed {
+                Ok(false) => {}
+                Ok(true) => {
+                    self.drop_session();
+                    return Err(WireError::Retryable(
+                        "connection closed before request".into(),
+                    ));
+                }
+                Err(error) => {
+                    self.drop_session();
+                    return Err(WireError::Retryable(error.to_string()));
+                }
+            }
+            let session = self.session.as_mut().expect("session");
             session
                 .set_io_timeout(timeout)
                 .map_err(WireError::Retryable)?;
         }
-        match self
+        let result = self
             .session
             .as_mut()
             .expect("session")
-            .exchange_wire(id, op)
-        {
-            Ok(resp) => Ok(resp),
+            .exchange_wire(id, op);
+        match result {
+            Ok(resp) => {
+                self.session.as_mut().expect("session").last_used = Instant::now();
+                Ok(resp)
+            }
             Err(err) => {
                 self.drop_session();
                 Err(err)
@@ -435,6 +476,7 @@ impl AgentClient {
     }
 
     fn pipeline_retry(&mut self, ops: &[&Op]) -> Result<Vec<Response>, String> {
+        self.drop_idle_session();
         let start_id = self.next_id;
         self.next_id += ops.len() as u64;
         let mut last_err = String::new();
@@ -470,14 +512,36 @@ impl AgentClient {
                 Ok(session) => self.session = Some(session),
                 Err(err) => return Err(WireError::Retryable(err)),
             }
+        } else {
+            let peer_closed = self
+                .session
+                .as_ref()
+                .expect("session")
+                .peer_closed();
+            match peer_closed {
+                Ok(false) => {}
+                Ok(true) => {
+                    self.drop_session();
+                    return Err(WireError::Retryable(
+                        "connection closed before request".into(),
+                    ));
+                }
+                Err(error) => {
+                    self.drop_session();
+                    return Err(WireError::Retryable(error.to_string()));
+                }
+            }
         }
-        match self
+        let result = self
             .session
             .as_mut()
             .expect("session")
-            .exchange_pipeline(start_id, ops)
-        {
-            Ok(resps) => Ok(resps),
+            .exchange_pipeline(start_id, ops);
+        match result {
+            Ok(resps) => {
+                self.session.as_mut().expect("session").last_used = Instant::now();
+                Ok(resps)
+            }
             Err(err) => {
                 self.drop_session();
                 Err(err)
@@ -592,6 +656,14 @@ impl AgentClient {
     fn drop_session(&mut self) {
         self.session = None;
         self.features = None;
+    }
+
+    fn drop_idle_session(&mut self) {
+        if self.session.as_ref().is_some_and(|session| {
+            session.last_used.elapsed() >= CLIENT_SESSION_IDLE_RECONNECT_AFTER
+        }) {
+            self.drop_session();
+        }
     }
 
     /// The host's `hello.features`, asked once per connection.

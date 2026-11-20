@@ -1,6 +1,6 @@
 use std::{
     io::{BufRead, BufReader, Write},
-    net::{TcpListener, TcpStream},
+    net::{Shutdown, TcpListener, TcpStream},
     sync::mpsc,
     thread,
     time::Duration,
@@ -200,5 +200,55 @@ fn gated_call_does_not_retry_after_the_request_was_written() {
     let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(1));
     let error = client.gated(press()).unwrap_err();
     assert!(error.contains("connection closed"), "{error}");
+    server.join().unwrap();
+}
+
+#[test]
+fn gated_call_reconnects_when_the_peer_closed_between_calls() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (closed_tx, closed_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let (mut old_writer, _) = listener.accept().unwrap();
+        let mut old_reader = BufReader::new(old_writer.try_clone().unwrap());
+        let request = read_request(&mut old_reader);
+        assert_eq!(request["op"], "hello");
+        respond(&mut old_writer, &request, Some(hello(&["press"])));
+        let request = read_request(&mut old_reader);
+        assert_eq!(request["op"], "press");
+        respond(&mut old_writer, &request, None);
+        old_writer.shutdown(Shutdown::Both).unwrap();
+        drop(old_reader);
+        drop(old_writer);
+        closed_tx.send(()).unwrap();
+
+        let (mut new_writer, _) = listener.accept().unwrap();
+        let mut new_reader = BufReader::new(new_writer.try_clone().unwrap());
+        let request = read_request(&mut new_reader);
+        assert_eq!(request["op"], "hello");
+        respond(&mut new_writer, &request, Some(hello(&["press"])));
+        let request = read_request(&mut new_reader);
+        assert_eq!(request["op"], "press");
+        respond(&mut new_writer, &request, None);
+
+        new_reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .unwrap();
+        let mut line = String::new();
+        let error = new_reader.read_line(&mut line).unwrap_err();
+        assert!(
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ),
+            "the second call was sent more than once"
+        );
+    });
+
+    let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+    assert!(client.gated(press()).unwrap().ok);
+    closed_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(client.gated(press()).unwrap().ok);
     server.join().unwrap();
 }
