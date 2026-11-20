@@ -605,14 +605,11 @@ fn load_live(root: &Path) -> Vec<(PathBuf, HostRecord)> {
 }
 
 /// Every host that published itself under `root` and is still running.
-pub fn live_hosts(root: &Path) -> Vec<HostRecord> {
-    if let Err(error) = ensure_runtime_root_for_discovery(root) {
-        log::warn!("could not list AgentHost discovery records: {error}");
-        return Vec::new();
-    }
+pub fn live_hosts(root: &Path) -> Result<Vec<HostRecord>, ResolveError> {
+    ensure_runtime_root_for_discovery(root)?;
     let mut hosts: Vec<_> = load_live(root).into_iter().map(|(_, rec)| rec).collect();
     hosts.sort_by(|a, b| a.addr.cmp(&b.addr));
-    hosts
+    Ok(hosts)
 }
 
 pub fn save_session(root: &Path, addr: &str, id: &str) -> io::Result<()> {
