@@ -77,12 +77,7 @@ fn count(nodes: &[UiNode]) -> usize {
 
 /// Runs the checks in order and prints one line each; `false` when the host
 /// cannot be driven as it stands.
-pub fn doctor(
-    addr: SocketAddr,
-    mut client: AgentClient,
-    has_token: bool,
-    root: &Path,
-) -> bool {
+pub fn doctor(addr: SocketAddr, mut client: AgentClient, has_token: bool, root: &Path) -> bool {
     let discovery_ok = check_discovery(root);
     let connect = Duration::from_secs(2);
     if let Err(err) = TcpStream::connect_timeout(&addr, connect) {
