@@ -399,7 +399,10 @@ omits a feature is never sent the op.
 
 `hello` also carries optional `framework` (`gpui`, `nsh`) and `device`
 (`model`, `form_factor`, `scale`, `width`, `height`, `orientation`,
-`safe_area`, `input`). A host fills what it knows and omits the rest.
+`safe_area`, `input`, `input_source`). A host fills what it knows and omits
+the rest. `input_source` is `trusted` when input reaches the app as the
+platform or browser delivers it (for example, CDP or OS events), and
+`synthetic` when the page dispatches DOM events itself.
 
 ### Screenshots over the connection
 

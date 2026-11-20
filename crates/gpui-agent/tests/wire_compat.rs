@@ -205,6 +205,34 @@ fn hello_from_a_0_1_host_still_parses_and_new_fields_are_omitted_when_unset() {
 }
 
 #[test]
+fn device_input_source_is_optional_and_round_trips() {
+    use gpui_agent::DeviceInfo;
+
+    let old = r#"{"protocol":2,"app":"x","platform":"mobile","os":"android","ready":true,"auth":"required","device":{"model":"Chrome"}}"#;
+    let mut hello: gpui_agent::HelloInfo = serde_json::from_str(old).unwrap();
+    assert_eq!(hello.device.as_ref().unwrap().input_source, None);
+
+    hello.device = Some(DeviceInfo {
+        input_source: Some("synthetic".into()),
+        ..DeviceInfo::default()
+    });
+    let wire = serde_json::to_value(&hello).unwrap();
+    assert_eq!(wire["device"]["input_source"], "synthetic");
+    let parsed: gpui_agent::HelloInfo = serde_json::from_value(wire).unwrap();
+    assert_eq!(
+        parsed.device.unwrap().input_source.as_deref(),
+        Some("synthetic")
+    );
+    assert!(
+        !serde_json::to_value(DeviceInfo::default())
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("input_source")
+    );
+}
+
+#[test]
 fn gesture_ops_fall_back_to_the_invoke_names_0_1_hosts_knew() {
     use gpui_agent::Op;
     let legacy = Op::Scroll {

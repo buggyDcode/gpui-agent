@@ -696,6 +696,11 @@ pub struct DeviceInfo {
     /// `synthetic` when the host can only simulate it (an attached browser tab).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<String>,
+    /// `trusted` when the platform delivers input as the OS/browser would
+    /// (CDP, OS events); `synthetic` when the page dispatches DOM events
+    /// itself, which default actions and `isTrusted` checks can tell apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
