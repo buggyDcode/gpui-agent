@@ -148,3 +148,31 @@ fn saved_token_precedes_environment_but_command_line_token_overrides_it() {
         "a command-line token should override the saved token"
     );
 }
+
+#[test]
+fn offline_recipe_validation_ignores_a_missing_session() {
+    let runtime = RuntimeRoot::new();
+    let recipe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/recipes/todo-crud.json");
+    let schema = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/schemas/todo.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_gpui-agent"))
+        .args(["recipe", "validate"])
+        .arg(recipe)
+        .arg("--schema")
+        .arg(schema)
+        .env("GPUI_AGENT_RUNTIME_DIR", runtime.path())
+        .env("GPUI_AGENT_SESSION", "missing")
+        .env_remove("GPUI_AGENT_ADDR")
+        .env_remove("GPUI_AGENT_CONNECT")
+        .env_remove("GPUI_AGENT_TOKEN")
+        .env_remove("GPUI_AGENT_ALLOW_REMOTE")
+        .output()
+        .expect("spawn gpui-agent");
+    assert!(
+        output.status.success(),
+        "offline recipe validation should not resolve a host: {}",
+        stderr(&output)
+    );
+    assert!(stdout(&output).contains("\"ok\": true"));
+}

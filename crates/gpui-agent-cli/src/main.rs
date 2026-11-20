@@ -568,6 +568,20 @@ fn run() -> Result<()> {
         );
         return Ok(());
     }
+    if matches!(
+        &cli.command,
+        Command::Recipe {
+            action: RecipeCommand::Validate { .. }
+                | RecipeCommand::Plan { .. }
+                | RecipeCommand::Resolve { .. },
+            ..
+        }
+    ) {
+        let Command::Recipe { schema, action } = cli.command else {
+            unreachable!();
+        };
+        return recipe_cmd::run(None, action, &schema);
+    }
     let root = gpui_agent::runtime_root();
     let (initial_target, _) = resolve_cli_target(&root, &cli)?;
     // Say which app discovery picked before acting on it, so a command that lands in the wrong
