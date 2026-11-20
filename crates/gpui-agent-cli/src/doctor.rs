@@ -2,6 +2,7 @@
 //! that should answer does not.
 
 use std::net::{SocketAddr, TcpStream};
+use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -12,9 +13,19 @@ use serde_json::{Value, json};
 
 /// Hosts that published themselves on this machine, and the devices `adb`
 /// sees with the ports forwarded to them.
-pub fn targets() -> Value {
-    let hosts = gpui_agent::live_hosts(&gpui_agent::runtime_root());
-    json!({ "hosts": hosts, "adb": adb_devices() })
+pub fn targets() -> Result<Value, gpui_agent::ResolveError> {
+    let hosts = gpui_agent::live_hosts(&gpui_agent::runtime_root())?;
+    Ok(json!({ "hosts": hosts, "adb": adb_devices() }))
+}
+
+pub fn check_discovery(root: &Path) -> bool {
+    match gpui_agent::live_hosts(root) {
+        Ok(_) => true,
+        Err(error) => {
+            println!("fail  discovery: {error}");
+            false
+        }
+    }
 }
 
 fn adb(args: &[&str]) -> Option<String> {

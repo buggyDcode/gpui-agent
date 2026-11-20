@@ -584,7 +584,7 @@ fn run() -> Result<()> {
         return Ok(());
     }
     if matches!(cli.command, Command::Targets) {
-        println!("{}", serde_json::to_string_pretty(&doctor::targets())?);
+        println!("{}", serde_json::to_string_pretty(&doctor::targets()?)?);
         return Ok(());
     }
     if matches!(cli.command, Command::Sessions) {
@@ -618,6 +618,12 @@ fn run() -> Result<()> {
         return recipe_cmd::run(None, action, &schema);
     }
     let root = gpui_agent::runtime_root();
+    if matches!(&cli.command, Command::Doctor) {
+        check_cli_target_selector_conflicts(&cli, sources)?;
+        if !doctor::check_discovery(&root) {
+            return Err(anyhow!("the host cannot be driven as it stands"));
+        }
+    }
     let (target, session) = resolve_cli_target(&root, &cli, sources)?;
     // Say which app discovery picked before acting on it, so a command that lands in the wrong
     // window is visible. Stderr keeps stdout (and `mcp`'s protocol) clean.
