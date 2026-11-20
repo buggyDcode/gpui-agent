@@ -53,7 +53,8 @@ struct Cli {
     #[arg(
         long = "reply-timeout-ms",
         env = "GPUI_AGENT_REPLY_TIMEOUT_MS",
-        global = true
+        global = true,
+        value_parser = clap::value_parser!(u64).range(1..)
     )]
     request_timeout_ms: Option<u64>,
     #[command(subcommand)]
@@ -773,6 +774,19 @@ mod tests {
         assert_eq!(
             wait_reply_timeout(Duration::from_secs(8), None),
             Duration::from_secs(8)
+        );
+    }
+
+    #[test]
+    fn reply_timeout_rejects_zero_during_parsing() {
+        assert!(
+            Cli::try_parse_from([
+                "gpui-agent",
+                "--reply-timeout-ms",
+                "0",
+                "hello"
+            ])
+            .is_err()
         );
     }
 
