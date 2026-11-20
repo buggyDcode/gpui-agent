@@ -10,6 +10,8 @@ use crate::protocol::{
 };
 use crate::server::{CLIENT_SESSION_IDLE_RECONNECT_AFTER, MAX_LINE_BYTES, default_addr};
 
+const FIRST_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(400);
+
 /// Blocking NDJSON client used by the CLI, MCP shim, recipes, and tests.
 ///
 /// After the first successful connect, subsequent [`rpc`](Self::rpc) calls
@@ -452,14 +454,29 @@ impl AgentClient {
         let mut id_buf = [0u8; 20];
         let id = fmt_u64(id_num, &mut id_buf);
         let mut last_err = String::new();
+        let mut first_attempt = true;
         loop {
-            if connect_deadline <= Instant::now() {
+            let now = Instant::now();
+            if connect_deadline <= now && (!first_attempt || shared_deadline.is_some()) {
                 break;
             }
+            let attempt_deadline = if first_attempt && shared_deadline.is_none() {
+                connect_deadline.max(now + FIRST_ATTEMPT_TIMEOUT)
+            } else {
+                connect_deadline
+            };
+            let attempt_timeout = if first_attempt && shared_deadline.is_none() {
+                timeout.max(FIRST_ATTEMPT_TIMEOUT)
+            } else {
+                timeout
+            };
             let result = match shared_deadline {
                 Some(deadline) => self.roundtrip_wire(id, op, deadline),
-                None => self.roundtrip_wire_with_reply_timeout(id, op, connect_deadline, timeout),
+                None => {
+                    self.roundtrip_wire_with_reply_timeout(id, op, attempt_deadline, attempt_timeout)
+                }
             };
+            first_attempt = false;
             match result {
                 Ok(resp) => return Ok(resp),
                 Err(WireError::Retryable(err)) => {
