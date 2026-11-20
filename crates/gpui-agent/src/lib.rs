@@ -42,8 +42,8 @@ pub use discovery::{
     runtime_root,
 };
 pub use dispatch::{
-    DispatchResult, TreeCache, assert_tree, authorize_request, handle_request,
-    handle_request_cached,
+    DispatchResult, TreeCache, assert_tree, authorize_request, check_fingerprint_gate,
+    handle_request, handle_request_cached,
 };
 pub use hmac_auth::{
     Challenge, challenge_for_nonce, hex_decode, hex_encode, hmac_hex, hmac_verify,
