@@ -472,9 +472,12 @@ impl AgentClient {
             };
             let result = match shared_deadline {
                 Some(deadline) => self.roundtrip_wire(id, op, deadline),
-                None => {
-                    self.roundtrip_wire_with_reply_timeout(id, op, attempt_deadline, attempt_timeout)
-                }
+                None => self.roundtrip_wire_with_reply_timeout(
+                    id,
+                    op,
+                    attempt_deadline,
+                    attempt_timeout,
+                ),
             };
             first_attempt = false;
             match result {
