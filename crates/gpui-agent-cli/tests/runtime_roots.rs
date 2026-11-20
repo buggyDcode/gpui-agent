@@ -24,6 +24,20 @@ fn cli_with_root(root: &Path, args: &[&str]) -> Output {
         .expect("spawn gpui-agent")
 }
 
+fn cli_with_root_and_path(root: &Path, args: &[&str], path: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_gpui-agent"))
+        .args(args)
+        .env("PATH", path)
+        .env("GPUI_AGENT_RUNTIME_DIR", root)
+        .env_remove("GPUI_AGENT_SESSION")
+        .env_remove("GPUI_AGENT_ADDR")
+        .env_remove("GPUI_AGENT_CONNECT")
+        .env_remove("GPUI_AGENT_TOKEN")
+        .env_remove("GPUI_AGENT_ALLOW_REMOTE")
+        .output()
+        .expect("spawn gpui-agent")
+}
+
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
@@ -35,18 +49,32 @@ fn stdout(output: &Output) -> String {
 #[cfg(unix)]
 #[test]
 fn unsafe_runtime_root_errors_reach_discovery_commands() {
+    use std::os::unix::fs::PermissionsExt;
+
     let runtime = RuntimeRoot::new();
     let target = RuntimeRoot::new();
     let unsafe_root = runtime.path().join("runtime-link");
     std::os::unix::fs::symlink(target.path(), &unsafe_root).unwrap();
 
-    let targets = cli_with_root(&unsafe_root, &["targets"]);
+    let adb_dir = RuntimeRoot::new();
+    let adb = adb_dir.path().join("adb");
+    std::fs::write(
+        &adb,
+        "#!/bin/sh\ncase \"$1\" in\n  devices) printf 'List of devices attached\\nemulator-5554\\tdevice\\n' ;;\n  forward) printf 'emulator-5554 tcp:17421 tcp:17421\\n' ;;\nesac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let targets = cli_with_root_and_path(&unsafe_root, &["targets"], adb_dir.path());
     assert!(!targets.status.success());
     assert!(
         stderr(&targets).contains("unsafe runtime directory"),
         "{}",
         stderr(&targets)
     );
+    let targets: serde_json::Value = serde_json::from_str(&stdout(&targets)).unwrap();
+    assert_eq!(targets["adb"][0]["serial"], "emulator-5554");
+    assert_eq!(targets["adb"][0]["forwarded"][0], "127.0.0.1:17421");
 
     let doctor = cli_with_root(&unsafe_root, &["doctor"]);
     assert!(!doctor.status.success());
@@ -54,6 +82,21 @@ fn unsafe_runtime_root_errors_reach_discovery_commands() {
         stdout(&doctor).contains("fail  discovery: could not use runtime directory"),
         "{}",
         stdout(&doctor)
+    );
+
+    let todo = Todo::spawn(TOKEN);
+    let doctor = cli_with_root(
+        &unsafe_root,
+        &["--addr", todo.addr.as_str(), "--token", TOKEN, "doctor"],
+    );
+    assert!(!doctor.status.success());
+    let doctor_stdout = stdout(&doctor);
+    assert!(doctor_stdout.contains("fail  discovery:"));
+    assert!(doctor_stdout.contains("ok    connect"));
+    assert!(doctor_stdout.contains("ok    hello:"));
+    assert!(
+        doctor_stdout.contains("snapshot:"),
+        "{doctor_stdout}"
     );
 
     let connect = cli_with_root(&unsafe_root, &["--connect", "fake-app", "hello"]);

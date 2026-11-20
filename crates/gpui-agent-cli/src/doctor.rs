@@ -13,9 +13,15 @@ use serde_json::{Value, json};
 
 /// Hosts that published themselves on this machine, and the devices `adb`
 /// sees with the ports forwarded to them.
-pub fn targets() -> Result<Value, gpui_agent::ResolveError> {
-    let hosts = gpui_agent::live_hosts(&gpui_agent::runtime_root())?;
-    Ok(json!({ "hosts": hosts, "adb": adb_devices() }))
+pub fn targets() -> (Value, Option<gpui_agent::ResolveError>) {
+    let (hosts, discovery_error) = match gpui_agent::live_hosts(&gpui_agent::runtime_root()) {
+        Ok(hosts) => (hosts, None),
+        Err(error) => (Vec::new(), Some(error)),
+    };
+    (
+        json!({ "hosts": hosts, "adb": adb_devices() }),
+        discovery_error,
+    )
 }
 
 pub fn check_discovery(root: &Path) -> bool {
@@ -71,7 +77,13 @@ fn count(nodes: &[UiNode]) -> usize {
 
 /// Runs the checks in order and prints one line each; `false` when the host
 /// cannot be driven as it stands.
-pub fn doctor(addr: SocketAddr, mut client: AgentClient, has_token: bool) -> bool {
+pub fn doctor(
+    addr: SocketAddr,
+    mut client: AgentClient,
+    has_token: bool,
+    root: &Path,
+) -> bool {
+    let discovery_ok = check_discovery(root);
     let connect = Duration::from_secs(2);
     if let Err(err) = TcpStream::connect_timeout(&addr, connect) {
         println!("fail  connect {addr}: {err}");
@@ -135,7 +147,7 @@ pub fn doctor(addr: SocketAddr, mut client: AgentClient, has_token: bool) -> boo
             if slow {
                 println!("      Slow answers: pass --reply-timeout-ms on this host.");
             }
-            true
+            discovery_ok
         }
         Err(err) => {
             println!("fail  snapshot: {err}");
