@@ -511,7 +511,7 @@ impl AgentClient {
         } else if let Some(session) = self.session.as_mut() {
             session
                 .set_io_timeout(self.timeout)
-                .map_err(PipelineError::Retryable)?;
+                .map_err(WireError::Retryable)?;
         }
         match self
             .session
