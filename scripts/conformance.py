@@ -145,16 +145,40 @@ def top(nodes, node):
 
 
 def valid_png(path):
-    """The signature, a first IHDR chunk with a size, and a final IEND."""
+    """Check for a sized IHDR, nonempty IDAT data, and a final IEND."""
     try:
         with open(path, "rb") as file:
             data = file.read()
     except OSError:
         return False
-    if len(data) < 45 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
         return False
-    width, height = struct.unpack(">II", data[16:24])
-    return width > 0 and height > 0 and data[-8:-4] == b"IEND"
+    offset = 8
+    first_chunk = True
+    has_idat = False
+    while offset < len(data):
+        if len(data) - offset < 12:
+            return False
+        length = struct.unpack_from(">I", data, offset)[0]
+        kind = data[offset + 4 : offset + 8]
+        end = offset + 12 + length
+        if end > len(data):
+            return False
+        if first_chunk:
+            if kind != b"IHDR" or length != 13:
+                return False
+            width, height = struct.unpack_from(">II", data, offset + 8)
+            if width == 0 or height == 0:
+                return False
+            first_chunk = False
+        elif kind == b"IHDR":
+            return False
+        if kind == b"IDAT" and length:
+            has_idat = True
+        if kind == b"IEND":
+            return length == 0 and end == len(data) and has_idat
+        offset = end
+    return False
 
 
 def number(value):
