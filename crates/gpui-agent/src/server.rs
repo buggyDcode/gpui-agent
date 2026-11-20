@@ -313,7 +313,27 @@ fn handle_stream_host<H: AgentHost>(
         }
         let shutdown_op = matches!(req.op, Op::Shutdown);
         let confirmed_quit = crate::op_is_confirmed_quit(&req.op);
-        let resp = {
+        let timeout_ms = match &req.op {
+            Op::Wait {
+                timeout_ms: Some(timeout_ms),
+            } => Some(*timeout_ms),
+            Op::WaitUntil { timeout_ms, .. } => Some(*timeout_ms),
+            _ => None,
+        };
+        let resp = if let Some(timeout_ms) = timeout_ms {
+            let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+            loop {
+                let response = {
+                    let host = host.lock().expect("host");
+                    crate::dispatch::wait_step(&*host, &mut cache, &req, token, deadline)
+                };
+                if let Some(response) = response {
+                    break response;
+                }
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                thread::sleep(remaining.min(Duration::from_millis(10)));
+            }
+        } else {
             let mut host = host.lock().expect("host");
             handle_request_cached(
                 &mut *host,

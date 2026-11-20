@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, Op, PlatformKind};
@@ -64,6 +65,90 @@ fn agent_can_create_toggle_delete_over_tcp() {
         shutdown.load(std::sync::atomic::Ordering::SeqCst)
             || store.lock().unwrap().wants_shutdown()
     );
+}
+
+#[test]
+fn hello_is_not_blocked_by_wait_until_on_another_connection() {
+    let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
+    let (addr, shutdown) = spawn_host("127.0.0.1:0".parse().unwrap(), None, store).expect("bind");
+
+    let wait_thread = thread::spawn(move || {
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(4));
+        let started = Instant::now();
+        let response = client
+            .rpc(Op::wait_until(
+                AssertSpec {
+                    target: "missing-target".into(),
+                    ..Default::default()
+                },
+                1500,
+            ))
+            .expect("wait response");
+        (response, started.elapsed())
+    });
+
+    thread::sleep(Duration::from_millis(200));
+    let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+    let started = Instant::now();
+    client.expect_ok(Op::Hello).expect("hello");
+    let hello_elapsed = started.elapsed();
+    assert!(
+        hello_elapsed < Duration::from_millis(300),
+        "hello took {hello_elapsed:?} while wait_until was active"
+    );
+
+    let (wait, wait_elapsed) = wait_thread.join().expect("wait thread");
+    assert!(!wait.ok, "{wait:?}");
+    assert!(
+        wait_elapsed >= Duration::from_millis(1400),
+        "{wait_elapsed:?}"
+    );
+    assert!(
+        wait.error
+            .as_deref()
+            .is_some_and(|error| error.starts_with("wait_until timed out:")),
+        "{wait:?}"
+    );
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[test]
+fn wait_until_observes_mutation_from_another_connection() {
+    let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
+    let (addr, shutdown) = spawn_host("127.0.0.1:0".parse().unwrap(), None, store).expect("bind");
+
+    let wait_thread = thread::spawn(move || {
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(4));
+        let started = Instant::now();
+        let response = client
+            .wait_until(
+                AssertSpec {
+                    target: "todo-item-1".into(),
+                    ..Default::default()
+                },
+                1500,
+            )
+            .expect("wait response");
+        (response, started.elapsed())
+    });
+
+    thread::sleep(Duration::from_millis(200));
+    let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+    let response = client
+        .rpc(Op::Invoke {
+            name: "todo.add".into(),
+            args: serde_json::json!({ "title": "Add while waiting" }),
+        })
+        .expect("add request");
+    assert!(response.ok, "{:?}", response.error);
+
+    let (wait, wait_elapsed) = wait_thread.join().expect("wait thread");
+    assert!(wait.ok, "{wait:?}");
+    assert!(
+        wait_elapsed < Duration::from_secs(1),
+        "wait_until took {wait_elapsed:?} to observe the added todo"
+    );
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[test]
