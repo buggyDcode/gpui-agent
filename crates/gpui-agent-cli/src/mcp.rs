@@ -55,7 +55,7 @@ pub fn run(
             "initialize" => json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": { "tools": {} },
-                "serverInfo": { "name": "gpui-agent", "version": "0.1.0" }
+                "serverInfo": { "name": "gpui-agent", "version": env!("CARGO_PKG_VERSION") }
             }),
             "notifications/initialized" => {
                 continue;
