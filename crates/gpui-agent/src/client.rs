@@ -37,18 +37,31 @@ struct LiveSession {
 
 impl LiveSession {
     fn open(addr: SocketAddr, timeout: Duration, token: Option<&str>) -> Result<Self, String> {
-        let connect_timeout = timeout.min(Duration::from_millis(400));
+        Self::open_until(addr, Instant::now() + timeout, token)
+    }
+
+    fn open_until(
+        addr: SocketAddr,
+        deadline: Instant,
+        token: Option<&str>,
+    ) -> Result<Self, String> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let connect_timeout = remaining.min(Duration::from_millis(400));
         if connect_timeout.is_zero() {
             return Err("connection deadline elapsed".into());
         }
         let stream =
             TcpStream::connect_timeout(&addr, connect_timeout).map_err(|err| err.to_string())?;
         let _ = stream.set_nodelay(true);
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("connection deadline elapsed".into());
+        }
         stream
-            .set_read_timeout(Some(timeout))
+            .set_read_timeout(Some(remaining))
             .map_err(|err| err.to_string())?;
         stream
-            .set_write_timeout(Some(timeout))
+            .set_write_timeout(Some(remaining))
             .map_err(|err| err.to_string())?;
         let writer = stream.try_clone().map_err(|err| err.to_string())?;
         let mut session = Self {
@@ -362,7 +375,7 @@ impl AgentClient {
             if remaining.is_zero() {
                 break;
             }
-            match self.roundtrip_wire(id, op, remaining) {
+            match self.roundtrip_wire(id, op, deadline) {
                 Ok(resp) => return Ok(resp),
                 Err(WireError::Retryable(err)) => {
                     last_err = err;
@@ -403,7 +416,7 @@ impl AgentClient {
             self.next_id += 1;
             let mut id_buf = [0u8; 20];
             let id = fmt_u64(id_num, &mut id_buf);
-            match self.roundtrip_wire(id, &request, self.timeout_for(op).min(remaining)) {
+            match self.roundtrip_wire(id, &request, deadline) {
                 Ok(response) => return Ok(response),
                 Err(WireError::Retryable(err)) => {
                     last_err = err;
@@ -426,14 +439,21 @@ impl AgentClient {
         &mut self,
         id: &str,
         op: &Op,
-        timeout: Duration,
+        deadline: Instant,
     ) -> Result<Response, WireError> {
+        let timeout = deadline.saturating_duration_since(Instant::now());
+        if timeout.is_zero() {
+            return Err(WireError::NoReply("operation deadline elapsed".into()));
+        }
         if self.session.is_none() {
             self.features = None;
-            self.session = Some(
-                LiveSession::open(self.addr, timeout, self.token.as_deref())
-                    .map_err(WireError::Retryable)?,
-            );
+            match LiveSession::open_until(self.addr, deadline, self.token.as_deref()) {
+                Ok(session) => self.session = Some(session),
+                Err(error) if Instant::now() >= deadline => {
+                    return Err(WireError::NoReply(error));
+                }
+                Err(error) => return Err(WireError::Retryable(error)),
+            }
         } else {
             let peer_closed = self
                 .session
@@ -453,11 +473,17 @@ impl AgentClient {
                     return Err(WireError::Retryable(error.to_string()));
                 }
             }
-            let session = self.session.as_mut().expect("session");
-            session
-                .set_io_timeout(timeout)
-                .map_err(WireError::Retryable)?;
         }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            self.drop_session();
+            return Err(WireError::NoReply("operation deadline elapsed".into()));
+        }
+        self.session
+            .as_mut()
+            .expect("session")
+            .set_io_timeout(remaining)
+            .map_err(WireError::Retryable)?;
         let result = self
             .session
             .as_mut()

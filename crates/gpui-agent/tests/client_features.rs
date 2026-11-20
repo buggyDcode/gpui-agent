@@ -8,7 +8,7 @@ use std::{
 
 use gpui_agent::{
     AgentClient, HelloAuth, HelloInfo, PROTOCOL_VERSION, PlatformKind, Response, ScreenshotMode,
-    is_unsupported_op, protocol::Op,
+    challenge_for_nonce, hmac_hex, is_unsupported_op, protocol::Op,
 };
 
 fn read_request(reader: &mut BufReader<TcpStream>) -> serde_json::Value {
@@ -21,6 +21,12 @@ fn respond(writer: &mut TcpStream, request: &serde_json::Value, hello: Option<He
     let mut response = Response::ok(request["id"].as_str().unwrap());
     response.hello = hello;
     serde_json::to_writer(&mut *writer, &response).unwrap();
+    writer.write_all(b"\n").unwrap();
+    writer.flush().unwrap();
+}
+
+fn send_challenge(writer: &mut TcpStream, nonce: &[u8; 32]) {
+    serde_json::to_writer(&mut *writer, &challenge_for_nonce(nonce)).unwrap();
     writer.write_all(b"\n").unwrap();
     writer.flush().unwrap();
 }
@@ -141,13 +147,18 @@ fn gated_no_reply_is_reported_once_within_the_shared_deadline() {
     let server = thread::spawn(move || {
         let (mut writer, _) = listener.accept().unwrap();
         let mut reader = BufReader::new(writer.try_clone().unwrap());
+        let nonce = [7u8; 32];
+        thread::sleep(Duration::from_millis(220));
+        send_challenge(&mut writer, &nonce);
         let request = read_request(&mut reader);
         assert_eq!(request["op"], "hello");
-        thread::sleep(Duration::from_millis(220));
+        let expected_auth = hmac_hex("secret", &nonce).unwrap();
+        assert_eq!(request["auth"], expected_auth);
         respond(&mut writer, &request, Some(hello(&["press"])));
 
         let request = read_request(&mut reader);
         assert_eq!(request["op"], "press");
+        assert_eq!(request["auth"], expected_auth);
         thread::sleep(Duration::from_millis(700));
         listener.set_nonblocking(true).unwrap();
         assert!(
@@ -159,7 +170,9 @@ fn gated_no_reply_is_reported_once_within_the_shared_deadline() {
         );
     });
 
-    let mut client = AgentClient::connect(addr).with_timeout(Duration::from_millis(300));
+    let mut client = AgentClient::connect(addr)
+        .with_token("secret")
+        .with_timeout(Duration::from_millis(300));
     let started = std::time::Instant::now();
     let error = client.gated(press()).unwrap_err();
     let elapsed = started.elapsed();
