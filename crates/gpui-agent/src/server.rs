@@ -403,6 +403,13 @@ fn handle_stream_mailbox(
         }
         if let Some(hello) = resp.hello.as_mut() {
             hello.auth = crate::protocol::HelloAuth::from_token_configured(token);
+            if !hello
+                .features
+                .iter()
+                .any(|feature| feature == "screenshot_inline")
+            {
+                hello.features.push("screenshot_inline".into());
+            }
         }
         write_resp(&mut writer, &mut encode_buf, &resp);
         if shutdown_op || (confirmed_quit && resp.ok) {
@@ -908,6 +915,46 @@ mod tests {
         assert_eq!(
             resp.hello.expect("hello payload").auth,
             crate::protocol::HelloAuth::Required
+        );
+        shutdown.store(true, Ordering::SeqCst);
+        stop.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn mailbox_hello_adds_inline_screenshot_feature() {
+        let mailbox = AgentMailbox::new();
+        let drain = mailbox.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_t = stop.clone();
+        thread::spawn(move || {
+            while !stop_t.load(Ordering::SeqCst) {
+                for posted in drain.take() {
+                    let hello = EmptyHost.hello();
+                    assert!(hello.features.is_empty());
+                    let mut response = Response::ok(posted.request.id.clone());
+                    response.hello = Some(hello);
+                    posted.reply(response);
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+        let (addr, shutdown) = spawn_mailbox(
+            "127.0.0.1:0".parse().unwrap(),
+            None,
+            mailbox,
+            Duration::from_secs(2),
+        )
+        .expect("bind mailbox");
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
+        let response = client.rpc(Op::Hello).expect("hello");
+        let hello = response.hello.expect("hello payload");
+        assert!(
+            hello
+                .features
+                .iter()
+                .any(|feature| feature == "screenshot_inline"),
+            "{:?}",
+            hello.features
         );
         shutdown.store(true, Ordering::SeqCst);
         stop.store(true, Ordering::SeqCst);
