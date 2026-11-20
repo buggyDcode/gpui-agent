@@ -1670,8 +1670,14 @@ mod tests {
         };
         assert!(addr_error.contains("command-line --addr"), "{addr_error}");
 
-        let (connect_cli, connect_sources) =
-            parse_cli_from(["gpui-agent", "--session", "work", "--connect", "demo", "hello"]);
+        let (connect_cli, connect_sources) = parse_cli_from([
+            "gpui-agent",
+            "--session",
+            "work",
+            "--connect",
+            "demo",
+            "hello",
+        ]);
         let connect_error =
             match resolve_cli_target(Path::new("unused"), &connect_cli, connect_sources) {
                 Ok(_) => panic!("--session and command-line --connect should conflict"),
