@@ -39,8 +39,9 @@ gpui-agent --session app doctor            # address, token, capabilities, answe
    Refs are renumbered by every `snapshot --refs`; never reuse one from before
    the screen changed.
 
-Use `gpui-agent snapshot` for the full JSON tree (bounds, states, ids) and
-`gpui-agent assert` / `wait-until` to check a condition without reading the tree.
+Use `gpui-agent --session app snapshot` for the full JSON tree (bounds, states, ids)
+and `gpui-agent --session app assert` / `gpui-agent --session app wait-until` to
+check a condition without reading the tree.
 
 ## Actions
 
