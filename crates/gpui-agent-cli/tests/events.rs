@@ -58,6 +58,7 @@ fn events_streams_app_records() {
     // --limit pages.
     let poll = cli_json(&todo, &["events", "--limit", "1"]);
     assert_eq!(poll["events"].as_array().expect("events").len(), 1);
+    assert_eq!(poll["latest"], 1, "{poll}");
 }
 
 #[test]
