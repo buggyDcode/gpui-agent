@@ -212,7 +212,7 @@ def main():
     parser.add_argument(
         "--require-screenshot",
         action="store_true",
-        help="fail when the host declines to capture (every nsh host captures)",
+        help="fail when the host declines to capture, headless included",
     )
     args, passthrough = parser.parse_known_args()
     run = Run(args.cli, passthrough)
@@ -283,9 +283,11 @@ def main():
             # Windows), and also what a capture that broke returns. Only the
             # caller knows which this host is: --require-screenshot.
             declined = "screenshot_unavailable" in err
-            if declined and hello.get("platform") == "headless":
+            if declined and args.require_screenshot:
+                run.check("inline screenshot (required)", False, err)
+            elif declined and hello.get("platform") == "headless":
                 run.skip("inline screenshot", "a headless host has no surface")
-            elif declined and not args.require_screenshot:
+            elif declined:
                 run.warn(
                     "inline screenshot: the host declined (screenshot_unavailable); "
                     "pass --require-screenshot if this host should capture"
