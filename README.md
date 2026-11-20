@@ -102,6 +102,7 @@ An argument spelled exactly like a ref (`@e1`) is always read as one, text to ty
 
 `scripts/conformance.py` runs the checks every host must pass, whatever its platform,
 against the host at `--addr`: `python3 scripts/conformance.py --addr 127.0.0.1:17421`.
+CI runs it against `todo-headless` without requiring a screenshot.
 
 When a host does not answer, two commands say why:
 
