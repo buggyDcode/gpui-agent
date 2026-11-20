@@ -250,7 +250,7 @@ def main():
     run.check("hello.platform is stated", bool(hello.get("platform")))
     features = hello.get("features") or []
     screenshot_inline = "screenshot_inline" in features
-    legacy = not any(feature in features for feature in GATED)
+    legacy = not screenshot_inline and not any(feature in features for feature in GATED)
     if screenshot_inline:
         run.check("hello.features lists screenshot_inline", True, ", ".join(features))
     else:
