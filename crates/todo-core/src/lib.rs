@@ -238,8 +238,11 @@ impl TodoStore {
     }
 
     pub fn set_draft(&mut self, draft: impl Into<String>) {
-        self.draft = draft.into();
-        self.bump_revision();
+        let draft = draft.into();
+        if self.draft != draft {
+            self.draft = draft;
+            self.bump_revision();
+        }
     }
 
     pub fn wants_shutdown(&self) -> bool {
@@ -782,6 +785,19 @@ mod tests {
             .dispatch(&Op::click(ids::SETTINGS_CONFIRM_DELETE))
             .unwrap();
         assert!(store.rev > r);
+    }
+
+    #[test]
+    fn setting_same_draft_only_bumps_revision_once() {
+        let mut store = TodoStore::default();
+        let initial_revision = store.rev;
+
+        store.set_draft("same");
+        let updated_revision = store.rev;
+        assert_eq!(updated_revision, initial_revision + 1);
+
+        store.set_draft("same");
+        assert_eq!(store.rev, updated_revision);
     }
 
     #[test]
