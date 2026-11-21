@@ -441,6 +441,10 @@ impl<'a> Runner<'a> {
             .collect();
         let mut history: Vec<HistoryEntry> = Vec::new();
         let mut typed: Vec<String> = Vec::new();
+        // `(node id, text)` of each verified TYPE/SET_VALUE into a
+        // secret field: its value arrives masked, so the action space
+        // gets the draft from here while the field still holds it.
+        let mut secret_drafts: Vec<(String, String)> = Vec::new();
         let mut steps: Vec<StepRecord> = Vec::new();
         let mut no_effect = 0u32;
         let mut stale = 0u32;
@@ -461,7 +465,27 @@ impl<'a> Runner<'a> {
                 }
             };
             let (goal_text, mode) = clause_mode(&clause);
-            let space = ActionSpace::from_tree(&tree, &keybindings, &self.invokes);
+            let secret_redaction = self
+                .client
+                .features()?
+                .iter()
+                .any(|feature| feature == "secret_redaction");
+            let mut space = ActionSpace::from_tree_with_secret_redaction(
+                &tree,
+                &keybindings,
+                &self.invokes,
+                secret_redaction,
+            );
+            secret_drafts.retain(|(id, text)| {
+                tree.find(id).is_some_and(|n| {
+                    n.is_secret()
+                        && n.value.as_deref().map(|v| v.chars().count())
+                            == Some(text.chars().count())
+                })
+            });
+            for (_, text) in &secret_drafts {
+                space.note_secret_draft(text);
+            }
 
             // `wait for X` — no policy, no action: advance when X shows.
             if let ClauseMode::WaitFor(target) = &mode {
@@ -658,6 +682,13 @@ impl<'a> Runner<'a> {
                 verification: verification.to_owned(),
             });
             if let Some(text) = payload.clone() {
+                let secret_target = action
+                    .target()
+                    .filter(|id| tree.find(id).is_some_and(UiNode::is_secret));
+                if let ("success", Some(id)) = (verification, secret_target) {
+                    secret_drafts.retain(|(other, _)| other != id);
+                    secret_drafts.push((id.to_owned(), text.clone()));
+                }
                 typed.push(text);
             }
             steps.push(StepRecord {
@@ -698,12 +729,19 @@ impl<'a> Runner<'a> {
         changed: bool,
     ) -> &'static str {
         if matches!(decision.kind, ActionKind::Type | ActionKind::SetValue) {
-            let current = action
-                .target()
-                .and_then(|id| tree.find(id))
-                .and_then(|n| n.value.as_deref());
-            return match (payload, current) {
-                (Some(want), Some(got)) if got == want => "success",
+            let node = action.target().and_then(|id| tree.find(id));
+            // A secret node's value reaches the client masked (one
+            // `SECRET_MASK` per character, PROTOCOL.md "Secret values"),
+            // so `redacted_value` is all-mask whether or not the host
+            // already masked it, and the payload is compared by its
+            // character count: that is all the read-back can confirm.
+            let current = node.and_then(UiNode::redacted_value);
+            let matches = |want: &str, got: &str| match node {
+                Some(n) if n.is_secret() => got.chars().count() == want.chars().count(),
+                _ => got == want,
+            };
+            return match (payload, current.as_deref()) {
+                (Some(want), Some(got)) if matches(want, got) => "success",
                 (Some(_), _) => "wrong-effect",
                 _ if changed => "state-changed",
                 _ => "no-effect",
@@ -768,10 +806,11 @@ pub fn op_for_decision(
             .ok_or_else(|| format!("{} has no dispatch target", decision.action_id))
     };
     let gated = |op: Op| -> Result<Op, String> {
-        let fp = action
-            .fingerprint()
-            .ok_or_else(|| format!("{} has no fingerprint", decision.action_id))?;
-        Ok(op.with_fingerprint(fp))
+        match action.fingerprint() {
+            Some(fp) => Ok(op.with_fingerprint(fp)),
+            None if action.fingerprint_omitted_for_legacy_secret() => Ok(op),
+            None => Err(format!("{} has no fingerprint", decision.action_id)),
+        }
     };
     match decision.kind {
         ActionKind::Click => gated(Op::Click {
@@ -821,7 +860,297 @@ pub fn op_for_decision(
 
 #[cfg(test)]
 mod tests {
-    use super::INSTINCT_VERSION_REQ;
+    use super::{INSTINCT_VERSION_REQ, Runner};
+    use crate::policy::InstinctPolicy;
+    use gpui_agent::dispatch::DispatchResult;
+    use gpui_agent::host::AgentHost;
+    use gpui_agent::protocol::{DeliveryMode, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind};
+    use gpui_agent::tree::{UiNode, UiTree};
+    use gpui_agent::{AgentClient, SECRET_MASK, TestHost};
+    use serde_json::{Value, json};
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{SocketAddr, TcpListener};
+    use std::thread;
+
+    /// One text field, a submit button and the list of submitted
+    /// values. `marker` (when set) is the field's extra state, so a
+    /// secret field reaches the runner masked.
+    struct FormHost {
+        field: &'static str,
+        button: &'static str,
+        marker: Option<&'static str>,
+        value: String,
+        submitted: Vec<String>,
+    }
+
+    impl AgentHost for FormHost {
+        fn hello(&self) -> HelloInfo {
+            HelloInfo {
+                os: gpui_agent::protocol::host_os(),
+                protocol: PROTOCOL_VERSION,
+                framework: None,
+                device: None,
+                app: "form".into(),
+                platform: PlatformKind::Headless,
+                ready: true,
+                deliveries: vec![],
+                auth: gpui_agent::HelloAuth::None,
+                bundle_id: None,
+                executable: None,
+                features: vec![],
+            }
+        }
+
+        fn snapshot(&self) -> UiTree {
+            let mut field = UiNode::textbox("field", self.field).with_value(&self.value);
+            field.states.extend(self.marker.map(str::to_owned));
+            let rows = self
+                .submitted
+                .iter()
+                .enumerate()
+                .map(|(n, text)| UiNode::listitem(format!("row-{n}"), text))
+                .collect();
+            UiTree {
+                app: "form".into(),
+                platform: PlatformKind::Headless,
+                ready: true,
+                nodes: vec![UiNode::window("form-window", "Form").with_children(vec![
+                    field,
+                    UiNode::button("submit", self.button),
+                    UiNode::list("rows", "Submitted").with_children(rows),
+                ])],
+                rev: None,
+            }
+        }
+
+        fn dispatch(&mut self, op: &Op) -> Result<DispatchResult, String> {
+            match op {
+                Op::Type { text, .. } => self.value.push_str(text),
+                Op::SetValue { value, .. } => self.value.clone_from(value),
+                Op::Click { target, .. } if target == "submit" => {
+                    self.submitted.push(std::mem::take(&mut self.value));
+                }
+                _ => {}
+            }
+            Ok(DispatchResult::empty())
+        }
+
+        fn screenshot(
+            &self,
+            _spec: gpui_agent::scroll_capture::ScreenshotSpec<'_>,
+        ) -> Result<DispatchResult, String> {
+            Err("screenshot_unavailable".into())
+        }
+    }
+
+    /// Run `goal` against a [`FormHost`]; returns the `OP verification`
+    /// steps, the outcome and what the host received.
+    fn run_form(
+        field: &'static str,
+        button: &'static str,
+        marker: Option<&'static str>,
+        goal: &str,
+    ) -> (Vec<String>, String, Vec<String>) {
+        let host = TestHost::spawn(
+            FormHost {
+                field,
+                button,
+                marker,
+                value: String::new(),
+                submitted: Vec::new(),
+            },
+            None,
+        )
+        .expect("bind");
+        let mut client = host.client();
+        client.wait_ready().expect("hello");
+        let mut no_invokes = |_: &str, _: &str| Err::<serde_json::Value, String>("none".into());
+        let receipt = Runner::new(
+            &mut client,
+            InstinctPolicy::default(),
+            DeliveryMode::Semantic,
+            Vec::new(),
+            &mut no_invokes,
+        )
+        .run(goal)
+        .expect("run");
+        let steps = receipt
+            .steps
+            .iter()
+            .map(|s| format!("{} {}", s.op, s.verification))
+            .collect();
+        // What the runner observed was masked: these runs exercise the
+        // masked read-back, not a host that leaks the value.
+        host.host().lock().unwrap().value = "hunter2".into();
+        let tree = client.snapshot().expect("snapshot").tree.expect("tree");
+        let seen = tree.find("field").and_then(|n| n.value.clone());
+        let want = match marker {
+            Some(_) => std::iter::repeat_n(SECRET_MASK, 7).collect(),
+            None => "hunter2".to_owned(),
+        };
+        assert_eq!(seen, Some(want), "{marker:?}");
+        let submitted = host.host().lock().unwrap().submitted.clone();
+        (steps, receipt.outcome, submitted)
+    }
+
+    /// A secret field's value reaches the runner as one `SECRET_MASK`
+    /// per character, yet typing into it still verifies and still
+    /// counts as the clause's payload being placed, so the run goes on
+    /// to press the button exactly as with an ordinary field.
+    #[test]
+    fn type_into_secret_field_runs_like_an_ordinary_field() {
+        // The add form must also press `Add`; the login goal stops after
+        // the TYPE either way, so its TYPE verification is the check.
+        let forms = [
+            (
+                "What needs doing?",
+                "Add",
+                r#"Add a todo "Buy milk""#,
+                Some("Buy milk"),
+            ),
+            (
+                "Password",
+                "Log in",
+                r#"Enter "hunter2" in Password and log in"#,
+                None,
+            ),
+        ];
+        for (field, button, goal, pressed) in forms {
+            let (plain, outcome, submitted) = run_form(field, button, None, goal);
+            assert_eq!(plain[0], "TYPE success", "{goal}: {plain:?}");
+            if let Some(text) = pressed {
+                assert_eq!(plain, ["TYPE success", "CLICK state-changed"], "{goal}");
+                assert_eq!(outcome, "done", "{goal}");
+                assert_eq!(submitted, [text], "{goal}");
+            }
+            for marker in ["password", "secret"] {
+                let secret = run_form(field, button, Some(marker), goal);
+                assert_eq!(
+                    secret,
+                    (plain.clone(), outcome.clone(), submitted.clone()),
+                    "{goal} with {marker}"
+                );
+            }
+        }
+    }
+
+    type LegacySecretHostResult = (Vec<Value>, Vec<String>);
+    type LegacySecretHost = (SocketAddr, thread::JoinHandle<LegacySecretHostResult>);
+
+    fn legacy_secret_host() -> LegacySecretHost {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut requests = Vec::new();
+            let mut received = Vec::new();
+            let mut value = "initial".to_owned();
+            let mut rev = 1u64;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                let request: Value = serde_json::from_str(&line).unwrap();
+                requests.push(request.clone());
+                let response = match request["op"].as_str() {
+                    Some("hello") => json!({
+                        "ok": true,
+                        "hello": {
+                            "protocol": PROTOCOL_VERSION,
+                            "app": "legacy",
+                            "platform": "headless",
+                            "ready": true,
+                            "features": []
+                        }
+                    }),
+                    Some("keybindings") => json!({
+                        "ok": true,
+                        "result": { "keybindings": [] }
+                    }),
+                    Some("snapshot") => {
+                        let mut secret =
+                            UiNode::new("password-field", "textbox", "Password").with_value(&value);
+                        secret.states.push("secret".into());
+                        let raw_fingerprint = secret.fingerprint(None);
+                        json!({
+                            "ok": true,
+                            "rev": rev,
+                            "tree": {
+                                "app": "legacy",
+                                "platform": "headless",
+                                "ready": true,
+                                "rev": rev,
+                                "nodes": [{
+                                    "id": "password-field",
+                                    "role": "textbox",
+                                    "name": "Password",
+                                    "value": value.clone(),
+                                    "states": ["secret"],
+                                    "enabled": true,
+                                    "visible": true
+                                }]
+                            },
+                            "fingerprints": { "password-field": raw_fingerprint }
+                        })
+                    }
+                    Some("type") => {
+                        let text = request["text"].as_str().unwrap().to_owned();
+                        value.clone_from(&text);
+                        received.push(text);
+                        rev += 1;
+                        json!({ "ok": true })
+                    }
+                    op => panic!("unexpected op: {op:?}"),
+                };
+                let mut response = response;
+                response["v"] = json!(PROTOCOL_VERSION);
+                response["id"] = request["id"].clone();
+                writeln!(stream, "{response}").unwrap();
+                stream.flush().unwrap();
+            }
+            (requests, received)
+        });
+        (addr, server)
+    }
+
+    #[test]
+    fn run_types_into_a_secret_field_on_a_legacy_host() {
+        let (addr, server) = legacy_secret_host();
+        let mut client = AgentClient::connect(addr).with_timeout(std::time::Duration::from_secs(3));
+        let mut no_invokes = |_: &str, _: &str| Err::<serde_json::Value, String>("none".into());
+        let receipt = Runner::new(
+            &mut client,
+            InstinctPolicy::default(),
+            DeliveryMode::Semantic,
+            Vec::new(),
+            &mut no_invokes,
+        )
+        .run(r#"Enter "hunter2" in Password"#)
+        .expect("run");
+        assert_eq!(receipt.steps[0].op, "TYPE", "{receipt:?}");
+        assert_eq!(receipt.steps[0].verification, "success", "{receipt:?}");
+        drop(client);
+        let (requests, received) = server.join().unwrap();
+        assert_eq!(received, ["hunter2"]);
+        let type_request = requests
+            .iter()
+            .find(|request| request["op"] == "type")
+            .unwrap();
+        assert_eq!(type_request["text"], "hunter2");
+        assert!(
+            type_request.get("expect_fingerprint").is_none(),
+            "{type_request}"
+        );
+        let since_request = requests
+            .iter()
+            .find(|request| request["op"] == "snapshot" && request.get("since").is_some());
+        assert!(since_request.is_none(), "{requests:?}");
+    }
 
     /// The receipt's `engine.instinct` must equal the manifest's
     /// `instinct-*` requirement — the literal cannot drift silently.

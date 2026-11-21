@@ -38,6 +38,7 @@ gpui-agent click --delivery virtual nav-settings
 gpui-agent assert --id page-settings
 gpui-agent set-value search-input "query"
 gpui-agent type composer "hello"
+gpui-agent type --stdin password-input < secret.txt   # never on the command line
 gpui-agent type --delivery virtual composer "hello"
 gpui-agent key composer Enter
 gpui-agent keybindings
@@ -173,18 +174,20 @@ Caps recipes must not bypass: [docs/SECURITY.md](docs/SECURITY.md#recipes-experi
 Laptop copy-paste: [docs/TRY_ON_MAC.md](docs/TRY_ON_MAC.md). Headless is
 enough; desktop `todo` is optional and needs a display.
 
-### Local agent (`run --goal`, opt-in `instinct` feature)
+### Local agent (`run --goal`, `instinct` feature)
 
-Builds with `--features instinct` gain a deterministic local driver —
-no model, no network:
+The CLI ships with a deterministic local driver (the default `instinct`
+feature) — no model, no network:
 
 ```bash
-cargo run -p gpui-agent-cli --features instinct -- run --goal 'Add a todo "Buy milk"'
+cargo run -p gpui-agent-cli -- run --goal 'Add a todo "Buy milk"'
 ```
 
 The loop is observe → finite `ActionSpace` → Instinct policy →
 fingerprint gate → dispatch → re-observe → verify. It **abstains**
-instead of guessing; an abstain never dispatches. With `--features jev`
+instead of guessing; an abstain never dispatches. A
+`--no-default-features` build leaves it out, with the original tool set
+and keyword resolver. With `--features jev`
 (needs `TYPESAFE_API_KEY`), `--escalate jev` consults System One only
 *after* a local abstain. `--escalate-cmd <program>` pipes abstains to
 any endpoint over a closed JSON wire (see `bench/escalate_claude.py`).
@@ -232,7 +235,7 @@ apps/todo-headless         Logic daemon: serve / status / shutdown (no GPU)
 crates/gpui-agent          Embeddable SDK: protocol, server, client, tree, TestHost
 crates/gpui-agent-cli      gpui-agent CLI + tiny MCP stdio shim
 crates/gpui-agent-recipe   Experimental recipes + TMP-inspired mapping
-crates/gpui-agent-policy   Optional Instinct policy (features `instinct`/`jev`)
+crates/gpui-agent-policy   Instinct policy (CLI default feature `instinct`; opt-in `jev`)
 crates/todo-core           Demo store and semantic ids
 docs/README.md             Doc index
 docs/ADR-001-daemon-sot.md Daemon is source of truth; GUI is a client
@@ -318,7 +321,7 @@ The CLI includes a tiny MCP stdio server with the **same generic tools** (no app
 
 plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
 `recipe_resolve` (JSON canonical; see [docs/RECIPES.md](docs/RECIPES.md)),
-and — with the `instinct` feature — `locate` (ranked resolve, abstains)
+and — with the default `instinct` feature — `locate` (ranked resolve, abstains)
 and `act` (resolve → gated dispatch → verify), plus `snapshot`'s
 `since` / `format:"compact"` parameters.
 

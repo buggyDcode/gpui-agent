@@ -144,6 +144,8 @@ Read-back (`AgentClient::act`) snapshots the target before and after
 `long_press`, and reports it as `after`:
 `{exists, value?, checked?, focused?, enabled?, changed}`. When the host
 reports the same `rev` after the action, the second snapshot is skipped.
+On a [secret](#secret-values) target `after` has no `value`: `changed`
+still says whether the value moved.
 When the first snapshot has no node with the target id, the action is
 not sent: it fails with `not_found` and `not_delivered`.
 The CLI and MCP read back by default; `--no-read-back` / `no_read_back:
@@ -184,13 +186,13 @@ The server keeps a per-connection ring of recent snapshots. For
 `format:"compact"` returns `result: {"compact": "<text>"}` instead of
 `tree`: one line per **visible** node,
 `"<indent><id> <role> \"<name>\"  [<flag>|<flag>]"` with flags
-`checked` / `disabled` / `focused` / `value="…"` (truncated; password
-nodes never emit `value`). Indentation is two spaces per depth. Compact
+`checked` / `disabled` / `focused` / `value="…"` (truncated;
+[secret](#secret-values) nodes never emit `value`). Indentation is two spaces per depth. Compact
 responses carry `rev` too — they combine with `since`.
 
 `fingerprints:true` adds `Response.fingerprints`:
-`{id → FNV-1a hash of the node's stable fields}`. Bounds and focus are
-excluded — layout wobble does not churn the hash. Used by
+`{id → FNV-1a hash of the node's stable fields}`, the value in its
+[masked](#secret-values) form. Bounds and focus are excluded — layout wobble does not churn the hash. Used by
 `expect_fingerprint` below; hosts that implement it list
 `expect_fingerprint` in `hello.features`.
 
@@ -272,6 +274,38 @@ gpui-agent assert --id todo-add --in-viewport   # desktop with real bounds
 ```json
 {"v":2,"id":"1","op":"wait_until","timeout_ms":1000,"target":"todo-nav","visible":false}
 ```
+
+### Secret values
+
+A node whose `role` or one of whose `states` is `password` or `secret`
+(`gpui_agent::SECRET_MARKERS`) holds a secret. Its `value` never leaves
+the host: every snapshot, `since` diff (`added` and `changed`) and
+resync tree carries it masked, one `•` per character, so an agent still
+sees that typing changed the field and how long it is. Compact lines omit
+it. Fingerprints hash the masked value, so a fingerprint computed from the
+tree a client received matches the host's, and cannot be used to test
+guesses. `assert` / `wait_until` compare the real value; a mismatch says
+`expected another value (secret values are not shown)` without echoing
+either value. A host marks such a field with role `password` or adds the
+`secret` state (an API key in a plain text field). The client masks trees
+from hosts that predate this rule as they arrive. When `hello.features` lacks
+`secret_redaction`, the client does not request `since` diffs: it asks for a
+full snapshot, masks it, and marks the reply `result.full` so consumers replace
+their cached tree. It also drops secret-node fingerprints; if a partial reply
+has no tree to classify, it drops the entire fingerprint map. This prevents
+older hosts' raw-value hashes from being exposed.
+
+`run --goal` verifies a `TYPE` / `SET_VALUE` into a secret field by the
+masked value's length, and counts the text it typed there as entered
+while the field still holds that many characters.
+On hosts without `secret_redaction`, `run --goal` and MCP `act` dispatch
+known secret-field actions without `expect_fingerprint`, since the legacy
+host's raw-value fingerprint cannot be derived safely from the masked tree.
+Other node actions still require their fingerprint.
+
+To type a secret without putting it in the process list or the shell
+history, pipe it: `gpui-agent type --stdin <id> < secret.txt` (also
+`set-value --stdin`, `paste --stdin`).
 
 ## Delivery modes (`click` / `type` / `key`)
 
@@ -412,8 +446,8 @@ Reuse `gpui-agent-cli` unchanged. Details: [INTEGRATING.md](INTEGRATING.md).
 
 plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
 `recipe_resolve` (JSON canonical; client-side batching; see
-[RECIPES.md](RECIPES.md)), and — with the opt-in `instinct` build
-feature — `locate` (ranked target resolution, abstains instead of
+[RECIPES.md](RECIPES.md)), and — with the `instinct` build feature, on
+by default — `locate` (ranked target resolution, abstains instead of
 guessing), `act` (resolve → fingerprint-gated dispatch → re-observe →
 verify), and `snapshot` `since` / `compact` parameters that mirror the
 wire fields above.

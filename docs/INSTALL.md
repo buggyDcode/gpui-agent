@@ -30,26 +30,26 @@ cargo install --path apps/todo-headless --locked=false
 The repo does not commit `Cargo.lock`. CI builds release artifacts
 without a lockfile.
 
-## Optional features (off by default)
+## Features
 
-The default build ships the legacy keyword resolver and the original
-tool set — nothing below changes unless you opt in.
+The CLI's default build includes `instinct`; `jev` is opt-in.
 
-| Feature | On crate | Adds | Needs |
-| --- | --- | --- | --- |
-| `instinct` | `gpui-agent-cli` | `run --goal` local driver; `locate` + `act` MCP tools | nothing — deterministic, local, no model/network |
-| `instinct` | `gpui-agent-recipe` | Instinct-backed `resolve_intent` (abstains instead of guessing) | nothing |
-| `jev` | `gpui-agent-cli` | `run --goal --escalate jev` (System One fallback, only after a local abstain) | `TYPESAFE_API_KEY`; implies `instinct` |
+| Feature | On crate | Default | Adds | Needs |
+| --- | --- | --- | --- | --- |
+| `instinct` | `gpui-agent-cli` | on | `run --goal` local driver; `locate` + `act` MCP tools; turns on `gpui-agent-recipe/instinct` | nothing — deterministic, local, no model/network |
+| `instinct` | `gpui-agent-recipe` | off (on through the CLI) | Instinct-backed `resolve_intent` (abstains instead of guessing) | nothing |
+| `jev` | `gpui-agent-cli` | off | `run --goal --escalate jev` (System One fallback, only after a local abstain) | `TYPESAFE_API_KEY`; implies `instinct` |
 
 ```bash
-# local deterministic agent + compact/diff MCP tools
-cargo install --path crates/gpui-agent-cli --features instinct --locked=false
 # + optional System One escalation on abstain
 cargo install --path crates/gpui-agent-cli --features jev --locked=false
+# without instinct: the original tool set and keyword resolver
+cargo install --path crates/gpui-agent-cli --no-default-features --locked=false
 ```
 
 A binary built without `jev` answers `--escalate jev` with a clear
-feature error; without `instinct`, `run`/`locate`/`act` do not exist.
+feature error; a `--no-default-features` build has no
+`run`/`locate`/`act`.
 Wire compatibility is additive (`confidence_millis`, `rev`,
 `expect_fingerprint` are optional fields), so old clients keep working
 against feature-enabled hosts and vice versa. `snapshot since=<rev>`,

@@ -36,12 +36,15 @@ jobs:
         run: cargo install cargo-audit --locked --version 0.22.2
       - name: cargo audit
         run: cargo audit
-      - name: Unit tests (no GPU)
+      - name: Unit tests (no GPU, default features — instinct on)
         run: cargo test -p gpui-agent -p todo-core -p gpui-agent-cli -p gpui-agent-recipe
-      - name: Unit tests (instinct feature)
+      - name: Unit tests + compile (no instinct, --no-default-features)
         run: |
-          cargo test -p gpui-agent-cli --features instinct
-          cargo test -p gpui-agent-recipe --features instinct
+          # The CLI without instinct, and the recipe crate's own default
+          # (keyword resolver) — each alone, so features do not unify.
+          cargo test -p gpui-agent-cli --no-default-features
+          cargo clippy -p gpui-agent-cli --no-default-features --all-targets -- -D warnings
+          cargo test -p gpui-agent-recipe
       - name: Unit tests + compile (jev feature)
         run: |
           cargo test -p gpui-agent-cli --features jev
@@ -258,7 +261,7 @@ jobs:
             --attempts 20 --out bench/results/ci/r1.jsonl
       - name: A2 local-policy tasks (3 attempts/task)
         run: |
-          cargo build -q -p gpui-agent-cli --features instinct
+          cargo build -q -p gpui-agent-cli
           export PATH="$PWD/target/debug:$PATH"
           cargo run -q -p gpui-agent-bench -- \
             local --tasks bench/tasks.toml --arm a2 \

@@ -2,8 +2,8 @@
 //! against a headless `TodoStore` and a scripted endpoint
 //! (`escalate_fixture.sh`): correct choice, off-menu → blocked,
 //! timeout → blocked, abstain stays abstain, and no call when the
-//! local policy chooses.
-#![cfg(feature = "instinct")]
+//! local policy chooses. Unix only: the endpoint is a `sh` script.
+#![cfg(all(feature = "instinct", unix))]
 
 mod common;
 

@@ -22,13 +22,16 @@ serde.workspace = true
 serde_json.workspace = true
 
 [features]
-# Opt-in Instinct policy: `locate`/`act` MCP tools + Instinct recipe
-# resolver. Off by default — feature-free builds keep the legacy tool
-# set and resolver byte-identical.
+default = ["instinct"]
+
+# Instinct policy, on by default: `run --goal`, the `locate`/`act` MCP
+# tools and the Instinct recipe resolver (deterministic, local, no model
+# or network). `--no-default-features` builds the legacy tool set and
+# keyword resolver, unchanged.
 instinct = ["dep:gpui-agent-policy", "gpui-agent-recipe/instinct"]
 
-# M8: `--escalate jev` — System One fallback via typesafe-sdk. Requires
-# instinct; off by default (no typesafe dep without this feature).
+# M8: `--escalate jev` — System One fallback via typesafe-sdk. Implies
+# instinct; opt-in (no typesafe dep without this feature).
 jev = ["instinct", "gpui-agent-policy/jev"]
 
 [dev-dependencies]

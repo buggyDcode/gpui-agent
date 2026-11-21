@@ -28,6 +28,7 @@ pub struct AgentClient {
     next_id: u64,
     session: Option<LiveSession>,
     features: Option<Vec<String>>,
+    refresh_features_on_reconnect: bool,
     as_written: bool,
 }
 
@@ -112,7 +113,12 @@ impl LiveSession {
         }
     }
 
-    fn exchange_wire(&mut self, id: &str, op: &Op) -> Result<Response, WireError> {
+    fn exchange_wire(
+        &mut self,
+        id: &str,
+        op: &Op,
+        legacy_secret_redaction: bool,
+    ) -> Result<Response, WireError> {
         let req = WireRequest {
             v: PROTOCOL_VERSION,
             id,
@@ -137,7 +143,7 @@ impl LiveSession {
             }
             Err(err) => return Err(WireError::Fatal(err.to_string())),
         }
-        parse_response_line(&self.line_buf).map_err(WireError::Fatal)
+        parse_response_line(&self.line_buf, legacy_secret_redaction).map_err(WireError::Fatal)
     }
 
     fn exchange_wire_with_timeouts(
@@ -146,6 +152,7 @@ impl LiveSession {
         op: &Op,
         write_deadline: Instant,
         reply_timeout: Duration,
+        legacy_secret_redaction: bool,
     ) -> Result<Response, WireError> {
         let write_timeout = write_deadline.saturating_duration_since(Instant::now());
         if write_timeout.is_zero() {
@@ -160,7 +167,7 @@ impl LiveSession {
             .get_ref()
             .set_read_timeout(Some(reply_timeout))
             .map_err(|err| WireError::Retryable(err.to_string()))?;
-        self.exchange_wire(id, op)
+        self.exchange_wire(id, op, legacy_secret_redaction)
     }
 
     /// Write every request line, flush once, then read one response each.
@@ -174,6 +181,7 @@ impl LiveSession {
         ops: &[&Op],
         write_deadline: Instant,
         reply_timeout: Duration,
+        legacy_secret_redaction: bool,
     ) -> Result<Vec<Response>, WireError> {
         self.reader
             .get_ref()
@@ -223,7 +231,10 @@ impl LiveSession {
                 Ok(false) => return Err(pipeline_eof(&out)),
                 Err(err) => return Err(WireError::Fatal(err.to_string())),
             }
-            out.push(parse_response_line(&self.line_buf).map_err(WireError::Fatal)?);
+            out.push(
+                parse_response_line(&self.line_buf, legacy_secret_redaction)
+                    .map_err(WireError::Fatal)?,
+            );
         }
         Ok(out)
     }
@@ -364,6 +375,7 @@ impl AgentClient {
             next_id: 1,
             session: None,
             features: None,
+            refresh_features_on_reconnect: false,
             as_written: false,
         }
     }
@@ -377,10 +389,9 @@ impl AgentClient {
         self
     }
 
-    /// Send capability-gated ops as written, without reading
-    /// `hello.features` first: no local refusal and no `invoke` spelling.
-    /// What comes back is the host's own answer, which is what a
-    /// conformance test of the host needs to see.
+    /// Send capability-gated ops as written, without local refusal or
+    /// `invoke` rewriting. After reconnecting, the client still refreshes
+    /// `hello.features` before parsing a reply.
     pub fn as_written(mut self) -> Self {
         self.as_written = true;
         self
@@ -462,12 +473,26 @@ impl AgentClient {
             }
             return Ok(out);
         }
-        let timeout = ops
+        let mut force_full = Vec::with_capacity(ops.len());
+        let mut prepared = Vec::with_capacity(ops.len());
+        for op in ops {
+            let (op, full) = self.prepare_snapshot_op(op)?;
+            prepared.push(op);
+            force_full.push(full);
+        }
+        let prepared: Vec<&Op> = prepared.iter().collect();
+        let timeout = prepared
             .iter()
             .map(|op| self.timeout_for(op))
             .max()
             .unwrap_or(self.timeout);
-        self.pipeline_retry(ops, timeout)
+        let mut responses = self.pipeline_retry(&prepared, timeout)?;
+        for (response, full) in responses.iter_mut().zip(force_full) {
+            if full && response.ok {
+                response.result = Some(serde_json::json!({ "full": true }));
+            }
+        }
+        Ok(responses)
     }
 
     /// One request on a fresh connection, then drop it.
@@ -483,9 +508,56 @@ impl AgentClient {
 
     fn roundtrip_retry(&mut self, op: &Op) -> Result<Response, SendError> {
         self.drop_idle_session();
-        let timeout = self.timeout_for(op);
+        let (op, force_full) = self.prepare_snapshot_op(op).map_err(SendError::unsent)?;
+        let timeout = self.timeout_for(&op);
         let connect_deadline = Instant::now() + self.timeout;
-        self.roundtrip_retry_until(op, connect_deadline, timeout, None)
+        let mut response = self.roundtrip_retry_until(&op, connect_deadline, timeout, None)?;
+        if force_full && response.ok {
+            response.result = Some(serde_json::json!({ "full": true }));
+        }
+        Ok(response)
+    }
+
+    fn prepare_snapshot_op(&mut self, op: &Op) -> Result<(Op, bool), String> {
+        let Op::Snapshot {
+            since,
+            format,
+            fingerprints,
+        } = op
+        else {
+            return Ok((op.clone(), false));
+        };
+        if since.is_none() && *fingerprints != Some(true) {
+            return Ok((op.clone(), false));
+        }
+        let secret_redaction = self
+            .features()?
+            .iter()
+            .any(|feature| feature == "secret_redaction");
+        if secret_redaction || since.is_none() {
+            return Ok((op.clone(), false));
+        }
+        Ok((
+            Op::Snapshot {
+                since: None,
+                format: if format == &Some(SnapshotFormat::Compact) {
+                    None
+                } else {
+                    *format
+                },
+                fingerprints: *fingerprints,
+            },
+            true,
+        ))
+    }
+
+    fn legacy_secret_redaction(&self) -> bool {
+        !self
+            .features
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .any(|feature| feature == "secret_redaction")
     }
 
     fn roundtrip_retry_until(
@@ -567,9 +639,6 @@ impl AgentClient {
             if peer_closed {
                 self.drop_session();
             }
-            if self.session.is_none() {
-                self.features = None;
-            }
             let request = self
                 .negotiated(op, deadline)
                 .map_err(SendError::unsent)?
@@ -616,7 +685,6 @@ impl AgentClient {
             return Err(WireError::Unsent("operation deadline elapsed".into()));
         }
         if self.session.is_none() {
-            self.features = None;
             match LiveSession::open_until(self.addr, deadline, self.token.as_deref()) {
                 Ok(session) => self.session = Some(session),
                 Err(error) if Instant::now() >= deadline => {
@@ -640,6 +708,9 @@ impl AgentClient {
                 }
             }
         }
+        if self.refresh_features_on_reconnect && !matches!(op, Op::Hello) {
+            self.features().map_err(WireError::Unsent)?;
+        }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             self.drop_session();
@@ -650,11 +721,12 @@ impl AgentClient {
             .expect("session")
             .set_io_timeout(remaining)
             .map_err(WireError::Retryable)?;
-        let result = self
-            .session
-            .as_mut()
-            .expect("session")
-            .exchange_wire(id, op);
+        let legacy_secret_redaction = self.legacy_secret_redaction();
+        let result =
+            self.session
+                .as_mut()
+                .expect("session")
+                .exchange_wire(id, op, legacy_secret_redaction);
         match result {
             Ok(resp) => {
                 self.session.as_mut().expect("session").last_used = Instant::now();
@@ -687,17 +759,26 @@ impl AgentClient {
             self.drop_session();
         }
         if self.session.is_none() {
-            self.features = None;
             match LiveSession::open_until(self.addr, connect_deadline, self.token.as_deref()) {
                 Ok(session) => self.session = Some(session),
                 Err(error) => return Err(WireError::Retryable(error)),
             }
         }
+        if self.refresh_features_on_reconnect && !matches!(op, Op::Hello) {
+            self.features().map_err(WireError::Unsent)?;
+        }
+        let legacy_secret_redaction = self.legacy_secret_redaction();
         let result = self
             .session
             .as_mut()
             .expect("session")
-            .exchange_wire_with_timeouts(id, op, connect_deadline, reply_timeout);
+            .exchange_wire_with_timeouts(
+                id,
+                op,
+                connect_deadline,
+                reply_timeout,
+                legacy_secret_redaction,
+            );
         match result {
             Ok(resp) => {
                 self.session.as_mut().expect("session").last_used = Instant::now();
@@ -753,7 +834,6 @@ impl AgentClient {
         reply_timeout: Duration,
     ) -> Result<Vec<Response>, WireError> {
         if self.session.is_none() {
-            self.features = None;
             match LiveSession::open_until(self.addr, connect_deadline, self.token.as_deref()) {
                 Ok(session) => self.session = Some(session),
                 Err(err) => return Err(WireError::Retryable(err)),
@@ -774,11 +854,16 @@ impl AgentClient {
                 }
             }
         }
+        if self.refresh_features_on_reconnect {
+            self.features().map_err(WireError::Unsent)?;
+        }
+        let legacy_secret_redaction = self.legacy_secret_redaction();
         let result = self.session.as_mut().expect("session").exchange_pipeline(
             start_id,
             ops,
             connect_deadline,
             reply_timeout,
+            legacy_secret_redaction,
         );
         match result {
             Ok(resps) => {
@@ -915,9 +1000,11 @@ impl AgentClient {
         Ok(bytes)
     }
 
-    /// A new connection may reach a different build of the host, so what
-    /// the last one advertised is forgotten with it.
+    /// Capabilities are re-read before parsing a response on a new connection.
     fn drop_session(&mut self) {
+        if self.session.is_some() {
+            self.refresh_features_on_reconnect = true;
+        }
         self.session = None;
         self.features = None;
     }
@@ -938,6 +1025,7 @@ impl AgentClient {
                 .hello
                 .ok_or("hello has no info")?;
             self.features = Some(hello.features);
+            self.refresh_features_on_reconnect = false;
         }
         Ok(self.features.as_deref().unwrap_or_default())
     }
@@ -1015,7 +1103,8 @@ impl AgentClient {
     /// second snapshot. A read-back that cannot be taken leaves the action's
     /// own result as it was (`delivered_unverified`). A target absent from
     /// the first read fails with `not_found` and `not_delivered`, and the
-    /// action is not sent.
+    /// action is not sent. On a [secret](crate::tree::UiNode::is_secret)
+    /// target `after` says whether the value changed, never what it is.
     pub fn act(&mut self, op: &Op, read_back: bool) -> Result<Response, CallFailure> {
         let Some(target) = op.read_back_target().filter(|_| read_back) else {
             return self.call(op);
@@ -1034,7 +1123,10 @@ impl AgentClient {
         };
         // The read just taken has no such node: the action could only
         // fail, so it is not sent and the caller learns why.
-        if before.as_ref().is_some_and(|(_, state)| !state.exists) {
+        if before
+            .as_ref()
+            .is_some_and(|(_, target)| !target.state.exists)
+        {
             return Err(CallFailure::with_code(
                 format!("node `{target}` not found"),
                 crate::error_code::NOT_FOUND,
@@ -1045,6 +1137,7 @@ impl AgentClient {
         let Some((before_rev, before_state)) = before else {
             return Ok(resp);
         };
+        let before_secret = before_state.secret;
         let unchanged_rev = before_rev.is_some_and(|rev| {
             self.call_response(&Op::Revision)
                 .is_ok_and(|probe| probe.ok && probe.rev == Some(rev))
@@ -1057,10 +1150,19 @@ impl AgentClient {
                 Err(_) => None,
             }
         };
-        if let Some(mut after) = after {
-            after.changed = after != before_state;
+        if let Some(Target {
+            state: mut after,
+            secret,
+        }) = after
+        {
+            after.changed = after != before_state.state;
             if after.changed {
                 resp.delivery_status = Some(DeliveryStatus::DeliveredVerified);
+            }
+            // The masked value told whether a secret changed; the reply
+            // says only that.
+            if secret || before_secret {
+                after.value = None;
             }
             resp.after = Some(after);
         }
@@ -1110,6 +1212,7 @@ impl AgentClient {
                 return Err(hello.error.unwrap_or_else(|| "request failed".into()));
             }
             self.features = Some(hello.hello.ok_or("hello has no info")?.features);
+            self.refresh_features_on_reconnect = false;
         }
         let features = self.features.as_deref().unwrap_or_default();
         if features.iter().any(|f| f == feature) {
@@ -1313,35 +1416,51 @@ fn transport_failure(err: SendError, acts: bool) -> CallFailure {
     CallFailure::with_code(err.message, code, acts.then_some(delivery))
 }
 
+/// A read-back of the target, and whether it is a
+/// [secret](crate::tree::UiNode::is_secret) node: its `value` is then
+/// masked, compared, and left out of the reply.
+#[derive(Debug, Clone)]
+struct Target {
+    state: ReadBack,
+    secret: bool,
+}
+
 /// The snapshot's revision and `target`'s state in it. `None` when the
 /// snapshot failed or the id is ambiguous, so there is nothing to compare.
-fn read_target(snap: &Response, target: &str) -> Option<(Option<u64>, ReadBack)> {
+/// A secret value is masked here as well, for hosts that predate redaction.
+fn read_target(snap: &Response, target: &str) -> Option<(Option<u64>, Target)> {
     let tree = snap.tree.as_ref().filter(|_| snap.ok)?;
     let rev = snap.rev.or(tree.rev);
     let found = tree.find_all(target);
     let state = match found.as_slice() {
-        [] => ReadBack {
-            exists: false,
-            value: None,
-            checked: None,
-            focused: None,
-            enabled: None,
-            changed: false,
+        [] => Target {
+            state: ReadBack {
+                exists: false,
+                value: None,
+                checked: None,
+                focused: None,
+                enabled: None,
+                changed: false,
+            },
+            secret: false,
         },
-        [node] => ReadBack {
-            exists: true,
-            value: node.value.clone(),
-            checked: node.checked,
-            focused: Some(node.focused),
-            enabled: Some(node.enabled),
-            changed: false,
+        [node] => Target {
+            state: ReadBack {
+                exists: true,
+                value: node.redacted_value().map(std::borrow::Cow::into_owned),
+                checked: node.checked,
+                focused: Some(node.focused),
+                enabled: Some(node.enabled),
+                changed: false,
+            },
+            secret: node.is_secret(),
         },
         _ => return None,
     };
     Some((rev, state))
 }
 
-fn parse_response_line(line: &[u8]) -> Result<Response, String> {
+fn parse_response_line(line: &[u8], legacy_secret_redaction: bool) -> Result<Response, String> {
     if parse_challenge_line(line).is_ok() {
         return Err("automation token required".into());
     }
@@ -1350,7 +1469,26 @@ fn parse_response_line(line: &[u8]) -> Result<Response, String> {
     // Hosts that predate `error_code` send only the prefixed text; classify
     // it with the same table the server uses.
     resp.fill_error_code();
+    // Hosts that predate redaction send secret values in full: mask them on
+    // arrival, so no output built from this tree can show one.
+    if let Some(tree) = resp.tree.as_mut() {
+        tree.redact_secrets();
+    }
+    if legacy_secret_redaction {
+        drop_legacy_secret_fingerprints(&mut resp);
+    }
     Ok(resp)
+}
+
+fn drop_legacy_secret_fingerprints(resp: &mut Response) {
+    if resp.tree.is_none() {
+        resp.fingerprints = None;
+        return;
+    }
+    let tree = resp.tree.as_ref().expect("tree checked above");
+    if let Some(fingerprints) = resp.fingerprints.as_mut() {
+        fingerprints.retain(|id, _| !tree.find_all(id).iter().any(|node| node.is_secret()));
+    }
 }
 
 #[cfg(test)]
@@ -1548,6 +1686,484 @@ mod tests {
         AgentClient::connect(addr).with_timeout(Duration::from_millis(600))
     }
 
+    fn legacy_since_host() -> (SocketAddr, thread::JoinHandle<Vec<serde_json::Value>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut secret =
+            crate::tree::UiNode::new("secret", "textbox", "Password").with_value("hunter2");
+        secret.states.push("secret".into());
+        let raw_fingerprint = secret.fingerprint(None);
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut requests = Vec::new();
+            for _ in 0..2 {
+                let mut line = String::new();
+                assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                requests.push(request.clone());
+                let response = match request["op"].as_str() {
+                    Some("hello") => serde_json::json!({
+                        "ok": true,
+                        "hello": {
+                            "protocol": PROTOCOL_VERSION,
+                            "app": "legacy",
+                            "platform": "headless",
+                            "ready": true,
+                            "features": []
+                        }
+                    }),
+                    Some("snapshot") if request.get("since").is_some() => serde_json::json!({
+                        "ok": true,
+                        "result": {
+                            "diff": {
+                                "added": [],
+                                "removed": [],
+                                "changed": [{"id": "secret", "value": "hunter2"}]
+                            }
+                        },
+                        "fingerprints": {"secret": raw_fingerprint, "plain": 456}
+                    }),
+                    Some("snapshot") => serde_json::json!({
+                        "ok": true,
+                        "rev": 2,
+                        "tree": {
+                            "app": "legacy",
+                            "platform": "headless",
+                            "ready": true,
+                            "nodes": [
+                                {
+                                    "id": "secret",
+                                    "role": "textbox",
+                                    "name": "Password",
+                                    "value": "hunter2",
+                                    "states": ["secret"],
+                                    "enabled": true
+                                },
+                                {
+                                    "id": "plain",
+                                    "role": "button",
+                                    "name": "Submit",
+                                    "enabled": true
+                                }
+                            ]
+                        },
+                        "fingerprints": {"secret": raw_fingerprint, "plain": 456}
+                    }),
+                    op => panic!("unexpected op: {op:?}"),
+                };
+                let mut response = response;
+                response["v"] = serde_json::json!(PROTOCOL_VERSION);
+                response["id"] = request["id"].clone();
+                serde_json::to_writer(&mut stream, &response).unwrap();
+                stream.write_all(b"\n").unwrap();
+                stream.flush().unwrap();
+            }
+            requests
+        });
+        (addr, server)
+    }
+
+    fn legacy_fingerprint_host(
+        snapshots: usize,
+    ) -> (SocketAddr, thread::JoinHandle<Vec<serde_json::Value>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut secret =
+            crate::tree::UiNode::new("secret", "textbox", "Password").with_value("hunter2");
+        secret.states.push("secret".into());
+        let raw_fingerprint = secret.fingerprint(None);
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut requests = Vec::new();
+            for _ in 0..=snapshots {
+                let mut line = String::new();
+                assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                requests.push(request.clone());
+                let response = match request["op"].as_str() {
+                    Some("hello") => serde_json::json!({
+                        "ok": true,
+                        "hello": {
+                            "protocol": PROTOCOL_VERSION,
+                            "app": "legacy",
+                            "platform": "headless",
+                            "ready": true,
+                            "features": []
+                        }
+                    }),
+                    Some("snapshot") => serde_json::json!({
+                        "ok": true,
+                        "rev": 2,
+                        "tree": {
+                            "app": "legacy",
+                            "platform": "headless",
+                            "ready": true,
+                            "nodes": [
+                                {
+                                    "id": "secret",
+                                    "role": "textbox",
+                                    "name": "Password",
+                                    "value": "hunter2",
+                                    "states": ["secret"],
+                                    "enabled": true
+                                },
+                                {
+                                    "id": "plain",
+                                    "role": "button",
+                                    "name": "Submit",
+                                    "enabled": true
+                                }
+                            ]
+                        },
+                        "fingerprints": {"secret": raw_fingerprint, "plain": 456}
+                    }),
+                    op => panic!("unexpected op: {op:?}"),
+                };
+                let mut response = response;
+                response["v"] = serde_json::json!(PROTOCOL_VERSION);
+                response["id"] = request["id"].clone();
+                serde_json::to_writer(&mut stream, &response).unwrap();
+                stream.write_all(b"\n").unwrap();
+                stream.flush().unwrap();
+            }
+            requests
+        });
+        (addr, server)
+    }
+
+    fn assert_legacy_snapshot_is_sanitized(response: &Response) {
+        let tree = response.tree.as_ref().expect("full tree");
+        assert_eq!(
+            tree.find("secret").and_then(|node| node.value.as_deref()),
+            Some("•••••••")
+        );
+        let fingerprints = response.fingerprints.as_ref().expect("fingerprints");
+        assert!(!fingerprints.contains_key("secret"));
+        assert_eq!(fingerprints.get("plain"), Some(&456));
+    }
+
+    #[test]
+    fn legacy_since_snapshot_requests_a_full_masked_tree() {
+        let (addr, server) = legacy_since_host();
+        let mut client = client_for(addr);
+        let response = client
+            .call(&Op::Snapshot {
+                since: Some(1),
+                format: Some(SnapshotFormat::Compact),
+                fingerprints: Some(true),
+            })
+            .unwrap();
+        let tree = response.tree.expect("full tree");
+        assert_eq!(
+            tree.find("secret").and_then(|node| node.value.as_deref()),
+            Some("•••••••")
+        );
+        assert_eq!(response.result, Some(serde_json::json!({ "full": true })));
+        let fingerprints = response.fingerprints.unwrap();
+        assert!(!fingerprints.contains_key("secret"));
+        assert_eq!(fingerprints.get("plain"), Some(&456));
+        let requests = server.join().unwrap();
+        assert_eq!(requests[0]["op"], "hello");
+        assert_eq!(requests[1]["op"], "snapshot");
+        assert!(requests[1].get("since").is_none(), "{requests:?}");
+        assert!(requests[1].get("format").is_none(), "{requests:?}");
+    }
+
+    #[test]
+    fn rpc_op_and_pipeline_sanitize_legacy_secret_fingerprints() {
+        let (addr, server) = legacy_fingerprint_host(3);
+        let mut client = client_for(addr);
+        let op = Op::Snapshot {
+            since: None,
+            format: None,
+            fingerprints: Some(true),
+        };
+        let direct = client.rpc_op(&op).unwrap();
+        assert_legacy_snapshot_is_sanitized(&direct);
+
+        let pipeline = client.rpc_pipeline(&[&op, &op]).unwrap();
+        assert_eq!(pipeline.len(), 2);
+        for response in &pipeline {
+            assert_legacy_snapshot_is_sanitized(response);
+        }
+
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request["op"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["hello", "snapshot", "snapshot", "snapshot"]
+        );
+    }
+
+    #[test]
+    fn pipeline_relearns_features_after_reconnect() {
+        fn read_request(reader: &mut BufReader<std::net::TcpStream>) -> serde_json::Value {
+            let mut line = String::new();
+            assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+            serde_json::from_str(&line).unwrap()
+        }
+
+        fn send_reply(
+            stream: &mut std::net::TcpStream,
+            request: &serde_json::Value,
+            mut reply: serde_json::Value,
+        ) {
+            reply["v"] = serde_json::json!(PROTOCOL_VERSION);
+            reply["id"] = request["id"].clone();
+            serde_json::to_writer(&mut *stream, &reply).unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut secret =
+            crate::tree::UiNode::new("secret", "textbox", "Password").with_value("•••••••");
+        secret.states.push("secret".into());
+        let secret_fingerprint = secret.fingerprint(None);
+        let plain = crate::tree::UiNode::new("plain", "button", "Submit");
+        let plain_fingerprint = plain.fingerprint(None);
+        let snapshot = serde_json::json!({
+            "ok": true,
+            "rev": 2,
+            "tree": {
+                "app": "modern",
+                "platform": "headless",
+                "ready": true,
+                "rev": 2,
+                "nodes": [
+                    {
+                        "id": "secret",
+                        "role": "textbox",
+                        "name": "Password",
+                        "value": "•••••••",
+                        "states": ["secret"],
+                        "enabled": true
+                    },
+                    {
+                        "id": "plain",
+                        "role": "button",
+                        "name": "Submit",
+                        "enabled": true
+                    }
+                ]
+            },
+            "fingerprints": {
+                "secret": secret_fingerprint,
+                "plain": plain_fingerprint
+            }
+        });
+        let server = thread::spawn(move || {
+            let mut ops = Vec::new();
+            {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let request = read_request(&mut reader);
+                assert_eq!(request["op"], "hello");
+                ops.push("hello".to_owned());
+                send_reply(
+                    &mut stream,
+                    &request,
+                    serde_json::json!({
+                        "ok": true,
+                        "hello": {
+                            "protocol": PROTOCOL_VERSION,
+                            "app": "modern",
+                            "platform": "headless",
+                            "ready": true,
+                            "features": ["secret_redaction"]
+                        }
+                    }),
+                );
+            }
+            {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let first = read_request(&mut reader);
+                ops.push(first["op"].as_str().unwrap().to_owned());
+                let mut snapshots_left = 2;
+                if first["op"] == "hello" {
+                    send_reply(
+                        &mut stream,
+                        &first,
+                        serde_json::json!({
+                            "ok": true,
+                            "hello": {
+                                "protocol": PROTOCOL_VERSION,
+                                "app": "modern",
+                                "platform": "headless",
+                                "ready": true,
+                                "features": ["secret_redaction"]
+                            }
+                        }),
+                    );
+                } else {
+                    assert_eq!(first["op"], "snapshot");
+                    send_reply(&mut stream, &first, snapshot.clone());
+                    snapshots_left -= 1;
+                }
+                while snapshots_left > 0 {
+                    let request = read_request(&mut reader);
+                    assert_eq!(request["op"], "snapshot");
+                    ops.push("snapshot".to_owned());
+                    send_reply(&mut stream, &request, snapshot.clone());
+                    snapshots_left -= 1;
+                }
+            }
+            ops
+        });
+
+        let mut client = client_for(addr).with_timeout(Duration::from_secs(2));
+        assert!(
+            client
+                .features()
+                .unwrap()
+                .iter()
+                .any(|feature| feature == "secret_redaction")
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let closed = client
+                .session
+                .as_ref()
+                .expect("hello opened a session")
+                .peer_closed();
+            if !matches!(closed, Ok(false)) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fake host did not close connection"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let op = Op::Snapshot {
+            since: None,
+            format: None,
+            fingerprints: Some(true),
+        };
+        let responses = client.rpc_pipeline(&[&op, &op]).unwrap();
+        assert_eq!(responses.len(), 2);
+        for response in responses {
+            let fingerprints = response.fingerprints.expect("fingerprints");
+            assert!(fingerprints.contains_key("secret"));
+            assert!(fingerprints.contains_key("plain"));
+        }
+        assert_eq!(
+            server.join().unwrap(),
+            vec!["hello", "hello", "snapshot", "snapshot"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn legacy_secret_fingerprints_are_dropped_from_snapshots_and_diffs() {
+        let tree = serde_json::json!({
+            "app": "fake",
+            "platform": "headless",
+            "ready": true,
+            "nodes": [
+                {
+                    "id": "secret",
+                    "role": "textbox",
+                    "name": "Password",
+                    "value": "hunter2",
+                    "states": ["secret"],
+                    "enabled": true
+                },
+                {
+                    "id": "plain",
+                    "role": "button",
+                    "name": "Submit",
+                    "enabled": true
+                }
+            ]
+        });
+        let fingerprints = serde_json::json!({"secret": 123, "plain": 456});
+        let (addr, server) = fake_host(vec![
+            Some(serde_json::json!({
+                "ok": true,
+                "hello": {
+                    "protocol": PROTOCOL_VERSION,
+                    "app": "fake",
+                    "platform": "headless",
+                    "ready": true,
+                    "features": []
+                }
+            })),
+            Some(serde_json::json!({
+                "ok": true,
+                "tree": tree.clone(),
+                "fingerprints": fingerprints.clone()
+            })),
+            Some(serde_json::json!({
+                "ok": true,
+                "result": { "diff": { "added": [], "removed": [], "changed": [] } },
+                "fingerprints": fingerprints.clone()
+            })),
+            Some(serde_json::json!({
+                "ok": true,
+                "tree": tree,
+                "result": { "full": true },
+                "fingerprints": fingerprints
+            })),
+        ]);
+        let mut client = client_for(addr);
+        let full = client
+            .call(&Op::Snapshot {
+                since: None,
+                format: None,
+                fingerprints: Some(true),
+            })
+            .unwrap();
+        let full_fingerprints = full.fingerprints.unwrap();
+        assert!(!full_fingerprints.contains_key("secret"));
+        assert_eq!(full_fingerprints.get("plain"), Some(&456));
+
+        let diff = client
+            .call(&Op::Snapshot {
+                since: Some(1),
+                format: None,
+                fingerprints: Some(true),
+            })
+            .unwrap();
+        assert!(diff.fingerprints.is_none());
+
+        let resync = client
+            .call(&Op::Snapshot {
+                since: Some(2),
+                format: None,
+                fingerprints: Some(true),
+            })
+            .unwrap();
+        let resync_fingerprints = resync.fingerprints.unwrap();
+        assert!(!resync_fingerprints.contains_key("secret"));
+        assert_eq!(resync_fingerprints.get("plain"), Some(&456));
+        assert_eq!(
+            server.join().unwrap(),
+            ["hello", "snapshot", "snapshot", "snapshot"]
+        );
+    }
+
     #[test]
     fn nothing_listening_is_not_delivered() {
         let addr = TcpListener::bind("127.0.0.1:0")
@@ -1662,6 +2278,36 @@ mod tests {
         assert!(after.exists && after.changed);
         assert_eq!(after.value.as_deref(), Some("xy"));
         assert_eq!(after.enabled, Some(true));
+    }
+
+    /// A host that predates redaction sends a password field's real
+    /// value: the read-back still says it changed, and never what it is.
+    #[test]
+    fn read_back_of_a_password_reports_the_change_without_the_value() {
+        let password = |value: &str, rev: u64| {
+            let mut snap = tree_with(value, rev);
+            snap["tree"]["nodes"][0]["role"] = serde_json::json!("password");
+            snap
+        };
+        let (addr, server) = fake_host(vec![
+            Some(password("hunter", 1)),
+            Some(serde_json::json!({ "ok": true })),
+            Some(serde_json::json!({ "ok": true, "rev": 2 })),
+            Some(password("hunter2", 2)),
+        ]);
+        let resp = client_for(addr)
+            .act(&Op::type_text("a", "2"), true)
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(
+            resp.delivery_status,
+            Some(DeliveryStatus::DeliveredVerified)
+        );
+        let after = resp.after.unwrap();
+        assert!(after.exists && after.changed);
+        assert_eq!(after.value, None);
+        let json = serde_json::to_string(&after).unwrap();
+        assert!(!json.contains("hunter"), "{json}");
     }
 
     #[test]

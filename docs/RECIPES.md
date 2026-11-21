@@ -252,12 +252,13 @@ gpui-agent recipe validate examples/recipes/todo-crud.json \
   Empty, unknown, ambiguous, or shell-like intents (`rm`, `curl`,
   `bash`, …) return an error. Missing required `title` / `id` also
   fails. Resolve never shells out.
-- With the opt-in `instinct` build feature, resolve is backed by the
+- With the `instinct` build feature (on in the CLI's default build),
+  resolve is backed by the
   `gpui-agent-policy` evidence scorer: verb / schema-name / zone /
   keyword hits pick the schema, then the same Instinct arbitration
-  decides or abstains. Abstain stays an error — never a guess. The
-  feature is off by default; builds without it keep the keyword
-  resolver and identical scores/outputs.
+  decides or abstains. Abstain stays an error — never a guess. A CLI
+  built with `--no-default-features` (and the recipe crate on its own)
+  keeps the keyword resolver and identical scores/outputs.
 
 Protocol ops (`click`, `set_value`, …) are always valid **as** those
 ops. The allow-list is for `invoke` and for prose → schema mapping.

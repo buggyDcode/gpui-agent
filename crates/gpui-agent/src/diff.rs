@@ -45,7 +45,9 @@ pub struct TreeDiff {
     pub changed: Vec<ChangedNode>,
 }
 
-/// (node, parent-id) for every node in DFS order.
+/// (node, parent-id) for every node in DFS order, secret values masked
+/// ([`UiNode::redact_secrets`]) so neither a changed field nor an added
+/// subtree carries one.
 fn index(tree: &UiTree) -> BTreeMap<String, (UiNode, Option<String>)> {
     let mut out = BTreeMap::new();
     let mut stack: Vec<(&UiNode, Option<String>)> =
@@ -54,7 +56,9 @@ fn index(tree: &UiTree) -> BTreeMap<String, (UiNode, Option<String>)> {
         for child in node.children.iter().rev() {
             stack.push((child, Some(node.id.clone())));
         }
-        out.insert(node.id.clone(), (node.clone(), parent));
+        let mut node = node.clone();
+        node.redact_secrets();
+        out.insert(node.id.clone(), (node, parent));
     }
     out
 }
@@ -83,6 +87,9 @@ fn scalar_field_value(node: &UiNode, field: &str) -> Option<serde_json::Value> {
 }
 
 /// `diff_trees(old, new)` — what a client at `old` needs to reach `new`.
+///
+/// Secret values come out masked ([`UiNode::redacted_value`]): applying
+/// the diff to a redacted `old` gives a redacted `new`.
 ///
 /// Ids are stable across revisions by contract; a node that changed
 /// parents comes out as `removed` + `added` (a move is not a field edit).
@@ -248,18 +255,14 @@ const MAX_VALUE_CHARS: usize = 200;
 
 /// `format:"compact"` — one line per **visible** node:
 /// `id␠role␠"name"␠[checked|disabled|focused|value="…"]`, depth-indented
-/// with two spaces. Values are truncated at 200 chars and password nodes
-/// never emit their value.
+/// with two spaces. Values are truncated at 200 chars and
+/// [secret](UiNode::is_secret) nodes never emit their value.
 pub fn compact_lines(tree: &UiTree) -> String {
     let mut out = String::new();
     for node in &tree.nodes {
         compact_node(node, 0, &mut out);
     }
     out
-}
-
-fn is_password(node: &UiNode) -> bool {
-    node.role == "password" || node.states.iter().any(|s| s == "password")
 }
 
 fn compact_node(node: &UiNode, depth: usize, out: &mut String) {
@@ -301,7 +304,7 @@ pub(crate) fn compact_line(
     if node.focused {
         flags.push("focused".into());
     }
-    if !is_password(node) {
+    if !node.is_secret() {
         if let Some(value) = &node.value {
             let mut v: String = value.chars().take(MAX_VALUE_CHARS).collect();
             if value.chars().count() > MAX_VALUE_CHARS {

@@ -48,7 +48,7 @@ check a condition without reading the tree.
 | Command | Does |
 |---|---|
 | `press <node>` or `press --x X --y Y` | Tap or click |
-| `type <node> <text>`, `set-value <node> <value>`, `paste <node> <text>` | Enter text |
+| `type <node> <text>`, `set-value <node> <value>`, `paste <node> <text>` | Enter text; `--stdin` instead of the text reads it from stdin |
 | `key <node> <key>` | Press a key or chord on a node |
 | `scroll <node> --dy N` | Scroll a scroller by points |
 | `swipe up\|down\|left\|right --target <node>` | Touch swipe (mobile) |
@@ -100,3 +100,6 @@ Pick another action.
   what it did.
 - `screenshot` without `--inline` writes the file on the host's machine or
   device, which is not this one for Android or a remote host.
+- Enter a password or key with `--stdin` (`type --stdin <node> < file`), never
+  as an argument. Secret fields (role or state `password` / `secret`) show
+  their value masked as `•`; `assert --value` still compares the real one.
