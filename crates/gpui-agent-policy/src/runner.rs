@@ -441,6 +441,10 @@ impl<'a> Runner<'a> {
             .collect();
         let mut history: Vec<HistoryEntry> = Vec::new();
         let mut typed: Vec<String> = Vec::new();
+        // `(node id, text)` of each verified TYPE/SET_VALUE into a
+        // secret field: its value arrives masked, so the action space
+        // gets the draft from here while the field still holds it.
+        let mut secret_drafts: Vec<(String, String)> = Vec::new();
         let mut steps: Vec<StepRecord> = Vec::new();
         let mut no_effect = 0u32;
         let mut stale = 0u32;
@@ -461,7 +465,17 @@ impl<'a> Runner<'a> {
                 }
             };
             let (goal_text, mode) = clause_mode(&clause);
-            let space = ActionSpace::from_tree(&tree, &keybindings, &self.invokes);
+            let mut space = ActionSpace::from_tree(&tree, &keybindings, &self.invokes);
+            secret_drafts.retain(|(id, text)| {
+                tree.find(id).is_some_and(|n| {
+                    n.is_secret()
+                        && n.value.as_deref().map(|v| v.chars().count())
+                            == Some(text.chars().count())
+                })
+            });
+            for (_, text) in &secret_drafts {
+                space.note_secret_draft(text);
+            }
 
             // `wait for X` — no policy, no action: advance when X shows.
             if let ClauseMode::WaitFor(target) = &mode {
@@ -658,6 +672,13 @@ impl<'a> Runner<'a> {
                 verification: verification.to_owned(),
             });
             if let Some(text) = payload.clone() {
+                let secret_target = action
+                    .target()
+                    .filter(|id| tree.find(id).is_some_and(UiNode::is_secret));
+                if let ("success", Some(id)) = (verification, secret_target) {
+                    secret_drafts.retain(|(other, _)| other != id);
+                    secret_drafts.push((id.to_owned(), text.clone()));
+                }
                 typed.push(text);
             }
             steps.push(StepRecord {
@@ -698,12 +719,19 @@ impl<'a> Runner<'a> {
         changed: bool,
     ) -> &'static str {
         if matches!(decision.kind, ActionKind::Type | ActionKind::SetValue) {
-            let current = action
-                .target()
-                .and_then(|id| tree.find(id))
-                .and_then(|n| n.value.as_deref());
-            return match (payload, current) {
-                (Some(want), Some(got)) if got == want => "success",
+            let node = action.target().and_then(|id| tree.find(id));
+            // A secret node's value reaches the client masked (one
+            // `SECRET_MASK` per character, PROTOCOL.md "Secret values"),
+            // so `redacted_value` is all-mask whether or not the host
+            // already masked it, and the payload is compared by its
+            // character count: that is all the read-back can confirm.
+            let current = node.and_then(UiNode::redacted_value);
+            let matches = |want: &str, got: &str| match node {
+                Some(n) if n.is_secret() => got.chars().count() == want.chars().count(),
+                _ => got == want,
+            };
+            return match (payload, current.as_deref()) {
+                (Some(want), Some(got)) if matches(want, got) => "success",
                 (Some(_), _) => "wrong-effect",
                 _ if changed => "state-changed",
                 _ => "no-effect",
@@ -821,7 +849,175 @@ pub fn op_for_decision(
 
 #[cfg(test)]
 mod tests {
-    use super::INSTINCT_VERSION_REQ;
+    use super::{INSTINCT_VERSION_REQ, Runner};
+    use crate::policy::InstinctPolicy;
+    use gpui_agent::dispatch::DispatchResult;
+    use gpui_agent::host::AgentHost;
+    use gpui_agent::protocol::{DeliveryMode, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind};
+    use gpui_agent::tree::{UiNode, UiTree};
+    use gpui_agent::{SECRET_MASK, TestHost};
+
+    /// One text field, a submit button and the list of submitted
+    /// values. `marker` (when set) is the field's extra state, so a
+    /// secret field reaches the runner masked.
+    struct FormHost {
+        field: &'static str,
+        button: &'static str,
+        marker: Option<&'static str>,
+        value: String,
+        submitted: Vec<String>,
+    }
+
+    impl AgentHost for FormHost {
+        fn hello(&self) -> HelloInfo {
+            HelloInfo {
+                os: gpui_agent::protocol::host_os(),
+                protocol: PROTOCOL_VERSION,
+                framework: None,
+                device: None,
+                app: "form".into(),
+                platform: PlatformKind::Headless,
+                ready: true,
+                deliveries: vec![],
+                auth: gpui_agent::HelloAuth::None,
+                bundle_id: None,
+                executable: None,
+                features: vec![],
+            }
+        }
+
+        fn snapshot(&self) -> UiTree {
+            let mut field = UiNode::textbox("field", self.field).with_value(&self.value);
+            field.states.extend(self.marker.map(str::to_owned));
+            let rows = self
+                .submitted
+                .iter()
+                .enumerate()
+                .map(|(n, text)| UiNode::listitem(format!("row-{n}"), text))
+                .collect();
+            UiTree {
+                app: "form".into(),
+                platform: PlatformKind::Headless,
+                ready: true,
+                nodes: vec![UiNode::window("form-window", "Form").with_children(vec![
+                    field,
+                    UiNode::button("submit", self.button),
+                    UiNode::list("rows", "Submitted").with_children(rows),
+                ])],
+                rev: None,
+            }
+        }
+
+        fn dispatch(&mut self, op: &Op) -> Result<DispatchResult, String> {
+            match op {
+                Op::Type { text, .. } => self.value.push_str(text),
+                Op::SetValue { value, .. } => self.value.clone_from(value),
+                Op::Click { target, .. } if target == "submit" => {
+                    self.submitted.push(std::mem::take(&mut self.value));
+                }
+                _ => {}
+            }
+            Ok(DispatchResult::empty())
+        }
+
+        fn screenshot(
+            &self,
+            _spec: gpui_agent::scroll_capture::ScreenshotSpec<'_>,
+        ) -> Result<DispatchResult, String> {
+            Err("screenshot_unavailable".into())
+        }
+    }
+
+    /// Run `goal` against a [`FormHost`]; returns the `OP verification`
+    /// steps, the outcome and what the host received.
+    fn run_form(
+        field: &'static str,
+        button: &'static str,
+        marker: Option<&'static str>,
+        goal: &str,
+    ) -> (Vec<String>, String, Vec<String>) {
+        let host = TestHost::spawn(
+            FormHost {
+                field,
+                button,
+                marker,
+                value: String::new(),
+                submitted: Vec::new(),
+            },
+            None,
+        )
+        .expect("bind");
+        let mut client = host.client();
+        client.wait_ready().expect("hello");
+        let mut no_invokes = |_: &str, _: &str| Err::<serde_json::Value, String>("none".into());
+        let receipt = Runner::new(
+            &mut client,
+            InstinctPolicy::default(),
+            DeliveryMode::Semantic,
+            Vec::new(),
+            &mut no_invokes,
+        )
+        .run(goal)
+        .expect("run");
+        let steps = receipt
+            .steps
+            .iter()
+            .map(|s| format!("{} {}", s.op, s.verification))
+            .collect();
+        // What the runner observed was masked: these runs exercise the
+        // masked read-back, not a host that leaks the value.
+        host.host().lock().unwrap().value = "hunter2".into();
+        let tree = client.snapshot().expect("snapshot").tree.expect("tree");
+        let seen = tree.find("field").and_then(|n| n.value.clone());
+        let want = match marker {
+            Some(_) => std::iter::repeat_n(SECRET_MASK, 7).collect(),
+            None => "hunter2".to_owned(),
+        };
+        assert_eq!(seen, Some(want), "{marker:?}");
+        let submitted = host.host().lock().unwrap().submitted.clone();
+        (steps, receipt.outcome, submitted)
+    }
+
+    /// A secret field's value reaches the runner as one `SECRET_MASK`
+    /// per character, yet typing into it still verifies and still
+    /// counts as the clause's payload being placed, so the run goes on
+    /// to press the button exactly as with an ordinary field.
+    #[test]
+    fn type_into_secret_field_runs_like_an_ordinary_field() {
+        // The add form must also press `Add`; the login goal stops after
+        // the TYPE either way, so its TYPE verification is the check.
+        let forms = [
+            (
+                "What needs doing?",
+                "Add",
+                r#"Add a todo "Buy milk""#,
+                Some("Buy milk"),
+            ),
+            (
+                "Password",
+                "Log in",
+                r#"Enter "hunter2" in Password and log in"#,
+                None,
+            ),
+        ];
+        for (field, button, goal, pressed) in forms {
+            let (plain, outcome, submitted) = run_form(field, button, None, goal);
+            assert_eq!(plain[0], "TYPE success", "{goal}: {plain:?}");
+            if let Some(text) = pressed {
+                assert_eq!(plain, ["TYPE success", "CLICK state-changed"], "{goal}");
+                assert_eq!(outcome, "done", "{goal}");
+                assert_eq!(submitted, [text], "{goal}");
+            }
+            for marker in ["password", "secret"] {
+                let secret = run_form(field, button, Some(marker), goal);
+                assert_eq!(
+                    secret,
+                    (plain.clone(), outcome.clone(), submitted.clone()),
+                    "{goal} with {marker}"
+                );
+            }
+        }
+    }
 
     /// The receipt's `engine.instinct` must equal the manifest's
     /// `instinct-*` requirement — the literal cannot drift silently.

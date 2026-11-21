@@ -393,6 +393,21 @@ impl ActionSpace {
             })
     }
 
+    /// Record that a secret field holds `text`, which the runner typed
+    /// and verified. The field's value arrives masked
+    /// ([`gpui_agent::SECRET_MASK`]), so the tree alone cannot show the
+    /// draft; this restores the [`Self::literal_placed`] evidence, never
+    /// [`Self::literal_in_label`]. The text stays inside the space and
+    /// is not part of any offered action's state.
+    pub fn note_secret_draft(&mut self, text: &str) {
+        self.texts.push(NodeText {
+            label: Vec::new(),
+            value: crate::evidence::tokenize(text),
+            role: String::new(),
+        });
+        self.texts.sort();
+    }
+
     /// Stronger than [`Self::literal_placed`]: the literal appears inside a
     /// node's *label* — it names an entity that exists on screen
     /// ("Buy milk" the list item), not merely a field's draft value.

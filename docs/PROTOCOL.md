@@ -290,6 +290,10 @@ either value. A host marks such a field with role `password` or adds the
 `secret` state (an API key in a plain text field). The client masks trees
 from hosts that predate this rule as they arrive.
 
+`run --goal` verifies a `TYPE` / `SET_VALUE` into a secret field by the
+masked value's length, and counts the text it typed there as entered
+while the field still holds that many characters.
+
 To type a secret without putting it in the process list or the shell
 history, pipe it: `gpui-agent type --stdin <id> < secret.txt` (also
 `set-value --stdin`, `paste --stdin`).
