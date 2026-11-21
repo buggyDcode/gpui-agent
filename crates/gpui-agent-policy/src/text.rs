@@ -1,11 +1,10 @@
 //! TextResolver: TYPE / SET_VALUE payload generation is *not* Instinct.
 //!
-//! Port of `aui-policy/src/text.rs` (`DeterministicTextResolver` +
-//! `TextContext`/`TextResolution`/`TextError`). Instinct picks *which
-//! field*; this supplies *what to type* — the quoted literal from the
-//! clause, exact and unaltered, abstaining when none or more than one
-//! candidate applies. (`ground_select` is not ported: the action space
-//! has no select kind.)
+//! `DeterministicTextResolver` with `TextContext`, `TextResolution` and
+//! `TextError`. Instinct picks *which field*; this supplies *what to
+//! type* — the quoted literal from the clause, exact and unaltered,
+//! abstaining when none or more than one candidate applies. There is no
+//! select grounding: the action space has no select kind.
 
 use std::fmt;
 
@@ -98,8 +97,7 @@ impl TextResolver for DeterministicTextResolver {
 
             // PRD M4.3: more than one candidate quote is `Ambiguous`
             // unless the field label disambiguates — never guess the
-            // first literal (aui's `untyped[0]` fallback is weakened
-            // here deliberately).
+            // first literal.
             if untyped.len() == 1 {
                 return Ok(TextResolution {
                     text: untyped[0].1.clone(),

@@ -140,7 +140,10 @@ decimal strings.
 `--addr`: `python3 scripts/conformance.py --addr 127.0.0.1:17421`. Protocol versions
 other than 2 fail. A host that does not advertise `screenshot_inline` warns and skips
 screenshot checks; `--require-screenshot` makes that a failure. CI runs it against
-`todo-headless` without requiring a screenshot.
+`todo-headless` without requiring a screenshot. A nightly workflow
+(`.github/workflows/android-conformance.yml`, also started by hand) runs it against a
+phone host: GPUI has no phone platform, so that host is an nsh app, the nsh gallery on
+an Android emulator, reached through `adb forward`.
 
 When a host does not answer, two commands say why:
 
@@ -202,6 +205,14 @@ gpui-agent invoke todo.list
 ```
 
 Thin wrappers for that demo live in [`examples/todo.sh`](examples/todo.sh). Do not treat them as the public API.
+
+### Policy
+
+gpui-agent keeps its own policy: the action space, evidence scoring,
+two-head decide, text resolver, goal splitting and escalation all live
+in `crates/gpui-agent-policy`. It shares only the Instinct libraries
+`instinct-core`, `instinct-text` and `instinct-lexicon` (from
+crates.io), and does not depend on ultra-instinct or any of its crates.
 
 ## What this proves
 

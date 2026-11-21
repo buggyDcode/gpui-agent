@@ -1,8 +1,8 @@
 //! Default deterministic UI policy backed by Instinct.
 //!
-//! Port of `aui-policy/src/instinct_policy.rs:44-382` (two-head decide:
-//! operation head, then target head) and its habituation
-//! (`HABITUATION_STEP = 250`). Hard-invalid nodes are already absent
+//! Two-head decide: the operation head picks the kind of action, then
+//! the target head picks the node, with habituation lowering repeated
+//! choices (`HABITUATION_STEP = 250`). Hard-invalid nodes are already absent
 //! from [`ActionSpace`]; this policy never applies hidden/disabled as
 //! scores. Dangerous actions are offered but never auto-chosen —
 //! choosing one abstains `needs_confirmation`.
