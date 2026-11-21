@@ -34,8 +34,7 @@ answer does not.
 | todo (GPUI Kit) | Desktop demo | Reference `AgentHost` |
 
 `python3 scripts/conformance.py --addr 127.0.0.1:17421` runs the required
-protocol checks against any host. Details per host:
-[docs/PLATFORMS.md](docs/PLATFORMS.md).
+protocol checks against any host.
 
 ## Install
 
