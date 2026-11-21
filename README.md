@@ -125,6 +125,7 @@ gpui-agent --guard press @e8                  # send @e8's fingerprint saved by 
 ```
 
 `--depth` and `--root` cut the tree in the client, so they work with every host.
+Outlined snapshots omit `rev`; use a full snapshot as a `since` baseline.
 `--wait-for-gone <id>` waits for a node to go away, and `--wait-timeout-ms` (default
 5000) bounds either wait. `--guard` only fingerprints the target of `click`, `type`,
 `set-value`, `key` or `press` when that target is an `@eN` ref; a ref used only by

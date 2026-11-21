@@ -65,7 +65,8 @@ Run `gpui-agent <command> --help` for the options of each.
 
 - Read part of the tree: `snapshot --depth 2` keeps two levels, and a node
   whose children were cut shows `children_count=N`. `snapshot --root <id|@ref>`
-  keeps one subtree. Both work with `--refs` and the JSON output.
+  keeps one subtree. Both work with `--refs` and the JSON output. Outlined
+  snapshots omit `rev`; use a full snapshot as a `since` baseline.
 - Act and wait in one call: add `--wait-for <id>` (or `--wait-for-gone <id>`)
   to any action. The reply carries the new tree in compact form as `compact`;
   `--wait-timeout-ms` bounds the wait (default 5000).

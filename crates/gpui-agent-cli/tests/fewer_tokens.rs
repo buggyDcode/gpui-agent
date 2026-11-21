@@ -214,6 +214,8 @@ fn outline_snapshots_cut_depth_and_root() {
         full.len()
     );
     let one: Value = serde_json::from_str(&one).unwrap();
+    assert!(one.get("rev").is_none(), "{one}");
+    assert!(one["tree"].get("rev").is_none(), "{one}");
     let window = &one["tree"]["nodes"][0];
     assert!(window.get("children").is_none(), "{window}");
     assert!(window["children_count"].as_u64().unwrap() > 0);
@@ -223,6 +225,8 @@ fn outline_snapshots_cut_depth_and_root() {
         &todo.addr,
         &["snapshot", "--root", "todo-item-2"],
     ));
+    assert!(item.get("rev").is_none(), "{item}");
+    assert!(item["tree"].get("rev").is_none(), "{item}");
     assert_eq!(item["tree"]["nodes"].as_array().unwrap().len(), 1);
     assert_eq!(item["tree"]["nodes"][0]["id"], "todo-item-2");
 

@@ -592,6 +592,9 @@ fn outline_snapshot(
     let tree = resp.tree.take().ok_or("the reply carried no tree")?;
     let outline = gpui_agent::outline(&tree, &options)
         .map_err(|err| fail(CallFailure::with_code(err, error_code::BAD_REQUEST, None)))?;
+    if !options.is_full() {
+        resp.rev = None;
+    }
     if let Some(fps) = resp.fingerprints.as_mut() {
         outline.retain_fingerprints(fps);
     }
@@ -2032,6 +2035,8 @@ mod tests {
             &[],
         )
         .unwrap();
+        assert!(one.get("rev").is_none(), "{one}");
+        assert!(one["tree"].get("rev").is_none(), "{one}");
         let window = &one["tree"]["nodes"][0];
         assert!(window.get("children").is_none(), "{window}");
         assert!(window["children_count"].as_u64().unwrap() > 0, "{window}");

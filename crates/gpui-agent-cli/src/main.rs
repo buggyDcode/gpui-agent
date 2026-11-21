@@ -1250,6 +1250,9 @@ fn print_snapshot(
         print_resp(resp);
         return Ok(());
     }
+    if !options.is_full() {
+        resp.rev = None;
+    }
     let tree = resp
         .tree
         .take()
