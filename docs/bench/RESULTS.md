@@ -71,7 +71,7 @@ feature-free builds) and `snapshot {since, format}` params.
   catalog row, `INVOKE:<name>` per registered schema, plus `DONE`/`BLOCKED`/
   `WAIT` controls. Hidden/disabled nodes — and everything under a
   hidden/disabled ancestor — are filtered **before** scoring.
-- `InstinctPolicy` is the `aui-policy` two-head port (operation head then
+- `InstinctPolicy` is the two-head decide (operation head then
   target head, `HABITUATION_STEP = 250`, `Profile::Standard`). Destructive
   offers (dangerous keybindings, `Effect::Exit` schemas) are never
   auto-chosen: they abstain `needs_confirmation`.
@@ -183,10 +183,10 @@ blocked / cap_hit; exit 0 / 2 / 1).
 ## M7 — abstain escalation (`EscalatingPolicy` + `CommandEscalation`, GATE-E)
 
 `run --goal … --escalate-cmd <program> [args…]` wraps the local policy
-in `EscalatingPolicy<L, H>` (port of `aui-policy/src/escalate.rs`): the
-local Instinct policy decides first, and the fallback runs **only** on
-`Abstain` — never to re-score a winner, never to turn an abstain into
-"top candidate wins". Without the flag the run is exactly the M6 loop.
+in `EscalatingPolicy<L, H>`: the local Instinct policy decides first,
+and the fallback runs **only** on `Abstain` — never to re-score a
+winner, never to turn an abstain into "top candidate wins". Without
+the flag the run is exactly the M6 loop.
 
 - `CommandEscalation` spawns the endpoint once per abstain over a
   closed JSON stdin/stdout wire (PRD M7.2): `choose` requests carry
@@ -235,8 +235,8 @@ local Instinct policy decides first, and the fallback runs **only** on
 
 ## M8 — optional Jev / System One (`--escalate jev`, feature `jev`)
 
-`run --goal … --escalate jev` substitutes `JevEscalation` (port of
-`aui-cli/src/typesafe.rs`) for the command fallback — still behind
+`run --goal … --escalate jev` substitutes `JevEscalation` (one System
+One call answering every head) for the command fallback — still behind
 `EscalatingPolicy`, so **local Instinct decides first and Jev runs only
 on `Abstain`**. `--escalate` conflicts with `--escalate-cmd`; the text
 tier stays command-only.

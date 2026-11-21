@@ -1,5 +1,7 @@
 # Scout: instinct + jev for gpui-agent speed, accuracy, and context
 
+> Historical note: the `aui-*` names in this dated plan are crates of hexuria/ultra-instinct used as a reference at the time; gpui-agent keeps its own policy and does not depend on them.
+
 Date: 2026-10-17. Read-only scout — no code changes proposed for merge yet.
 
 Sources scouted (all local clones):
