@@ -2,8 +2,11 @@
 
 What each host can do over protocol v2, measured by running
 `scripts/conformance.py` and direct `click` / `type` / `screenshot`
-commands against live hosts on tag `v0.3.0` (and `devin` builds of
-the fixes landing in 0.3.1).
+commands against live hosts on tag `v0.3.0`. Rows marked "Fixed for
+0.3.1" were re-validated on the branch carrying the fix
+(`devin/1795252272-mac-fixes`, PR
+[#96](https://github.com/hexuria/gpui-agent/pull/96), pending merge),
+not on the tag.
 
 Matrix legend: **PASS** = conformance suite exits 0 (warnings listed);
 each row also records what hands-on actions verified.
@@ -47,9 +50,12 @@ system.back`; 713-node tree.
   delivery verified).
 - `screenshot --inline` returns a 1206×2622 PNG; `--out` writes under the
   app container's `Library/Caches/gpui-agent/`.
-- **Fixed for 0.3.1:** sandboxed hosts publish their `HostRecord` inside
-  the app container's `tmp`, which `targets` did not scan. 0.3.1 scans
-  both the device tmp and every app-container tmp.
+- **Fixed for 0.3.1** (PR
+  [#96](https://github.com/hexuria/gpui-agent/pull/96), pending merge):
+  sandboxed hosts publish their `HostRecord` inside the app container's
+  `tmp`, which `targets` did not scan. The fix scans both the device
+  tmp and every app-container tmp; verified on the branch above, which
+  is not yet in this checkout's `main`.
 
 ## nsh Windows (Win32) — validated on Windows Server 2022, 21H2
 
@@ -77,8 +83,12 @@ validated 2026-11-21 at nsh buwiz c218676 + gpui-agent 0.3.1 dev
   `not_delivered`/`stale_target` envelopes, scroll-and-back on the
   gallery scroller, hover, viewport, and a complete PNG via
   `screenshot --inline` (221-node snapshot).
-- `click` and `type` verified through the conformance input checks on
-  the gallery's interactive nodes.
+- Direct ops beyond the suite: `click` on the "Stocks" card, "Back"
+  and the "Input" nav entry each returned `delivered_verified`
+  (read-back tree changed); `type name "Devin GTK"` on the Input demo's
+  `name` textbox read back `value: "Devin GTK"` with `changed: true`.
+  The conformance suite itself only expects refusals on unlisted ops
+  and never sends `type`.
 
 ## nsh web
 
@@ -96,9 +106,11 @@ python3 scripts/conformance.py --addr <published addr>
 `.github/workflows/android-conformance.yml` boots an Android emulator
 on `ubuntu-latest`, runs `nsh run --target android` against the nsh
 gallery (hexuria/nsh `buwiz` branch), forwards the host port over
-`adb forward`, and runs `scripts/conformance.py` with
-`--require-screenshot`. `gpui-agent targets` lists adb devices and their
-forwarded ports so the CLI finds the host without a hard-coded address.
+`adb forward`, and runs `scripts/conformance.py`. The CI invocation
+does not pass `--require-screenshot`, so Android screenshot support is
+not asserted there. `gpui-agent targets` lists adb devices and their
+forwarded ports, but the CLI does not pick one automatically — pass
+the listed address with `--addr` (or save it via `attach`).
 
 ## GPUI todo demo (`embedded-host`) — macOS 26.6.2 and Windows 21H2
 
@@ -110,9 +122,12 @@ forwarded ports so the CLI finds the host without a hard-coded address.
   inline screenshot declined).
 - `scripts/virtual_input.py`: all checks passed on both OSes — virtual
   clicks and typing drive the painted widgets, wrong-token input refused.
-- **Fixed for 0.3.1:** inline screenshot on macOS failed because
-  `screencapture` refuses dot-prefixed `.tmp` output names; the temp
-  path now keeps a `.png` extension (`png_write_temp_path`).
+- **Fixed for 0.3.1** (PR
+  [#96](https://github.com/hexuria/gpui-agent/pull/96), pending merge):
+  inline screenshot on macOS failed because `screencapture` refuses
+  dot-prefixed `.tmp` output names; the temp path is now
+  `{stem}.{pid}-{n}.tmp.png` (`png_write_temp_path`). The result below
+  was measured on that branch.
 - On Windows and Linux the app has no production framebuffer export, so
   `screenshot` answers `screenshot_unavailable` by design (honest error,
   not a fake image). macOS captures the app window via `screencapture -l`.
