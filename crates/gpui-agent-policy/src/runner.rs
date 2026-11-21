@@ -1034,10 +1034,10 @@ mod tests {
         }
     }
 
-    fn legacy_secret_host() -> (
-        SocketAddr,
-        thread::JoinHandle<(Vec<Value>, Vec<String>)>,
-    ) {
+    type LegacySecretHostResult = (Vec<Value>, Vec<String>);
+    type LegacySecretHost = (SocketAddr, thread::JoinHandle<LegacySecretHostResult>);
+
+    fn legacy_secret_host() -> LegacySecretHost {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
@@ -1073,8 +1073,8 @@ mod tests {
                         "result": { "keybindings": [] }
                     }),
                     Some("snapshot") => {
-                        let mut secret = UiNode::new("password-field", "textbox", "Password")
-                            .with_value(&value);
+                        let mut secret =
+                            UiNode::new("password-field", "textbox", "Password").with_value(&value);
                         secret.states.push("secret".into());
                         let raw_fingerprint = secret.fingerprint(None);
                         json!({
@@ -1132,12 +1132,8 @@ mod tests {
         )
         .run(r#"Enter "hunter2" in Password"#)
         .expect("run");
-        assert_eq!(receipt.outcome, "done", "{receipt:?}");
-        assert!(
-            receipt.steps.iter().any(|step| step.op == "TYPE"),
-            "{:?}",
-            receipt.steps
-        );
+        assert_eq!(receipt.steps[0].op, "TYPE", "{receipt:?}");
+        assert_eq!(receipt.steps[0].verification, "success", "{receipt:?}");
         drop(client);
         let (requests, received) = server.join().unwrap();
         assert_eq!(received, ["hunter2"]);
@@ -1146,7 +1142,10 @@ mod tests {
             .find(|request| request["op"] == "type")
             .unwrap();
         assert_eq!(type_request["text"], "hunter2");
-        assert!(type_request.get("expect_fingerprint").is_none(), "{type_request}");
+        assert!(
+            type_request.get("expect_fingerprint").is_none(),
+            "{type_request}"
+        );
         let since_request = requests
             .iter()
             .find(|request| request["op"] == "snapshot" && request.get("since").is_some());

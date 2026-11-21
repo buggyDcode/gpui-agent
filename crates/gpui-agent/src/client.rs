@@ -722,11 +722,11 @@ impl AgentClient {
             .set_io_timeout(remaining)
             .map_err(WireError::Retryable)?;
         let legacy_secret_redaction = self.legacy_secret_redaction();
-        let result = self
-            .session
-            .as_mut()
-            .expect("session")
-            .exchange_wire(id, op, legacy_secret_redaction);
+        let result =
+            self.session
+                .as_mut()
+                .expect("session")
+                .exchange_wire(id, op, legacy_secret_redaction);
         match result {
             Ok(resp) => {
                 self.session.as_mut().expect("session").last_used = Instant::now();
@@ -1452,10 +1452,7 @@ fn read_target(snap: &Response, target: &str) -> Option<(Option<u64>, Target)> {
     Some((rev, state))
 }
 
-fn parse_response_line(
-    line: &[u8],
-    legacy_secret_redaction: bool,
-) -> Result<Response, String> {
+fn parse_response_line(line: &[u8], legacy_secret_redaction: bool) -> Result<Response, String> {
     if parse_challenge_line(line).is_ok() {
         return Err("automation token required".into());
     }
@@ -1684,8 +1681,8 @@ mod tests {
     fn legacy_since_host() -> (SocketAddr, thread::JoinHandle<Vec<serde_json::Value>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let mut secret = crate::tree::UiNode::new("secret", "textbox", "Password")
-            .with_value("hunter2");
+        let mut secret =
+            crate::tree::UiNode::new("secret", "textbox", "Password").with_value("hunter2");
         secret.states.push("secret".into());
         let raw_fingerprint = secret.fingerprint(None);
         let server = thread::spawn(move || {
@@ -1767,8 +1764,8 @@ mod tests {
     ) -> (SocketAddr, thread::JoinHandle<Vec<serde_json::Value>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let mut secret = crate::tree::UiNode::new("secret", "textbox", "Password")
-            .with_value("hunter2");
+        let mut secret =
+            crate::tree::UiNode::new("secret", "textbox", "Password").with_value("hunter2");
         secret.states.push("secret".into());
         let raw_fingerprint = secret.fingerprint(None);
         let server = thread::spawn(move || {
@@ -1892,7 +1889,10 @@ mod tests {
 
         let requests = server.join().unwrap();
         assert_eq!(
-            requests.iter().map(|request| request["op"].as_str().unwrap()).collect::<Vec<_>>(),
+            requests
+                .iter()
+                .map(|request| request["op"].as_str().unwrap())
+                .collect::<Vec<_>>(),
             ["hello", "snapshot", "snapshot", "snapshot"]
         );
     }

@@ -1709,8 +1709,8 @@ mod tests {
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let mut secret = gpui_agent::tree::UiNode::new("secret", "textbox", "Password")
-            .with_value("hunter2");
+        let mut secret =
+            gpui_agent::tree::UiNode::new("secret", "textbox", "Password").with_value("hunter2");
         secret.states.push("secret".into());
         let raw_fingerprint = secret.fingerprint(None);
         let server = std::thread::spawn(move || {
@@ -1794,7 +1794,10 @@ mod tests {
         let snapshot: Value = serde_json::from_str(text).unwrap();
         assert_eq!(snapshot["result"]["full"], json!(true), "{snapshot}");
         assert_eq!(snapshot["tree"]["nodes"][0]["value"], json!("•••••••"));
-        assert!(snapshot["fingerprints"].get("secret").is_none(), "{snapshot}");
+        assert!(
+            snapshot["fingerprints"].get("secret").is_none(),
+            "{snapshot}"
+        );
         assert_eq!(snapshot["fingerprints"]["plain"], json!("456"));
         let requests = server.join().unwrap();
         assert_eq!(requests[0]["op"], "hello");
