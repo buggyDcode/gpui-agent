@@ -4,6 +4,11 @@
 //! R1 after M2). `local` spawns a fresh `todo-headless` per attempt,
 //! seeds it, runs a goal command, and judges final app state (A2/A3).
 //! `report` aggregates JSONL into the RESULTS.md table section.
+#![expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "a CLI's output is stdout/stderr; libraries log"
+)]
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -34,7 +39,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// R0/R1: run the labeled intent corpus through resolve_intent.
+    /// R0/R1: run the labeled intent corpus through `resolve_intent`.
     Resolve {
         /// bench/intents.toml
         #[arg(long)]
@@ -57,8 +62,8 @@ enum Cmd {
         /// Arm label (a2 = local policy, a3 = policy+escalation).
         #[arg(long, default_value = "a2")]
         arm: String,
-        /// Shell command run once per attempt with GPUI_AGENT_ADDR /
-        /// GPUI_AGENT_TOKEN exported (e.g. `gpui-agent run --goal ...`).
+        /// Shell command run once per attempt with `GPUI_AGENT_ADDR` /
+        /// `GPUI_AGENT_TOKEN` exported (e.g. `gpui-agent run --goal ...`).
         #[arg(long)]
         goal_cmd: String,
         /// Attempts per task.
@@ -257,7 +262,7 @@ fn cmd_resolve(corpus: &Path, arm: &str, attempts: u32, out: &Path) -> i32 {
         for attempt in 1..=attempts {
             let started = Instant::now();
             let resolved = resolve_intent(&row.intent, &registry);
-            let wall_us = started.elapsed().as_micros() as f64;
+            let wall_us = started.elapsed().as_secs_f64() * 1e6;
             let mut rec = base_row(arm, &row.intent, attempt);
             rec.insert("wall_ms".into(), json!(wall_us / 1000.0));
             rec.insert("wall_us".into(), json!(wall_us));
@@ -288,7 +293,6 @@ fn cmd_resolve(corpus: &Path, arm: &str, attempts: u32, out: &Path) -> i32 {
 
 // ---- local (A2/A3) --------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
 fn cmd_local(
     tasks: &Path,
     arm: &str,
@@ -312,14 +316,11 @@ fn cmd_local(
             return 2;
         }
     };
-    let host_bin = match todo_headless.or_else(find_todo_headless) {
-        Some(p) => p,
-        None => {
-            eprintln!(
-                "todo-headless binary not found; build it first (cargo build -p todo-headless) or pass --todo-headless"
-            );
-            return 2;
-        }
+    let Some(host_bin) = todo_headless.or_else(find_todo_headless) else {
+        eprintln!(
+            "todo-headless binary not found; build it first (cargo build -p todo-headless) or pass --todo-headless"
+        );
+        return 2;
     };
     let only: Option<Vec<String>> =
         only.map(|s| s.split(',').map(|x| x.trim().to_string()).collect());
@@ -369,24 +370,27 @@ fn find_todo_headless() -> Option<PathBuf> {
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
-        .map(|a| a.port())
-        .unwrap_or(17_421)
+        .map_or(17_421, |a| a.port())
 }
 
 fn bench_token(port: u16, attempt: u32) -> String {
+    // Fallback imports: hashed time + pid + port (local-only bench secret).
+    use std::collections::hash_map::DefaultHasher;
+    use std::fmt::Write as _;
+    use std::hash::{Hash, Hasher};
     #[cfg(unix)]
     {
         use std::io::Read;
         if let Ok(mut f) = fs::File::open("/dev/urandom") {
             let mut buf = [0u8; 16];
             if f.read_exact(&mut buf).is_ok() {
-                return buf.iter().map(|b| format!("{b:02x}")).collect();
+                return buf.iter().fold(String::with_capacity(32), |mut s, b| {
+                    write!(s, "{b:02x}").expect("writing to a String cannot fail");
+                    s
+                });
             }
         }
     }
-    // Fallback: hashed time + pid + port (local-only bench secret).
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
     let mut h = DefaultHasher::new();
     (
         std::time::SystemTime::now(),
@@ -408,6 +412,10 @@ fn seed_titles(task: &TaskSpec) -> Vec<String> {
     titles
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one attempt is a single linear flow: spawn, seed, run goal, judge; splitting adds indirection"
+)]
 fn run_local_attempt(
     task: &TaskSpec,
     arm: &str,
@@ -451,7 +459,7 @@ fn run_local_attempt(
             match client.expect_ok(Op::Hello) {
                 Ok(_) => break,
                 Err(_) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(25))
+                    std::thread::sleep(Duration::from_millis(25));
                 }
                 Err(e) => return format!("host did not answer hello: {e}"),
             }
@@ -491,7 +499,7 @@ fn run_local_attempt(
             Ok(items) => items,
             Err(e) => return format!("todo.list: {e}"),
         };
-        let expect_state = judge(task, &seeded, &items, &goal_status, cap_hit);
+        let expect_state = judge(task, &seeded, &items, goal_status, cap_hit);
         rec.insert("pass".into(), json!(expect_state.pass));
         rec.insert("wrong_action".into(), json!(expect_state.wrong));
         rec.insert("refused".into(), json!(expect_state.refused));
@@ -558,9 +566,8 @@ fn run_goal(
     if let Some(dir) = bench_dir {
         cmd.env("GPUI_AGENT_BENCH_DIR", dir);
     }
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(_) => return (-1, false),
+    let Ok(mut child) = cmd.spawn() else {
+        return (-1, false);
     };
     let deadline = Instant::now() + Duration::from_millis(cap_ms);
     loop {
@@ -602,11 +609,15 @@ struct Judge {
     detail: Option<String>,
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "cap_hit reports whether the wall-clock cap fired; it is a fact, not a mode switch"
+)]
 fn judge(
     task: &TaskSpec,
     seeded: &[String],
     items: &[Item],
-    _goal_status: &i32,
+    _goal_status: i32,
     cap_hit: bool,
 ) -> Judge {
     let e = &task.expect;
@@ -786,7 +797,12 @@ fn judge_tree(e: &Expect, result: Option<Value>) -> (bool, String) {
 
 // ---- report ---------------------------------------------------------------
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the report is one linear pass: group rows, emit the table, splice it into the file"
+)]
 fn cmd_report(results: &Path, out: &Path) -> i32 {
+    use std::fmt::Write as _;
     let mut rows = Vec::new();
     collect_jsonl(results, &mut rows);
     if rows.is_empty() {
@@ -814,7 +830,7 @@ fn cmd_report(results: &Path, out: &Path) -> i32 {
     md.push_str("_Generated by `gpui-agent-bench report`; do not edit by hand._\n\n");
     md.push_str("| arm | task | pass | wrong | refused | cap | wall_ms p50 | wall_ms p90 | in_tok p50 | usd/passed |\n");
     md.push_str("|---|---|---|---|---|---|---|---|---|---|\n");
-    let mut arms: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
+    let mut arms: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new();
     for ((arm, task), rs) in &groups {
         let n = rs.len();
         let k = rs
@@ -846,26 +862,33 @@ fn cmd_report(results: &Path, out: &Path) -> i32 {
             .filter(|r| r.get("pass").and_then(Value::as_bool) == Some(true))
             .filter_map(|r| r.get("usd").and_then(Value::as_f64))
             .collect();
+        #[expect(
+            clippy::as_conversions,
+            clippy::cast_precision_loss,
+            reason = "bench row counts are far below 2^52"
+        )]
         let usd_per = if usds.is_empty() {
             "—".into()
         } else {
             format!("${:.4}", usds.iter().sum::<f64>() / usds.len() as f64)
         };
-        md.push_str(&format!(
-            "| {arm} | {} | {k}/{n} | {wrong} | {refused} | {cap} | {} | {} | {} | {usd_per} |\n",
+        writeln!(
+            md,
+            "| {arm} | {} | {k}/{n} | {wrong} | {refused} | {cap} | {} | {} | {} | {usd_per} |",
             short(task),
             fmt_stat(percentile(&walls, 0.5)),
             fmt_stat(percentile(&walls, 0.9)),
             fmt_stat(percentile(&toks, 0.5)),
-        ));
+        )
+        .expect("writing to a String cannot fail");
         let e = arms.entry(arm.clone()).or_default();
-        e.0 += k as u64;
-        e.1 += n as u64;
-        e.2 += wrong as u64;
+        e.0 += k;
+        e.1 += n;
+        e.2 += wrong;
     }
     md.push_str("\n### Arm summary\n\n| arm | pass | wrong_actions |\n|---|---|---|\n");
     for (arm, (k, n, w)) in &arms {
-        md.push_str(&format!("| {arm} | {k}/{n} | {w} |\n"));
+        writeln!(md, "| {arm} | {k}/{n} | {w} |").expect("writing to a String cannot fail");
     }
     md.push_str("<!-- bench:report:end -->\n");
 
@@ -921,12 +944,19 @@ fn percentile(sorted_source: &[f64], p: f64) -> Option<f64> {
     }
     let mut v = sorted_source.to_vec();
     v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "percentile index math on small sorted vectors"
+    )]
     let idx = ((v.len() as f64) * p).ceil() as usize - 1;
     Some(v[idx.clamp(0, v.len() - 1)])
 }
 
 fn fmt_stat(v: Option<f64>) -> String {
-    v.map(|x| format!("{x:.2}")).unwrap_or_else(|| "—".into())
+    v.map_or_else(|| "—".into(), |x| format!("{x:.2}"))
 }
 
 fn short(task: &str) -> String {
