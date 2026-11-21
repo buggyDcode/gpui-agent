@@ -17,21 +17,33 @@ use serde::{Deserialize, Serialize};
 
 /// Stable ids for the sample todo app. Other GPUI Kit apps define their own.
 pub mod ids {
+    /// Draft text field.
     pub const INPUT: &str = "todo-input";
+    /// Add button.
     pub const ADD: &str = "todo-add";
+    /// Todo list.
     pub const LIST: &str = "todo-list";
     /// Named scroll view for `screenshot mode=scrolled` (embedded-host demo).
     pub const LIST_SCROLL: &str = "todo-list-scroll";
+    /// Empty-state note.
     pub const EMPTY: &str = "todo-empty";
+    /// Status line ("n todos, m done").
     pub const STATUS: &str = "todo-status";
+    /// Root window.
     pub const WINDOW: &str = "todo-window";
+    /// Nav sidebar.
     pub const NAV: &str = "todo-nav";
+    /// Nav button to the Todos page.
     pub const NAV_TODOS: &str = "nav-todos";
+    /// Nav button to the Settings page.
     pub const NAV_SETTINGS: &str = "nav-settings";
     /// Collapse/expand the nav sidebar (`visible` on `todo-nav`).
     pub const NAV_TOGGLE: &str = "nav-toggle-sidebar";
+    /// Todos page.
     pub const PAGE_TODOS: &str = "page-todos";
+    /// Settings page.
     pub const PAGE_SETTINGS: &str = "page-settings";
+    /// "Confirm before delete" checkbox on Settings.
     pub const SETTINGS_CONFIRM_DELETE: &str = "settings-confirm-delete";
 
     /// Focused keymap Action: go to Todos and focus the draft field.
@@ -41,44 +53,66 @@ pub mod ids {
     /// Destructive global Action: quit. Requires `confirm=true`.
     pub const KEY_QUIT: &str = "app.quit";
 
+    /// Chord for [`KEY_FOCUS_INPUT`].
     pub const KEY_FOCUS_INPUT_CHORD: &str = "cmd-n";
+    /// Chord for [`KEY_GO_SETTINGS`].
     pub const KEY_GO_SETTINGS_CHORD: &str = "cmd-shift-s";
+    /// Chord for [`KEY_QUIT`].
     pub const KEY_QUIT_CHORD: &str = "cmd-q";
 
+    /// List-item id for todo `id`.
     pub fn item(id: u64) -> String {
         format!("todo-item-{id}")
     }
 
+    /// Checkbox id inside todo `id`'s list item.
     pub fn toggle(id: u64) -> String {
         format!("todo-toggle-{id}")
     }
 
+    /// Delete button id inside todo `id`'s list item.
     pub fn delete(id: u64) -> String {
         format!("todo-delete-{id}")
     }
 }
 
+/// Which page the app shows. Closed set: the demo has exactly two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum Page {
+    /// Todo list.
     #[default]
     Todos,
+    /// App settings.
     Settings,
 }
 
+/// A todo row.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Todo {
+    /// Stable item id, from [`TodoStore::add`].
     pub id: u64,
+    /// Item text.
     pub title: String,
+    /// Whether the item is checked done.
     pub done: bool,
 }
 
-/// GUI / client projection of a snapshot. The daemon `TodoStore` remains SoT.
+/// GUI / client projection of a snapshot. The daemon `TodoStore` remains `SoT`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TodoView {
+    /// Todos in id order.
     pub items: Vec<Todo>,
+    /// Draft text field content.
     pub draft: String,
+    /// Visible page.
     pub page: Page,
+    /// "Confirm before delete" checkbox state.
     pub confirm_delete: bool,
+    /// Whether the nav sidebar shows.
     pub sidebar_open: bool,
 }
 
@@ -95,6 +129,7 @@ impl Default for TodoView {
 }
 
 impl TodoView {
+    /// Project a snapshot tree back into the app's state shape.
     pub fn from_tree(tree: &UiTree) -> Self {
         let page = if tree.find(ids::PAGE_SETTINGS).is_some() {
             Page::Settings
@@ -109,7 +144,7 @@ impl TodoView {
             .find(ids::SETTINGS_CONFIRM_DELETE)
             .and_then(|node| node.checked)
             .unwrap_or(false);
-        let sidebar_open = tree.find(ids::NAV).map(|node| node.visible).unwrap_or(true);
+        let sidebar_open = tree.find(ids::NAV).is_none_or(|node| node.visible);
         let mut items = Vec::new();
         tree.visit(&mut |node| {
             if let Some(id) = gpui_agent::parse_numbered_id("todo-item-", &node.id) {
@@ -131,7 +166,12 @@ impl TodoView {
     }
 }
 
+/// Mutable app state shared by the GPUI window and the headless host.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "confirm_delete, sidebar_open, shutdown and app_focused are independent demo-app states"
+)]
 pub struct TodoStore {
     next_id: u64,
     items: Vec<Todo>,
@@ -159,6 +199,7 @@ impl Default for TodoStore {
 }
 
 impl TodoStore {
+    /// Empty store reporting `platform` in `hello`.
     pub fn new(platform: PlatformKind) -> Self {
         Self {
             next_id: 1,
@@ -183,6 +224,7 @@ impl TodoStore {
         self.rev += 1;
     }
 
+    /// Record a node's painted bounds; bumps the revision when they change.
     pub fn set_layout_bound(&mut self, id: &str, bounds: Bounds) {
         if self.layout_bounds.get(id) != Some(&bounds) {
             self.layout_bounds.insert(id.to_string(), bounds);
@@ -190,53 +232,64 @@ impl TodoStore {
         }
     }
 
+    /// Drop a node's painted bounds.
     pub fn remove_layout_bound(&mut self, id: &str) {
         if self.layout_bounds.remove(id).is_some() {
             self.bump_revision();
         }
     }
 
+    /// Which page the app shows.
     pub fn page(&self) -> Page {
         self.page
     }
 
+    /// Whether the confirm-delete checkbox is on.
     pub fn confirm_delete(&self) -> bool {
         self.confirm_delete
     }
 
+    /// Navigate to `page`.
     pub fn go(&mut self, page: Page) {
         self.page = page;
         self.bump_revision();
     }
 
+    /// Flip the confirm-delete checkbox.
     pub fn toggle_confirm_delete(&mut self) {
         self.confirm_delete = !self.confirm_delete;
         self.bump_revision();
     }
 
+    /// Whether the nav sidebar shows.
     pub fn sidebar_open(&self) -> bool {
         self.sidebar_open
     }
 
+    /// Flip the nav sidebar.
     pub fn toggle_sidebar(&mut self) {
         self.sidebar_open = !self.sidebar_open;
         self.bump_revision();
     }
 
+    /// Add `count` items so the list overflows its scroll view.
     pub fn seed_overflow_demo(&mut self, count: usize) {
         for i in 1..=count {
             let _ = self.add(format!("Scroll demo {i}"));
         }
     }
 
+    /// Todos in id order.
     pub fn items(&self) -> &[Todo] {
         &self.items
     }
 
+    /// Draft text field content.
     pub fn draft(&self) -> &str {
         &self.draft
     }
 
+    /// Replace the draft text.
     pub fn set_draft(&mut self, draft: impl Into<String>) {
         let draft = draft.into();
         if self.draft != draft {
@@ -245,14 +298,21 @@ impl TodoStore {
         }
     }
 
+    /// Whether the app was asked to quit (`Op::Shutdown` or `app.quit`).
     pub fn wants_shutdown(&self) -> bool {
         self.shutdown
     }
 
+    /// Set the headless stand-in for OS window focus.
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "the flag mirrors Window::is_window_active verbatim; a bool is the API"
+    )]
     pub fn set_app_focused(&mut self, focused: bool) {
         self.app_focused = focused;
     }
 
+    /// Headless stand-in for OS window focus.
     pub fn is_app_focused(&self) -> bool {
         self.app_focused
     }
@@ -286,6 +346,9 @@ impl TodoStore {
     /// Headless hosts *are* the handler (no GPUI). Desktop `embedded-host`
     /// must not call this from the mailbox intercept as a fallback after
     /// `dispatch_action` — listeners own mutation, or the fire fails closed.
+    ///
+    /// # Errors
+    /// `Err` when `binding` is not in the catalog.
     pub fn perform_keybinding(&mut self, binding: &str) -> Result<DispatchResult, String> {
         match binding {
             ids::KEY_FOCUS_INPUT => {
@@ -342,6 +405,10 @@ impl TodoStore {
         self.perform_keybinding(binding)
     }
 
+    /// Add a todo with trimmed `title`, clearing the draft.
+    ///
+    /// # Errors
+    /// `Err` when the trimmed title is empty.
     pub fn add(&mut self, title: impl Into<String>) -> Result<Todo, String> {
         let title = title.into().trim().to_string();
         if title.is_empty() {
@@ -359,10 +426,18 @@ impl TodoStore {
         Ok(todo)
     }
 
+    /// Add a todo from the current draft text.
+    ///
+    /// # Errors
+    /// `Err` when the draft is empty or whitespace.
     pub fn add_from_draft(&mut self) -> Result<Todo, String> {
         self.add(self.draft.clone())
     }
 
+    /// Flip a todo's done flag.
+    ///
+    /// # Errors
+    /// `Err` when no todo has `id`.
     pub fn toggle(&mut self, id: u64) -> Result<Todo, String> {
         let item = self
             .items
@@ -375,6 +450,10 @@ impl TodoStore {
         Ok(done)
     }
 
+    /// Remove a todo.
+    ///
+    /// # Errors
+    /// `Err` when no todo has `id`.
     pub fn delete(&mut self, id: u64) -> Result<Todo, String> {
         let idx = self
             .items
@@ -386,6 +465,7 @@ impl TodoStore {
         Ok(removed)
     }
 
+    /// The current UI snapshot: window, nav, page and painted bounds.
     pub fn tree(&self) -> UiTree {
         let nav = UiNode::navigation(ids::NAV, "Todo")
             .with_child(UiNode::button(ids::NAV_TODOS, "Todos"))
@@ -533,7 +613,7 @@ impl TodoStore {
 
     fn key(&mut self, target: &str, key: &str) -> Result<DispatchResult, String> {
         match (target, key) {
-            (ids::INPUT, "Enter") | (ids::ADD, "Enter") => self.add_from_draft().map(todo_result),
+            (ids::INPUT | ids::ADD, "Enter") => self.add_from_draft().map(todo_result),
             (ids::INPUT, "Backspace") => {
                 self.draft.pop();
                 self.bump_revision();
@@ -561,7 +641,7 @@ impl TodoStore {
                 self.delete(id).map(todo_result)
             }
             "todo.list" => Ok(DispatchResult::json(
-                serde_json::to_value(&self.items).unwrap(),
+                serde_json::to_value(&self.items).expect("Vec<Todo> serializes"),
             )),
             "nav.go" => {
                 let page = args
@@ -588,12 +668,12 @@ impl TodoStore {
 
 fn arg_id(args: &serde_json::Value) -> Result<u64, String> {
     args.get("id")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| "expected args.id".into())
 }
 
 fn todo_result(todo: Todo) -> DispatchResult {
-    DispatchResult::json(serde_json::to_value(todo).unwrap())
+    DispatchResult::json(serde_json::to_value(todo).expect("Todo serializes"))
 }
 
 impl AgentHost for TodoStore {
@@ -670,7 +750,13 @@ impl AgentHost for TodoStore {
             self.tree().require_id(target)?;
         }
         match op {
-            Op::Click { target, .. } => self.click(target),
+            // A store has no pointer or clipboard: a press is the
+            // widget's activation and a paste is typed text.
+            Op::Click { target, .. }
+            | Op::Press {
+                target: Some(target),
+                ..
+            } => self.click(target),
             Op::Type { target, text, .. } => self.type_into(target, text),
             Op::SetValue { target, value, .. } => self.set_value(target, value),
             Op::Key { target, key, .. } => self.key(target, key),
@@ -711,12 +797,6 @@ impl AgentHost for TodoStore {
             | Op::Wait { .. }
             | Op::Blob { .. }
             | Op::WaitUntil { .. } => Ok(DispatchResult::empty()),
-            // A store has no pointer or clipboard: a press is the
-            // widget's activation and a paste is typed text.
-            Op::Press {
-                target: Some(target),
-                ..
-            } => self.click(target),
             Op::Press { target: None, .. } => {
                 Err("this host presses named targets only; pass a target".into())
             }
@@ -916,7 +996,7 @@ mod tests {
         assert!(store.items()[0].done);
 
         store.dispatch(&Op::click(ids::delete(id))).unwrap();
-        assert!(store.items().is_empty());
+        assert_eq!(store.items(), []);
     }
 
     #[test]
@@ -999,7 +1079,7 @@ mod tests {
         store.go(Page::Settings);
         let settings = TodoView::from_tree(&store.tree());
         assert_eq!(settings.page, Page::Settings);
-        assert!(settings.items.is_empty());
+        assert_eq!(settings.items, []);
     }
 
     #[test]
@@ -1535,12 +1615,12 @@ mod tests {
 
     #[test]
     fn dual_write_after_no_op_is_what_the_guard_rejects() {
-        let mut store = TodoStore::new(PlatformKind::Desktop);
-        store.set_app_focused(true);
-
         // Production intercept: dispatch_action only. Keep DUAL_WRITE false.
         // Enabling it (the old apps/todo intercept) must fail this test.
         const DUAL_WRITE: bool = false;
+        let mut store = TodoStore::new(PlatformKind::Desktop);
+        store.set_app_focused(true);
+
         let action_ran = false;
         let mut listener_result = None;
         if action_ran {
@@ -1564,10 +1644,7 @@ mod tests {
             .find("fn start_keybinding_fire")
             .expect("start_keybinding_fire in apps/todo");
         let rest = &src[start..];
-        let end = rest[1..]
-            .find("\n    fn ")
-            .map(|i| i + 1)
-            .unwrap_or(rest.len());
+        let end = rest[1..].find("\n    fn ").map_or(rest.len(), |i| i + 1);
         let body = &rest[..end];
         assert!(
             !body.contains("perform_keybinding"),
