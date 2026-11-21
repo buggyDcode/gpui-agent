@@ -111,6 +111,10 @@ Restart the host before a second run.
   `set-value todo-input "Buy milk"` are both valid. `\"` escapes inside
   quotes. An unterminated quote is an error.
 - `click` / `type` / `key` accept `--delivery semantic|virtual`.
+- `click` / `type` / `set-value` / `key` accept `--fp <n>`: the step is
+  refused with `stale_target`, and nothing is sent to the app, unless the
+  target's fingerprint (`gpui-agent snapshot --fingerprints`) is still `n`.
+  In JSON the same guard is the step's `expect_fingerprint` field.
 - `keybinding --id … --scope focused|global` (`--confirm` for quit; `--activate` for focused only). `keybindings` lists the catalog.
 - `assert` accepts a target plus `name=` / `checked=` / `--absent` / `--visible` / `--in-viewport` / …
 - `wait_until --timeout-ms N` uses the same assert fields. `wait` stays ready-only.

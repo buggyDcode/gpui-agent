@@ -554,6 +554,7 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
             true
         }
     });
+    let fingerprint = take_fingerprint(&mut tokens)?;
     let tokens = &tokens;
     if tokens.is_empty() {
         return Err("missing op".into());
@@ -639,12 +640,41 @@ fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, S
         }
         other => return Err(format!("unknown op `{other}`")),
     };
+    let op = match fingerprint {
+        Some(fingerprint) => {
+            let op = op.with_fingerprint(fingerprint);
+            if op.fingerprint_gate().is_none() {
+                return Err("--fp applies to click, type, set-value and key".into());
+            }
+            op
+        }
+        None => op,
+    };
     Ok(RecipeStep {
         id,
         needs: Vec::new(),
         screenshot,
         op,
     })
+}
+
+/// Removes `--fp <n>` (the target's expected fingerprint, from
+/// `snapshot --fingerprints`) from `tokens`.
+fn take_fingerprint(tokens: &mut Vec<String>) -> Result<Option<u64>, String> {
+    let Some(at) = tokens.iter().position(|tok| tok == "--fp") else {
+        return Ok(None);
+    };
+    let raw = tokens
+        .get(at + 1)
+        .ok_or_else(|| "--fp needs a fingerprint".to_string())?;
+    let fingerprint = raw
+        .parse()
+        .map_err(|_| format!("--fp needs an unsigned integer, got {raw}"))?;
+    tokens.drain(at..at + 2);
+    if tokens.iter().any(|tok| tok == "--fp") {
+        return Err("--fp given twice".into());
+    }
+    Ok(Some(fingerprint))
 }
 
 fn parse_keybinding_wants(tokens: &[String]) -> Result<Op, String> {
@@ -1142,6 +1172,56 @@ assert todo-item-1 name=$title checked=false
         .unwrap();
         let err = validate_recipe(&recipe, &todo_registry()).unwrap_err();
         assert!(err.contains("not an invoke schema"), "{err}");
+    }
+
+    #[test]
+    fn wants_fp_guards_the_step_with_a_fingerprint() {
+        let recipe = parse_wants(
+            "click --fp 42 todo-add\ntype --delivery virtual todo-input hi --fp 7\nset-value --fp 9 todo-input x\nkey todo-input Enter --fp 18446744073709551615",
+            "fp",
+        )
+        .unwrap();
+        let gates: Vec<_> = recipe
+            .steps
+            .iter()
+            .map(|step| step.op.fingerprint_gate().unwrap())
+            .collect();
+        assert_eq!(
+            gates,
+            [
+                ("todo-add", 42),
+                ("todo-input", 7),
+                ("todo-input", 9),
+                ("todo-input", u64::MAX)
+            ]
+        );
+        assert_eq!(recipe.steps[1].op.delivery(), DeliveryMode::Virtual);
+    }
+
+    #[test]
+    fn wants_fp_is_refused_where_it_cannot_apply() {
+        for (line, needle) in [
+            ("assert todo-input --fp 3", "applies to"),
+            ("click todo-add --fp", "needs a fingerprint"),
+            ("click todo-add --fp -1", "unsigned integer"),
+            ("click todo-add --fp 1 --fp 2", "twice"),
+        ] {
+            let err = parse_wants(line, "x").unwrap_err();
+            assert!(err.contains(needle), "{line}: {err}");
+        }
+    }
+
+    #[test]
+    fn json_steps_accept_expect_fingerprint() {
+        let recipe = Recipe::from_json(
+            r#"{"name":"x","steps":[{"id":"a","op":"click","target":"todo-add","expect_fingerprint":18446744073709551615}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            recipe.steps[0].op.fingerprint_gate(),
+            Some(("todo-add", u64::MAX))
+        );
+        validate_recipe(&recipe, &todo_registry()).unwrap();
     }
 
     #[test]
