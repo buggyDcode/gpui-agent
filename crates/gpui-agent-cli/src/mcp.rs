@@ -763,12 +763,15 @@ fn recipe_run_tool(
 
 /// MCP `tools/call` result. Failed recipe steps must be `isError` so a
 /// host does not treat `"ok": false` inside a successful tool payload as OK.
+/// The text is compact JSON: the model reads it as tokens, and the
+/// indentation of a nested tree is most of a pretty-printed snapshot (a
+/// todo window's 15.7 kB snapshot is 4.7 kB compact).
 fn tools_call_result(client: &mut AgentClient, params: &Value, schema_paths: &[PathBuf]) -> Value {
     match call_tool(client, params, schema_paths) {
         Ok(value) => json!({
             "content": [{
                 "type": "text",
-                "text": serde_json::to_string_pretty(&value).unwrap_or_else(|err| err.to_string())
+                "text": serde_json::to_string(&value).unwrap_or_else(|err| err.to_string())
             }]
         }),
         Err(err) => json!({
@@ -1554,6 +1557,17 @@ mod tests {
             "{unverified}"
         );
         assert!(unverified.get("after").is_none(), "{unverified}");
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[test]
+    fn tool_results_are_compact_json() {
+        let (mut client, shutdown) = spawn_todo_client();
+        let result = tools_call_result(&mut client, &json!({ "name": "snapshot" }), &[]);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(!text.contains('\n'), "{text}");
+        let value: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(serde_json::to_string(&value).unwrap(), text);
         shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
