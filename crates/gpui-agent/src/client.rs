@@ -1046,6 +1046,21 @@ impl AgentClient {
         Ok(resp)
     }
 
+    /// After an action: wait up to `timeout_ms` for `wait`, then return the
+    /// new tree as [compact lines](crate::diff::compact_lines). The tree is
+    /// fetched as plain JSON and made compact here, so every host serves
+    /// it. A wait that is not met fails with the host's `wait_until`
+    /// error; the failure has no `delivery_status`, since the action itself
+    /// has already been answered: callers set it from that reply.
+    pub fn wait_after(&mut self, wait: &WaitFor, timeout_ms: u64) -> Result<String, CallFailure> {
+        self.call(&Op::wait_until(wait.spec(), timeout_ms))?;
+        let snap = self.call(&Op::snapshot())?;
+        let tree = snap
+            .tree
+            .ok_or_else(|| CallFailure::from_message("snapshot after the wait carried no tree"))?;
+        Ok(crate::diff::compact_lines(&tree))
+    }
+
     /// `Some(invoke)` when the host needs the 0.1 spelling, `None` when
     /// `op` goes as written, `Err(unsupported_op)` when it cannot be sent.
     fn negotiated(&mut self, op: &Op, deadline: std::time::Instant) -> Result<Option<Op>, String> {
@@ -1232,6 +1247,33 @@ impl AgentClient {
 /// and `not_delivered`; a written request with no usable reply means
 /// `no_reply` and `delivery_uncertain`, unless the text names a refusal
 /// (an unauthenticated challenge, a client-side `unsupported_op`).
+/// The node state [`AgentClient::wait_after`] waits for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum WaitFor {
+    /// A node with this id is in the tree.
+    Present(String),
+    /// No node with this id is in the tree.
+    Gone(String),
+}
+
+impl WaitFor {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Present(id) | Self::Gone(id) => id,
+        }
+    }
+
+    /// The `wait_until` condition.
+    pub fn spec(&self) -> AssertSpec {
+        AssertSpec {
+            target: self.id().to_string(),
+            exists: Some(matches!(self, Self::Present(_))),
+            ..AssertSpec::default()
+        }
+    }
+}
+
 fn transport_failure(err: SendError, acts: bool) -> CallFailure {
     let mut code = error_code_of(&err.message);
     if code == error_code::HOST_ERROR || (!err.sent && code == error_code::NO_REPLY) {
@@ -1638,5 +1680,34 @@ mod tests {
             resp.delivery_status,
             Some(DeliveryStatus::DeliveredUnverified)
         );
+    }
+
+    #[test]
+    fn wait_after_waits_then_returns_the_compact_tree() {
+        let (addr, server) = fake_host(vec![
+            Some(serde_json::json!({ "ok": true })),
+            Some(tree_with("x", 4)),
+        ]);
+        let compact = client_for(addr)
+            .wait_after(&WaitFor::Present("a".into()), 900)
+            .unwrap();
+        assert_eq!(server.join().unwrap(), ["wait_until", "snapshot"]);
+        assert!(compact.starts_with("a "), "{compact}");
+        assert!(compact.contains("value=\"x\""), "{compact}");
+        let gone = WaitFor::Gone("a".into()).spec();
+        assert_eq!((gone.target.as_str(), gone.exists), ("a", Some(false)));
+    }
+
+    #[test]
+    fn an_unmet_wait_fails_without_a_snapshot() {
+        let (addr, server) = fake_host(vec![Some(
+            serde_json::json!({ "ok": false, "error": "wait_until timed out: node `b` not found" }),
+        )]);
+        let failure = client_for(addr)
+            .wait_after(&WaitFor::Present("b".into()), 900)
+            .unwrap_err();
+        assert_eq!(server.join().unwrap(), ["wait_until"]);
+        assert_eq!(failure.error_code, error_code::TIMEOUT, "{failure:?}");
+        assert_eq!(failure.delivery_status, None);
     }
 }

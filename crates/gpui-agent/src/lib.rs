@@ -37,7 +37,7 @@ pub mod testing;
 pub mod tree;
 pub mod virtual_input;
 
-pub use client::AgentClient;
+pub use client::{AgentClient, WaitFor};
 pub use diff::{AddedNode, ChangedNode, TreeDiff, apply_diff, compact_lines, diff_trees};
 pub use discovery::{
     ClientTarget, HostRecord, ResolveError, live_hosts, resolve_client_addr, resolve_client_target,
