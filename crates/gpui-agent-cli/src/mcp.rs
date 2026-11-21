@@ -1953,13 +1953,22 @@ mod tests {
     #[test]
     fn press_accepts_decimal_string_fingerprints() {
         let (mut client, shutdown) = spawn_todo_client();
+        call_tool(
+            &mut client,
+            &json!({
+                "name": "set_value",
+                "arguments": { "target": "todo-input", "value": "Milk" }
+            }),
+            &[],
+        )
+        .unwrap();
         let snap = call_tool(
             &mut client,
             &json!({ "name": "snapshot", "arguments": { "fingerprints": true } }),
             &[],
         )
         .unwrap();
-        let fingerprint = snap["fingerprints"]["todo-input"]
+        let fingerprint = snap["fingerprints"]["todo-add"]
             .as_str()
             .unwrap()
             .parse::<u64>()
@@ -1971,7 +1980,7 @@ mod tests {
             &json!({
                 "name": "press",
                 "arguments": {
-                    "target": "todo-input",
+                    "target": "todo-add",
                     "expect_fingerprint": fingerprint_text
                 }
             }),
@@ -1984,7 +1993,7 @@ mod tests {
             &json!({
                 "name": "press",
                 "arguments": {
-                    "target": "todo-input",
+                    "target": "todo-add",
                     "expect_fingerprint": (fingerprint ^ 1).to_string()
                 }
             }),
