@@ -15,7 +15,9 @@ use crate::protocol::{Op, Request, Response};
 /// Re-export so existing `server::read_limited_line` callers keep compiling.
 pub use crate::ndjson::read_limited_line;
 
+/// The default loopback bind as a string.
 pub const DEFAULT_ADDR_STR: &str = "127.0.0.1:17421";
+/// The default loopback port.
 pub const DEFAULT_PORT: u16 = 17421;
 
 /// Reject a single NDJSON line larger than this (1 MiB).
@@ -25,6 +27,8 @@ pub const MAX_CONNECTIONS: usize = 32;
 pub(crate) const CLIENT_SESSION_IDLE_RECONNECT_AFTER: Duration = Duration::from_secs(20);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// `127.0.0.1:17421` — where a bare client connects and a bare host binds.
+#[must_use]
 pub fn default_addr() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT))
 }
@@ -46,8 +50,11 @@ fn publish_discovery_record(
 /// developer control plane; tests may tighten them.
 #[derive(Debug, Clone)]
 pub struct ServerLimits {
+    /// Reject one NDJSON line larger than this.
     pub max_line_bytes: usize,
+    /// Drop new TCP clients beyond this many handler threads.
     pub max_connections: usize,
+    /// Close an idle connection after this.
     pub idle_timeout: Duration,
 }
 
@@ -72,11 +79,33 @@ pub struct AgentServer {
     app: Option<String>,
 }
 
+impl std::fmt::Debug for AgentServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentServer")
+            .field("listener", &self.listener)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("shutdown", &self.shutdown)
+            .field("limits", &self.limits)
+            .field("app", &self.app)
+            .finish()
+    }
+}
+
 impl AgentServer {
+    /// Bind `addr`, answering the HMAC challenge when `token` is `Some`.
+    ///
+    /// # Errors
+    ///
+    /// The listener cannot bind or be configured.
     pub fn bind(addr: SocketAddr, token: Option<String>) -> std::io::Result<Self> {
         Self::bind_with_limits(addr, token, ServerLimits::default())
     }
 
+    /// [`bind`](Self::bind) with custom [`ServerLimits`].
+    ///
+    /// # Errors
+    ///
+    /// The listener cannot bind or be configured.
     pub fn bind_with_limits(
         addr: SocketAddr,
         token: Option<String>,
@@ -94,21 +123,33 @@ impl AgentServer {
     }
 
     /// The app name `--connect` can find a mailbox host by (its `hello().app`, usually).
+    #[must_use]
     pub fn with_app(mut self, app: impl Into<String>) -> Self {
         self.app = Some(app.into());
         self
     }
 
+    /// The address the listener bound.
+    ///
+    /// # Errors
+    ///
+    /// The OS call fails.
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
         self.listener.local_addr()
     }
 
+    /// A flag a caller sets to stop serving.
+    #[must_use]
     pub fn shutdown_handle(&self) -> Arc<AtomicBool> {
-        self.shutdown.clone()
+        Arc::clone(&self.shutdown)
     }
 
     /// Serve a mutex-protected host on this thread (plus one thread per
     /// accepted connection). Used by `todo-headless` and integration tests.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the host is shared with per-connection threads, which need owned Arcs"
+    )]
     pub fn serve_host<H: AgentHost + 'static>(self, host: Arc<Mutex<H>>) {
         let _published = match self.local_addr() {
             Ok(addr) => {
@@ -121,7 +162,7 @@ impl AgentServer {
             Err(_) => None,
         };
         let token = self.token.clone();
-        let shutdown = self.shutdown.clone();
+        let shutdown = Arc::clone(&self.shutdown);
         let limits = self.limits.clone();
         self.listener.set_nonblocking(true).ok();
         let inflight = Arc::new(AtomicUsize::new(0));
@@ -133,10 +174,10 @@ impl AgentServer {
                         drop(stream);
                         continue;
                     }
-                    let host = host.clone();
+                    let host = Arc::clone(&host);
                     let token = token.clone();
-                    let shutdown = shutdown.clone();
-                    let inflight = inflight.clone();
+                    let shutdown = Arc::clone(&shutdown);
+                    let inflight = Arc::clone(&inflight);
                     let limits = limits.clone();
                     thread::spawn(move || {
                         let _guard = InflightGuard(inflight);
@@ -155,6 +196,10 @@ impl AgentServer {
     ///
     /// Like `serve_host`, it writes a discovery record for as long as it serves, so
     /// `--connect` finds a GPUI app that runs the agent this way (#47).
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the mailbox is shared with per-connection threads, which need owned clones"
+    )]
     pub fn serve_mailbox(self, mailbox: AgentMailbox, timeout: Duration) {
         let _published = match self.local_addr() {
             Ok(addr) => {
@@ -167,7 +212,7 @@ impl AgentServer {
             Err(_) => None,
         };
         let token = self.token.clone();
-        let shutdown = self.shutdown.clone();
+        let shutdown = Arc::clone(&self.shutdown);
         let limits = self.limits.clone();
         self.listener.set_nonblocking(true).ok();
         let inflight = Arc::new(AtomicUsize::new(0));
@@ -181,8 +226,8 @@ impl AgentServer {
                     }
                     let mailbox = mailbox.clone();
                     let token = token.clone();
-                    let shutdown = shutdown.clone();
-                    let inflight = inflight.clone();
+                    let shutdown = Arc::clone(&shutdown);
+                    let inflight = Arc::clone(&inflight);
                     let limits = limits.clone();
                     thread::spawn(move || {
                         let _guard = InflightGuard(inflight);
@@ -261,6 +306,10 @@ fn begin_session(
     Ok(Some(nonce))
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the stream is split into the reader and a cloned writer"
+)]
 fn handle_stream_host<H: AgentHost>(
     stream: TcpStream,
     host: Arc<Mutex<H>>,
@@ -271,16 +320,14 @@ fn handle_stream_host<H: AgentHost>(
     if !prepare_stream(&stream, limits.idle_timeout) {
         return;
     }
-    let mut writer = match stream.try_clone() {
-        Ok(s) => s,
-        Err(_) => return,
+    let Ok(mut writer) = stream.try_clone() else {
+        return;
     };
     let mut reader = BufReader::new(stream);
     let mut line_buf = Vec::with_capacity(4096);
     let mut encode_buf = Vec::with_capacity(4096);
-    let session_nonce = match begin_session(&mut writer, &mut encode_buf, token) {
-        Ok(nonce) => nonce,
-        Err(()) => return,
+    let Ok(session_nonce) = begin_session(&mut writer, &mut encode_buf, token) else {
+        return;
     };
     // One TreeCache per connection: snapshot/assert/wait_until reuse the
     // cached tree while the host's revision is unchanged (M3).
@@ -288,7 +335,6 @@ fn handle_stream_host<H: AgentHost>(
     loop {
         match read_limited_line_into(&mut reader, &mut line_buf, limits.max_line_bytes) {
             Ok(true) => {}
-            Ok(false) => break,
             Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {
                 write_resp(
                     &mut writer,
@@ -297,7 +343,7 @@ fn handle_stream_host<H: AgentHost>(
                 );
                 break;
             }
-            Err(_) => break,
+            Ok(false) | Err(_) => break,
         }
         if line_is_blank(&line_buf) {
             continue;
@@ -313,9 +359,11 @@ fn handle_stream_host<H: AgentHost>(
                 break;
             }
         };
-        if let Err(resp) =
-            authorize_request(&req, token, session_nonce.as_ref().map(|n| n.as_slice()))
-        {
+        if let Err(resp) = authorize_request(
+            &req,
+            token,
+            session_nonce.as_ref().map(<[u8; 32]>::as_slice),
+        ) {
             write_resp(&mut writer, &mut encode_buf, &resp);
             break;
         }
@@ -324,8 +372,8 @@ fn handle_stream_host<H: AgentHost>(
         let timeout_ms = match &req.op {
             Op::Wait {
                 timeout_ms: Some(timeout_ms),
-            } => Some(*timeout_ms),
-            Op::WaitUntil { timeout_ms, .. } => Some(*timeout_ms),
+            }
+            | Op::WaitUntil { timeout_ms, .. } => Some(*timeout_ms),
             _ => None,
         };
         let resp = if let Some(timeout_ms) = timeout_ms {
@@ -348,7 +396,7 @@ fn handle_stream_host<H: AgentHost>(
                 &mut cache,
                 req,
                 token,
-                session_nonce.as_ref().map(|n| n.as_slice()),
+                session_nonce.as_ref().map(<[u8; 32]>::as_slice),
             )
         };
         write_resp(&mut writer, &mut encode_buf, &resp);
@@ -359,6 +407,10 @@ fn handle_stream_host<H: AgentHost>(
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the stream is split into the reader and a cloned writer"
+)]
 fn handle_stream_mailbox(
     stream: TcpStream,
     mailbox: AgentMailbox,
@@ -370,21 +422,18 @@ fn handle_stream_mailbox(
     if !prepare_stream(&stream, limits.idle_timeout) {
         return;
     }
-    let mut writer = match stream.try_clone() {
-        Ok(s) => s,
-        Err(_) => return,
+    let Ok(mut writer) = stream.try_clone() else {
+        return;
     };
     let mut reader = BufReader::new(stream);
     let mut line_buf = Vec::with_capacity(4096);
     let mut encode_buf = Vec::with_capacity(4096);
-    let session_nonce = match begin_session(&mut writer, &mut encode_buf, token) {
-        Ok(nonce) => nonce,
-        Err(()) => return,
+    let Ok(session_nonce) = begin_session(&mut writer, &mut encode_buf, token) else {
+        return;
     };
     loop {
         match read_limited_line_into(&mut reader, &mut line_buf, limits.max_line_bytes) {
             Ok(true) => {}
-            Ok(false) => break,
             Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {
                 write_resp(
                     &mut writer,
@@ -393,7 +442,7 @@ fn handle_stream_mailbox(
                 );
                 break;
             }
-            Err(_) => break,
+            Ok(false) | Err(_) => break,
         }
         if line_is_blank(&line_buf) {
             continue;
@@ -411,9 +460,11 @@ fn handle_stream_mailbox(
         };
         // Authorize here so virtual ops (which skip handle_request on the
         // UI thread) still get version + token checks.
-        if let Err(resp) =
-            authorize_request(&req, token, session_nonce.as_ref().map(|n| n.as_slice()))
-        {
+        if let Err(resp) = authorize_request(
+            &req,
+            token,
+            session_nonce.as_ref().map(<[u8; 32]>::as_slice),
+        ) {
             write_resp(&mut writer, &mut encode_buf, &resp);
             break;
         }
@@ -542,6 +593,10 @@ fn wait_until_via_mailbox(
 }
 
 /// Spawn `serve_host` on a background thread and return the bound address.
+///
+/// # Errors
+///
+/// The listener cannot bind or report its address.
 pub fn spawn_host<H: AgentHost + 'static>(
     addr: SocketAddr,
     token: Option<String>,
@@ -556,6 +611,10 @@ pub fn spawn_host<H: AgentHost + 'static>(
 
 /// Spawn `serve_mailbox` on a background thread. Its discovery record names the app after the
 /// executable; `spawn_mailbox_named` gives it the app's own name.
+///
+/// # Errors
+///
+/// The listener cannot bind or report its address.
 pub fn spawn_mailbox(
     addr: SocketAddr,
     token: Option<String>,
@@ -568,6 +627,10 @@ pub fn spawn_mailbox(
 
 /// `spawn_mailbox`, listed under `app` (what `hello().app` answers) so `--connect <app>` finds
 /// it whatever the executable is called.
+///
+/// # Errors
+///
+/// The listener cannot bind or report its address.
 pub fn spawn_mailbox_named(
     addr: SocketAddr,
     token: Option<String>,
@@ -656,7 +719,7 @@ mod tests {
 
     #[test]
     fn limited_line_rejects_oversize() {
-        let mut cursor = Cursor::new("x".repeat(8) + "\n");
+        let mut cursor = Cursor::new(format!("{}\n", "x".repeat(8)));
         let err = read_limited_line(&mut cursor, 4).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
@@ -676,7 +739,7 @@ mod tests {
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
-        let attack = "x".repeat(200) + "\n";
+        let attack = format!("{}\n", "x".repeat(200));
         stream.write_all(attack.as_bytes()).unwrap();
         let mut reader = BufReader::new(stream);
         let mut resp = String::new();
@@ -930,7 +993,7 @@ mod tests {
         let mailbox = AgentMailbox::new();
         let drain = mailbox.clone();
         let stop = Arc::new(AtomicBool::new(false));
-        let stop_t = stop.clone();
+        let stop_t = Arc::clone(&stop);
         thread::spawn(move || {
             let mut host = EmptyHost;
             while !stop_t.load(Ordering::SeqCst) {
@@ -966,12 +1029,12 @@ mod tests {
         let mailbox = AgentMailbox::new();
         let drain = mailbox.clone();
         let stop = Arc::new(AtomicBool::new(false));
-        let stop_t = stop.clone();
+        let stop_t = Arc::clone(&stop);
         thread::spawn(move || {
             while !stop_t.load(Ordering::SeqCst) {
                 for posted in drain.take() {
                     let hello = EmptyHost.hello();
-                    assert!(hello.features.is_empty());
+                    assert_eq!(hello.features, Vec::<String>::new());
                     let mut response = Response::ok(posted.request.id.clone());
                     response.hello = Some(hello);
                     posted.reply(response);

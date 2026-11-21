@@ -20,12 +20,27 @@ pub struct TestHost<H: AgentHost + 'static> {
     host: Arc<Mutex<H>>,
 }
 
+impl<H: AgentHost + 'static> std::fmt::Debug for TestHost<H> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TestHost")
+            .field("addr", &self.addr)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<H: AgentHost + 'static> TestHost<H> {
     /// Bind `127.0.0.1:0` and serve `host` on a background thread.
+    ///
+    /// # Errors
+    ///
+    /// An `io::Error` on bind.
     pub fn spawn(host: H, token: Option<String>) -> std::io::Result<Self> {
         let host = Arc::new(Mutex::new(host));
-        let (addr, shutdown) =
-            spawn_host(SocketAddr::from(([127, 0, 0, 1], 0)), token, host.clone())?;
+        let (addr, shutdown) = spawn_host(
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            token,
+            Arc::clone(&host),
+        )?;
         Ok(Self {
             addr,
             shutdown,
@@ -33,6 +48,7 @@ impl<H: AgentHost + 'static> TestHost<H> {
         })
     }
 
+    /// The bound loopback address.
     pub fn addr(&self) -> SocketAddr {
         self.addr
     }
@@ -44,9 +60,10 @@ impl<H: AgentHost + 'static> TestHost<H> {
 
     /// Shared host lock for assertions that peek at domain state.
     pub fn host(&self) -> Arc<Mutex<H>> {
-        self.host.clone()
+        Arc::clone(&self.host)
     }
 
+    /// Ask the server loop to stop.
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
     }
@@ -103,7 +120,6 @@ mod tests {
                     self.n += 1;
                     Ok(DispatchResult::empty())
                 }
-                Op::Shutdown => Ok(DispatchResult::empty()),
                 // What a 0.1 host does with a gesture: an `invoke` name.
                 Op::Invoke { name, .. } => {
                     Ok(DispatchResult::json(serde_json::json!({ "invoked": name })))
@@ -139,16 +155,12 @@ mod tests {
     fn inline_screenshot_returns_the_png_and_leaves_no_file() {
         let host = TestHost::spawn(PingHost { n: 0 }, None).expect("bind");
         let mut client = host.client();
-        let before = std::fs::read_dir(crate::screenshot_base_dir())
-            .map(|dir| dir.count())
-            .unwrap_or(0);
+        let before = std::fs::read_dir(crate::screenshot_base_dir()).map_or(0, Iterator::count);
         let png = client
             .screenshot_bytes(crate::ScreenshotMode::Viewport, None, None)
             .expect("inline screenshot");
         assert_eq!(png, crate::TEST_PNG);
-        let after = std::fs::read_dir(crate::screenshot_base_dir())
-            .map(|dir| dir.count())
-            .unwrap_or(0);
+        let after = std::fs::read_dir(crate::screenshot_base_dir()).map_or(0, Iterator::count);
         assert_eq!(before, after, "the scratch file is removed");
     }
 

@@ -5,17 +5,29 @@ use serde::{Deserialize, Serialize};
 /// Wire format stays a string so apps can add their own. These constants
 /// (and the `UiNode` constructors below) cut boilerplate for the common set.
 pub mod role {
+    /// The `window` role.
     pub const WINDOW: &str = "window";
+    /// The `page` role.
     pub const PAGE: &str = "page";
+    /// The `navigation` role.
     pub const NAVIGATION: &str = "navigation";
+    /// The `button` role.
     pub const BUTTON: &str = "button";
+    /// The `textbox` role.
     pub const TEXTBOX: &str = "textbox";
+    /// The `list` role.
     pub const LIST: &str = "list";
+    /// The `listitem` role.
     pub const LIST_ITEM: &str = "listitem";
+    /// The `scroll` role.
     pub const SCROLL: &str = "scroll";
+    /// The `checkbox` role.
     pub const CHECKBOX: &str = "checkbox";
+    /// The `note` role.
     pub const NOTE: &str = "note";
+    /// The `status` role.
     pub const STATUS: &str = "status";
+    /// The `dialog` role.
     pub const DIALOG: &str = "dialog";
 }
 
@@ -33,9 +45,13 @@ pub const SECRET_MASK: char = '•';
 /// layout (headless, or before the first frame) send zeros.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Bounds {
+    /// Left edge, in logical pixels.
     pub x: f32,
+    /// Top edge, in logical pixels.
     pub y: f32,
+    /// Width, in logical pixels.
     pub w: f32,
+    /// Height, in logical pixels.
     pub h: f32,
 }
 
@@ -44,10 +60,13 @@ pub struct Bounds {
 /// Headless hosts and zero bounds must use this instead of inventing a clip.
 pub const IN_VIEWPORT_UNAVAILABLE: &str = "in_viewport_unavailable";
 
+/// The `in_viewport_unavailable: <detail>` error for geometry asserts a
+/// host cannot answer.
 pub fn in_viewport_unavailable(detail: impl Into<String>) -> String {
     format!("{IN_VIEWPORT_UNAVAILABLE}: {}", detail.into())
 }
 
+/// `true` when `error` is an [`IN_VIEWPORT_UNAVAILABLE`] refusal.
 pub fn is_in_viewport_unavailable(error: &str) -> bool {
     error == IN_VIEWPORT_UNAVAILABLE
         || error.starts_with(IN_VIEWPORT_UNAVAILABLE)
@@ -55,10 +74,12 @@ pub fn is_in_viewport_unavailable(error: &str) -> bool {
 }
 
 impl Bounds {
+    /// `true` when both dimensions are positive — zero bounds mean "not measured".
     pub fn has_area(self) -> bool {
         self.w > 0.0 && self.h > 0.0
     }
 
+    /// The center point, `(x + w/2, y + h/2)`.
     pub fn center(self) -> (f32, f32) {
         (self.x + self.w / 2.0, self.y + self.h / 2.0)
     }
@@ -76,17 +97,26 @@ impl Bounds {
     }
 }
 
+/// One node of the semantic tree: stable id plus the attributes agents
+/// assert and act on.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiNode {
+    /// Stable identifier this app assigned the node (unique per tree).
     pub id: String,
+    /// The node's role string (see [`role`]).
     pub role: String,
+    /// Accessible name / visible text.
     pub name: String,
+    /// Current value (text in an input, a slider position, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    /// Checked state for checkable nodes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checked: Option<bool>,
+    /// Whether the node is enabled.
     #[serde(default)]
     pub enabled: bool,
+    /// Whether the node has focus.
     #[serde(default)]
     pub focused: bool,
     /// Host-declared visibility. Omitted on the wire deserializes as
@@ -94,10 +124,13 @@ pub struct UiNode {
     /// omit `true` to keep trees compact.
     #[serde(default = "default_visible", skip_serializing_if = "is_visible")]
     pub visible: bool,
+    /// Layout bounds; zeros when the host cannot measure.
     #[serde(default)]
     pub bounds: Bounds,
+    /// Extra state strings (`checked`, `disabled`, `password`, …).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub states: Vec<String>,
+    /// Child nodes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<UiNode>,
 }
@@ -106,11 +139,17 @@ fn default_visible() -> bool {
     true
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if requires a &T signature"
+)]
 fn is_visible(value: &bool) -> bool {
     *value
 }
 
 impl UiNode {
+    /// A node with the given `id`, `role` and `name` (enabled, visible,
+    /// no children or states).
     pub fn new(id: impl Into<String>, role: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -127,69 +166,101 @@ impl UiNode {
         }
     }
 
+    /// `new` with role [`role::WINDOW`].
     pub fn window(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self::new(id, role::WINDOW, name)
     }
 
+    /// `new` with role [`role::PAGE`].
     pub fn page(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self::new(id, role::PAGE, name)
     }
 
+    /// `new` with role [`role::NAVIGATION`].
     pub fn navigation(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self::new(id, role::NAVIGATION, name)
     }
 
+    /// `new` with role [`role::BUTTON`].
     pub fn button(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self::new(id, role::BUTTON, name)
     }
 
+    /// `new` with role [`role::TEXTBOX`].
     pub fn textbox(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self::new(id, role::TEXTBOX, name)
     }
 
+    /// `new` with role [`role::LIST`].
     pub fn list(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self::new(id, role::LIST, name)
     }
 
+    /// `new` with role [`role::LIST_ITEM`].
     pub fn listitem(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self::new(id, role::LIST_ITEM, name)
     }
 
+    /// `new` with role [`role::SCROLL`].
     pub fn scroll(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self::new(id, role::SCROLL, name)
     }
 
+    /// `new` with role [`role::CHECKBOX`].
     pub fn checkbox(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self::new(id, role::CHECKBOX, name)
     }
 
+    /// `new` with role [`role::NOTE`].
     pub fn note(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self::new(id, role::NOTE, name)
     }
 
+    /// `new` with role [`role::STATUS`].
     pub fn status(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self::new(id, role::STATUS, name)
     }
 
+    /// `new` with role [`role::DIALOG`].
     pub fn dialog(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self::new(id, role::DIALOG, name)
     }
 
+    /// Set the node's `value`.
+    #[must_use]
     pub fn with_value(mut self, value: impl Into<String>) -> Self {
         self.value = Some(value.into());
         self
     }
 
+    /// Set the node's `focused` flag.
+    #[must_use]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "a builder for a bool field"
+    )]
     pub fn with_focused(mut self, focused: bool) -> Self {
         self.focused = focused;
         self
     }
 
+    /// Set the node's `enabled` flag.
+    #[must_use]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "a builder for a bool field"
+    )]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
     }
 
+    /// Set the node's `visible` flag.
+    #[must_use]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "a builder for a bool field"
+    )]
     pub fn with_visible(mut self, visible: bool) -> Self {
         self.visible = visible;
         self
@@ -199,6 +270,11 @@ impl UiNode {
     ///
     /// Prefer keeping a closed sidebar/modal in the tree with
     /// `visible=false` so agents can assert “known but not showing”.
+    #[must_use]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "a builder for a bool field"
+    )]
     pub fn with_visible_deep(mut self, visible: bool) -> Self {
         self.visible = visible;
         if !visible {
@@ -211,11 +287,19 @@ impl UiNode {
         self
     }
 
+    /// Set the node's `bounds`.
+    #[must_use]
     pub fn with_bounds(mut self, bounds: Bounds) -> Self {
         self.bounds = bounds;
         self
     }
 
+    /// Set `checked` and add the matching `checked`/`unchecked` state string.
+    #[must_use]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "a builder for a bool field"
+    )]
     pub fn with_checked(mut self, checked: bool) -> Self {
         self.checked = Some(checked);
         self.states.push(if checked {
@@ -226,16 +310,21 @@ impl UiNode {
         self
     }
 
+    /// Append `child`.
+    #[must_use]
     pub fn with_child(mut self, child: UiNode) -> Self {
         self.children.push(child);
         self
     }
 
+    /// Replace the node's children.
+    #[must_use]
     pub fn with_children(mut self, children: Vec<UiNode>) -> Self {
         self.children = children;
         self
     }
 
+    /// The first node (DFS) whose `id` matches, or `None`.
     pub fn find(&self, id: &str) -> Option<&UiNode> {
         if self.id == id {
             return Some(self);
@@ -312,11 +401,11 @@ impl UiNode {
     /// Not serialized by default; `snapshot` exposes fingerprints only
     /// with `fingerprints: true`.
     pub fn fingerprint(&self, parent_id: Option<&str>) -> u64 {
-        const OFF: u64 = 0xcbf29ce484222325;
+        const OFF: u64 = 0xcbf2_9ce4_8422_2325;
         fn feed(mut h: u64, bytes: &[u8]) -> u64 {
             for b in bytes {
                 h ^= u64::from(*b);
-                h = h.wrapping_mul(0x100000001b3);
+                h = h.wrapping_mul(0x0100_0000_01b3);
             }
             h
         }
@@ -348,6 +437,7 @@ impl UiNode {
         feed(h, &[u8::from(parent_id.is_some())])
     }
 
+    /// Every node whose `id` matches, in DFS order.
     pub fn find_all<'a>(&'a self, id: &str) -> Vec<&'a UiNode> {
         let mut out = Vec::new();
         self.collect_id(id, &mut out);
@@ -371,10 +461,12 @@ impl UiNode {
         }
     }
 
+    /// This node plus its descendants.
     pub fn node_count(&self) -> usize {
         1 + self.children.iter().map(UiNode::node_count).sum::<usize>()
     }
 
+    /// This node and its descendants in DFS order.
     pub fn flatten(&self) -> Vec<&UiNode> {
         let mut out = Vec::new();
         self.flatten_into(&mut out);
@@ -390,6 +482,7 @@ impl UiNode {
         self.visit(&mut |node| out.push(node));
     }
 
+    /// Overwrite bounds from an `id → Bounds` map (the `in_viewport` pass).
     pub fn apply_bounds_map(&mut self, map: &std::collections::HashMap<String, Bounds>) {
         if let Some(bounds) = map.get(&self.id) {
             self.bounds = *bounds;
@@ -400,11 +493,16 @@ impl UiNode {
     }
 }
 
+/// A whole `snapshot` reply: the app's root nodes plus metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiTree {
+    /// The application name, echoed from `hello`.
     pub app: String,
+    /// The runtime kind, echoed from `hello`.
     pub platform: crate::protocol::PlatformKind,
+    /// Whether the app was ready when the snapshot was taken.
     pub ready: bool,
+    /// The root nodes.
     pub nodes: Vec<UiNode>,
     /// Host snapshot revision (M3). `None` means the host does not track
     /// one — callers must rebuild rather than cache.
@@ -413,10 +511,12 @@ pub struct UiTree {
 }
 
 impl UiTree {
+    /// The first node (DFS across roots) whose `id` matches, or `None`.
     pub fn find(&self, id: &str) -> Option<&UiNode> {
         self.nodes.iter().find_map(|node| node.find(id))
     }
 
+    /// Every node whose `id` matches, in DFS order.
     pub fn find_all<'a>(&'a self, id: &str) -> Vec<&'a UiNode> {
         let mut out = Vec::new();
         for node in &self.nodes {
@@ -425,6 +525,7 @@ impl UiTree {
         out
     }
 
+    /// Every `id` present on more than one node.
     pub fn duplicate_ids(&self) -> Vec<String> {
         let mut counts = std::collections::BTreeMap::<String, usize>::new();
         self.visit(&mut |node| {
@@ -437,10 +538,17 @@ impl UiTree {
             .collect()
     }
 
+    /// `true` when no `id` appears twice.
     pub fn ids_are_unique(&self) -> bool {
         self.duplicate_ids().is_empty()
     }
 
+    /// The one node with `id`.
+    ///
+    /// # Errors
+    ///
+    /// `"node <id> not found"` when absent, `"duplicate id"` when it is
+    /// not unique.
     pub fn require_id(&self, id: &str) -> Result<&UiNode, String> {
         let found = self.find_all(id);
         match found.len() {
@@ -450,16 +558,19 @@ impl UiTree {
         }
     }
 
+    /// Visit every node, roots first, DFS.
     pub fn visit<'a, F: FnMut(&'a UiNode)>(&'a self, f: &mut F) {
         for node in &self.nodes {
             node.visit(f);
         }
     }
 
+    /// Total nodes across all roots.
     pub fn node_count(&self) -> usize {
         self.nodes.iter().map(UiNode::node_count).sum()
     }
 
+    /// All nodes in DFS order.
     pub fn flatten(&self) -> Vec<&UiNode> {
         let mut out = Vec::new();
         self.flatten_into(&mut out);
@@ -475,6 +586,7 @@ impl UiTree {
         self.visit(&mut |node| out.push(node));
     }
 
+    /// Overwrite bounds from an `id → Bounds` map.
     pub fn apply_bounds_map(&mut self, map: &std::collections::HashMap<String, Bounds>) {
         for node in &mut self.nodes {
             node.apply_bounds_map(map);

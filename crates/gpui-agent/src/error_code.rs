@@ -8,21 +8,37 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The challenge was unanswered or the token wrong.
 pub const UNAUTHORIZED: &str = "unauthorized";
+/// The request line was not valid NDJSON protocol.
 pub const BAD_REQUEST: &str = "bad_request";
+/// Client and host disagree on the protocol version.
 pub const UNSUPPORTED_VERSION: &str = "unsupported_version";
+/// The host does not list this op in `hello.features`.
 pub const UNSUPPORTED_OP: &str = crate::protocol::UNSUPPORTED_OP;
+/// The target changed between snapshot and dispatch.
 pub const STALE_TARGET: &str = crate::dispatch::STALE_TARGET;
+/// The target left the tree between snapshot and dispatch.
 pub const TARGET_GONE: &str = crate::dispatch::TARGET_GONE;
+/// The target id is not in the current tree.
 pub const NOT_FOUND: &str = "not_found";
+/// Several nodes carry the same id.
 pub const DUPLICATE_ID: &str = "duplicate_id";
+/// An `assert` spec does not match the node.
 pub const ASSERT_FAILED: &str = "assert_failed";
+/// A `wait`/`wait_until` deadline elapsed.
 pub const TIMEOUT: &str = "timeout";
+/// The UI-thread mailbox is not draining.
 pub const MAILBOX_FULL: &str = "mailbox_full";
+/// The host cannot capture a screenshot here.
 pub const SCREENSHOT_UNAVAILABLE: &str = crate::screenshot::SCREENSHOT_UNAVAILABLE;
+/// The host cannot deliver virtual input here.
 pub const VIRTUAL_UNAVAILABLE: &str = crate::virtual_input::VIRTUAL_UNAVAILABLE;
+/// The host cannot drive the scroll target.
 pub const SCROLL_UNAVAILABLE: &str = crate::scroll_capture::SCROLL_UNAVAILABLE;
+/// The host cannot dispatch the Action here.
 pub const KEYBINDING_UNAVAILABLE: &str = crate::keybinding::KEYBINDING_UNAVAILABLE;
+/// The host has no geometry for `in_viewport`.
 pub const IN_VIEWPORT_UNAVAILABLE: &str = crate::tree::IN_VIEWPORT_UNAVAILABLE;
 /// Any other failure the host reported.
 pub const HOST_ERROR: &str = "host_error";
@@ -169,6 +185,10 @@ pub fn refused_before_dispatch(code: &str) -> bool {
 /// What the client knows about whether an action reached the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum DeliveryStatus {
     /// Nothing was written, or the host refused before dispatch. Retry is
     /// safe.
@@ -183,6 +203,8 @@ pub enum DeliveryStatus {
 }
 
 impl DeliveryStatus {
+    /// The wire spelling (`snake_case`).
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::NotDelivered => "not_delivered",
@@ -207,10 +229,14 @@ impl DeliveryStatus {
 /// envelope the CLI prints and MCP tool errors carry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallFailure {
+    /// The human error text.
     pub error: String,
+    /// Its stable [`error_code_of`] classification.
     pub error_code: String,
+    /// The code's recovery hint, when one exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    /// For actions: what is known about delivery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_status: Option<DeliveryStatus>,
 }
@@ -223,6 +249,7 @@ impl CallFailure {
         Self::with_code(error, code, None)
     }
 
+    /// A failure with an explicit code (skips classification).
     pub fn with_code(
         error: impl Into<String>,
         code: &str,
@@ -238,6 +265,10 @@ impl CallFailure {
 
     /// A host reply with `ok: false`. `acts` marks an op that changes the
     /// app, which gets a `delivery_status`.
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "one flag: whether the op changes the app"
+    )]
     pub fn from_response(resp: &crate::protocol::Response, acts: bool) -> Self {
         let code = resp.code().unwrap_or(HOST_ERROR).to_string();
         let hint = resp
@@ -258,6 +289,10 @@ impl CallFailure {
     }
 
     /// `{"ok":false,"error":…,"error_code":…,"hint"?,"delivery_status"?}`.
+    ///
+    /// # Panics
+    ///
+    /// Never: [`CallFailure`] serialization cannot fail.
     pub fn envelope(&self) -> serde_json::Value {
         let mut value = serde_json::to_value(self).expect("CallFailure serializes");
         if let serde_json::Value::Object(map) = &mut value {

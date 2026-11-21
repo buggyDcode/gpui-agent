@@ -1,3 +1,9 @@
+//! Client feature coverage against a live loopback server.
+#![expect(
+    clippy::unwrap_used,
+    reason = "a failed setup/assert aborts the test anyway"
+)]
+
 use std::{
     io::{BufRead, BufReader, Write},
     net::{Shutdown, TcpListener, TcpStream},
