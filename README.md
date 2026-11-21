@@ -38,6 +38,7 @@ gpui-agent click --delivery virtual nav-settings
 gpui-agent assert --id page-settings
 gpui-agent set-value search-input "query"
 gpui-agent type composer "hello"
+gpui-agent type --stdin password-input < secret.txt   # never on the command line
 gpui-agent type --delivery virtual composer "hello"
 gpui-agent key composer Enter
 gpui-agent keybindings

@@ -290,6 +290,10 @@ either value. A host marks such a field with role `password` or adds the
 `secret` state (an API key in a plain text field). The client masks trees
 from hosts that predate this rule as they arrive.
 
+To type a secret without putting it in the process list or the shell
+history, pipe it: `gpui-agent type --stdin <id> < secret.txt` (also
+`set-value --stdin`, `paste --stdin`).
+
 ## Delivery modes (`click` / `type` / `key`)
 
 `delivery` is optional and defaults to **`semantic`**. Omitted on the wire

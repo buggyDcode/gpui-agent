@@ -301,7 +301,14 @@ enum Command {
         preset: Option<String>,
     },
     /// Insert text into an editable node as one paste.
-    Paste { target: String, text: String },
+    Paste {
+        target: String,
+        #[arg(required_unless_present = "stdin")]
+        text: Option<String>,
+        /// Read the text from stdin instead (see `type --stdin`).
+        #[arg(long, conflicts_with = "text")]
+        stdin: bool,
+    },
     /// Device action: back, home, rotate, keyboard-show, keyboard-hide,
     /// background, foreground, open-url. `rotate` and `open-url` take a value.
     System {
@@ -322,7 +329,13 @@ enum Command {
     /// Append text to an editable widget.
     Type {
         target: String,
-        text: String,
+        #[arg(required_unless_present = "stdin")]
+        text: Option<String>,
+        /// Read the text from stdin instead: all of it, less one trailing
+        /// line ending. A secret piped in stays out of the process list
+        /// and the shell history.
+        #[arg(long, conflicts_with = "text")]
+        stdin: bool,
         #[arg(long, default_value = "semantic")]
         delivery: DeliveryMode,
         /// Refuse with `stale_target`, without typing, unless the target's
@@ -333,7 +346,11 @@ enum Command {
     /// Replace the value of an editable widget.
     SetValue {
         target: String,
-        value: String,
+        #[arg(required_unless_present = "stdin")]
+        value: Option<String>,
+        /// Read the value from stdin instead (see `type --stdin`).
+        #[arg(long, conflicts_with = "value")]
+        stdin: bool,
         /// Refuse with `stale_target`, without setting it, unless the
         /// target's fingerprint (`snapshot --fingerprints`) is still this value.
         #[arg(long, value_name = "FINGERPRINT")]
@@ -1016,7 +1033,12 @@ fn run() -> Result<()> {
             }))?;
             finish(&mut client, resp)?
         }
-        Command::Paste { target, text } => {
+        Command::Paste {
+            target,
+            text,
+            stdin,
+        } => {
+            let text = text_arg(text, stdin)?;
             let resp = call(client.act(&Op::Paste { target, text }, read_back))?;
             finish(&mut client, resp)?
         }
@@ -1047,9 +1069,11 @@ fn run() -> Result<()> {
         Command::Type {
             target,
             text,
+            stdin,
             delivery,
             expect_fingerprint,
         } => {
+            let text = text_arg(text, stdin)?;
             let expect_fingerprint = guard(Some(target.as_str()), expect_fingerprint)?;
             let resp = call(client.act(
                 &Op::Type {
@@ -1065,8 +1089,10 @@ fn run() -> Result<()> {
         Command::SetValue {
             target,
             value,
+            stdin,
             expect_fingerprint,
         } => {
+            let value = text_arg(value, stdin)?;
             let expect_fingerprint = guard(Some(target.as_str()), expect_fingerprint)?;
             let resp = call(client.act(
                 &Op::SetValue {
@@ -1191,6 +1217,31 @@ fn requested_wait(cli: &Cli) -> Result<Option<(gpui_agent::WaitFor, u64)>> {
         ));
     }
     Ok(Some((wait, cli.wait_timeout_ms)))
+}
+
+/// The text of `type` / `set-value` / `paste`: the argument, or with
+/// `--stdin` all of stdin (clap requires exactly one).
+fn text_arg(text: Option<String>, stdin: bool) -> Result<String> {
+    match text {
+        Some(text) if !stdin => Ok(text),
+        _ => read_text(std::io::stdin().lock()),
+    }
+}
+
+/// All of `input`, less one trailing line ending: the one `echo` and a
+/// heredoc add, which would otherwise be typed into the field.
+fn read_text(mut input: impl std::io::Read) -> Result<String> {
+    let mut text = String::new();
+    input
+        .read_to_string(&mut text)
+        .context("--stdin: reading the text from stdin")?;
+    if text.ends_with('\n') {
+        text.pop();
+        if text.ends_with('\r') {
+            text.pop();
+        }
+    }
+    Ok(text)
 }
 
 impl Command {
@@ -1719,7 +1770,7 @@ mod tests {
         match typed.command {
             Command::Type { delivery, text, .. } => {
                 assert_eq!(delivery, DeliveryMode::Virtual);
-                assert_eq!(text, "Hi");
+                assert_eq!(text.as_deref(), Some("Hi"));
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -2168,6 +2219,43 @@ mod tests {
             } => assert_eq!(expect_fingerprint, Some(42)),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn stdin_replaces_the_text_of_type_set_value_and_paste() {
+        let parse = |args: &[&str]| {
+            let mut argv = vec!["gpui-agent"];
+            argv.extend_from_slice(args);
+            Cli::try_parse_from(argv).map(|cli| cli.command)
+        };
+        for verb in ["type", "set-value", "paste"] {
+            match parse(&[verb, "--stdin", "pw"]).unwrap() {
+                Command::Type { text, stdin, .. }
+                | Command::SetValue {
+                    value: text, stdin, ..
+                }
+                | Command::Paste { text, stdin, .. } => {
+                    assert!(stdin, "{verb}");
+                    assert_eq!(text, None, "{verb}");
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+            assert!(parse(&[verb, "pw"]).is_err(), "{verb} needs a text");
+            assert!(
+                parse(&[verb, "--stdin", "pw", "hunter2"]).is_err(),
+                "{verb} takes the text once"
+            );
+        }
+    }
+
+    #[test]
+    fn stdin_text_drops_one_trailing_line_ending() {
+        let read = |input: &str| read_text(input.as_bytes()).unwrap();
+        assert_eq!(read("hunter2\n"), "hunter2");
+        assert_eq!(read("hunter2\r\n"), "hunter2");
+        assert_eq!(read("hunter2"), "hunter2");
+        assert_eq!(read("two\nlines\n\n"), "two\nlines\n");
+        assert_eq!(read(""), "");
     }
 
     #[test]
