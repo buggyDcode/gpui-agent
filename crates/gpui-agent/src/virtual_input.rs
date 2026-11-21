@@ -11,11 +11,16 @@ use crate::tree::{Bounds, UiTree};
 /// Stable error prefix so agents can branch without parsing prose.
 pub const VIRTUAL_UNAVAILABLE: &str = "virtual_unavailable";
 
+/// `{VIRTUAL_UNAVAILABLE}: <detail>`.
 pub fn virtual_unavailable(detail: impl Into<String>) -> String {
     format!("{VIRTUAL_UNAVAILABLE}: {}", detail.into())
 }
 
 /// Center of a node's bounds, or `virtual_unavailable` when layout is missing.
+///
+/// # Errors
+///
+/// [`virtual_unavailable`] for zero-area bounds.
 pub fn hit_point(bounds: Bounds) -> Result<(f32, f32), String> {
     if !bounds.has_area() {
         return Err(virtual_unavailable(
@@ -30,11 +35,20 @@ pub fn hit_point(bounds: Bounds) -> Result<(f32, f32), String> {
 /// Resolve a click target from the semantic tree.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VirtualPointerClick {
+    /// The tree id that was hit-tested.
     pub target: String,
+    /// Window-space x of the click point.
     pub x: f32,
+    /// Window-space y of the click point.
     pub y: f32,
 }
 
+/// `require_id` + [`hit_point`] for `target`.
+///
+/// # Errors
+///
+/// `not_found`/`duplicate_id` from the tree, or [`virtual_unavailable`]
+/// for zero-area bounds.
 pub fn plan_click(tree: &UiTree, target: &str) -> Result<VirtualPointerClick, String> {
     let node = tree.require_id(target)?;
     let (x, y) = hit_point(node.bounds)?;
@@ -49,6 +63,11 @@ pub fn plan_click(tree: &UiTree, target: &str) -> Result<VirtualPointerClick, St
 ///
 /// Modifier-free by design (SECURITY I1). Chords such as `cmd-q` belong on
 /// [`crate::Op::Keybinding`], not here.
+///
+/// # Errors
+///
+/// [`virtual_unavailable`] for an empty key, a modifier chord, or a key
+/// outside the handled set.
 pub fn keystroke_token(key: &str) -> Result<String, String> {
     let trimmed = key.trim();
     if trimmed.is_empty() {
@@ -86,6 +105,11 @@ fn looks_like_modifier_chord(key: &str) -> bool {
 }
 
 /// One GPUI keystroke token per character for `type` (ASCII + space).
+///
+/// # Errors
+///
+/// [`virtual_unavailable`] on a non-ASCII-graphic character other than
+/// `\n`/`\t`/space.
 pub fn text_keystrokes(text: &str) -> Result<Vec<String>, String> {
     text.chars()
         .map(|ch| {
@@ -111,8 +135,11 @@ pub fn text_keystrokes(text: &str) -> Result<Vec<String>, String> {
 /// Painted agent cursor. Does **not** control the OS pointer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentCursor {
+    /// Window-space x.
     pub x: f32,
+    /// Window-space y.
     pub y: f32,
+    /// Whether the overlay cursor is drawn.
     pub visible: bool,
     /// Hue in `0.0..1.0` for the in-window overlay (session-colored).
     pub hue: f32,
@@ -135,6 +162,7 @@ impl AgentCursor {
         }
     }
 
+    /// Place the cursor at `(x, y)` and show it.
     pub fn move_to(&mut self, x: f32, y: f32) {
         self.x = x;
         self.y = y;

@@ -19,15 +19,23 @@ pub const EVENTS_DEFAULT_LIMIT: usize = 256;
 /// Severity of one event; serialized lowercase on the wire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[expect(clippy::exhaustive_enums, reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches")]
 pub enum EventLevel {
+    /// `trace`.
     Trace,
+    /// `debug`.
     Debug,
+    /// `info`.
     Info,
+    /// `warn`.
     Warn,
+    /// `error`.
     Error,
 }
 
 impl EventLevel {
+    /// The wire spelling (lowercase).
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Trace => "trace",
@@ -49,7 +57,9 @@ impl std::fmt::Display for EventLevel {
 /// increasing from 1 — it is the ordering field (no timestamps).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentEvent {
+    /// Ring-allocated ordering (monotonic from 1).
     pub seq: u64,
+    /// Severity.
     pub level: EventLevel,
     /// Emitting component — module path or subsystem name.
     pub target: String,
@@ -60,6 +70,7 @@ pub struct AgentEvent {
 /// One `events` poll answer: the retained tail plus cursor state.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventPoll {
+    /// The retained tail, oldest first, capped at the poll limit.
     pub events: Vec<AgentEvent>,
     /// Cursor for the next `since` poll: the last returned seq when
     /// truncated, otherwise the highest allocated seq.
@@ -96,6 +107,7 @@ impl EventRing {
         }
     }
 
+    /// The configured bound.
     pub fn capacity(&self) -> usize {
         self.capacity
     }
@@ -129,7 +141,7 @@ impl EventRing {
     pub fn since(&self, since: Option<u64>, limit: usize) -> EventPoll {
         let inner = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let limit = limit.min(self.capacity.max(1));
-        let base_seq = inner.next - inner.buf.len() as u64;
+        let base_seq = inner.next - u64::try_from(inner.buf.len()).unwrap_or(u64::MAX);
         let newest_seq = inner.next.saturating_sub(1);
         let mut matching = inner.buf.iter().filter(|e| since.is_none_or(|s| e.seq > s));
         let events: Vec<AgentEvent> = matching.by_ref().take(limit).cloned().collect();
@@ -151,6 +163,7 @@ impl EventRing {
         inner.next - 1
     }
 
+    /// Whether the ring holds no events.
     pub fn is_empty(&self) -> bool {
         let inner = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.buf.is_empty()
@@ -207,7 +220,7 @@ mod tests {
         assert_eq!(poll.latest, 5);
         assert!(!poll.lagged);
         // Polling at latest yields nothing new.
-        assert!(ring.since(Some(5), EVENTS_DEFAULT_LIMIT).events.is_empty());
+        assert_eq!(ring.since(Some(5), EVENTS_DEFAULT_LIMIT).events, Vec::<AgentEvent>::new());
     }
 
     #[test]
@@ -290,7 +303,7 @@ mod tests {
         let ring = EventRing::new(0);
         assert_eq!(ring.push(EventLevel::Info, "t", "x"), 1);
         let poll = ring.since(None, 10);
-        assert!(poll.events.is_empty());
+        assert_eq!(poll.events, Vec::<AgentEvent>::new());
         assert_eq!(poll.latest, 1);
     }
 }

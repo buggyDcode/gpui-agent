@@ -14,6 +14,14 @@ pub struct AgentMailbox {
     inner: Arc<Mutex<Vec<MailboxRequest>>>,
 }
 
+impl std::fmt::Debug for AgentMailbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentMailbox")
+            .field("pending", &self.len())
+            .finish()
+    }
+}
+
 impl Default for AgentMailbox {
     fn default() -> Self {
         Self {
@@ -22,22 +30,41 @@ impl Default for AgentMailbox {
     }
 }
 
+/// One posted request plus the channel back to its caller.
 pub struct MailboxRequest {
+    /// The request to dispatch on the UI thread.
     pub request: Request,
     sender: mpsc::Sender<Response>,
 }
 
+impl std::fmt::Debug for MailboxRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MailboxRequest")
+            .field("request", &self.request)
+            .finish_non_exhaustive()
+    }
+}
+
 impl MailboxRequest {
+    /// Send `response` back to the waiting caller.
     pub fn reply(self, response: Response) {
         let _ = self.sender.send(response);
     }
 }
 
 impl AgentMailbox {
+    /// An empty mailbox.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Queue `request` for the UI thread; the receiver yields the reply
+    /// (a `mailbox full` error immediately when at [`MAX_MAILBOX_DEPTH`]).
+    ///
+    /// # Panics
+    ///
+    /// Never: the mutex is poisoned only by a panic inside `take`/`push`.
     pub fn push(&self, request: Request) -> mpsc::Receiver<Response> {
         let (tx, rx) = mpsc::channel();
         let mut inner = self.inner.lock().expect("mailbox");
@@ -55,20 +82,40 @@ impl AgentMailbox {
         rx
     }
 
+    /// Drain all queued requests (called on the UI thread).
+    ///
+    /// # Panics
+    ///
+    /// Never: the mutex is poisoned only by a panic inside `take`/`push`.
     pub fn take(&self) -> Vec<MailboxRequest> {
         mem::take(&mut *self.inner.lock().expect("mailbox"))
     }
 
+    /// [`push`](Self::push) and block for the reply up to `timeout`.
+    ///
+    /// # Errors
+    ///
+    /// `"timed out waiting for the UI thread to drain the agent mailbox"`.
     pub fn wait(&self, request: Request, timeout: Duration) -> Result<Response, String> {
         let rx = self.push(request);
         rx.recv_timeout(timeout)
             .map_err(|_| "timed out waiting for the UI thread to drain the agent mailbox".into())
     }
 
+    /// Queued requests.
+    ///
+    /// # Panics
+    ///
+    /// Never: the mutex is poisoned only by a panic inside `take`/`push`.
     pub fn len(&self) -> usize {
         self.inner.lock().expect("mailbox").len()
     }
 
+    /// Whether nothing is queued.
+    ///
+    /// # Panics
+    ///
+    /// Never: the mutex is poisoned only by a panic inside `take`/`push`.
     pub fn is_empty(&self) -> bool {
         self.inner.lock().expect("mailbox").is_empty()
     }
