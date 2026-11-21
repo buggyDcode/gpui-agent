@@ -1,8 +1,6 @@
 #[cfg(feature = "embedded-host")]
 use std::collections::VecDeque;
 
-#[cfg(feature = "embedded-host")]
-use gpui_kit::component::ElementExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent as FieldEvent, InputState};
@@ -1109,8 +1107,8 @@ impl TodoApp {
         });
     }
 
-    /// Record a child's painted bounds under a semantic id (previous frame is
-    /// what virtual click uses — same timing as real input).
+    /// Record a child's laid-out bounds under a semantic id. Virtual input
+    /// runs after the frame that recorded them, against that frame's hitboxes.
     #[cfg(feature = "embedded-host")]
     fn track_as(
         &self,
@@ -1120,9 +1118,7 @@ impl TodoApp {
     ) -> impl IntoElement {
         let entity = cx.entity();
         let record_id = semantic_id.to_string();
-        // No element id on the tracker — a stateful wrapper would steal hit-tests
-        // from the real widget that virtual clicks must reach.
-        div().child(child).on_prepaint(move |bounds, _window, app| {
+        crate::tracked::tracked(child, move |bounds, app| {
             entity.update(app, |this, _| {
                 this.set_bound(
                     &record_id,
