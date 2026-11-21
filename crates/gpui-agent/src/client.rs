@@ -32,6 +32,20 @@ pub struct AgentClient {
     as_written: bool,
 }
 
+impl std::fmt::Debug for AgentClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentClient")
+            .field("addr", &self.addr)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("timeout", &self.timeout)
+            .field("next_id", &self.next_id)
+            .field("session", &self.session.as_ref().map(|_| "<open>"))
+            .field("features", &self.features)
+            .field("as_written", &self.as_written)
+            .finish_non_exhaustive()
+    }
+}
+
 struct LiveSession {
     writer: TcpStream,
     reader: BufReader<TcpStream>,
@@ -113,6 +127,10 @@ impl LiveSession {
         }
     }
 
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "one flag: mask secret values for hosts predating host-side redaction"
+    )]
     fn exchange_wire(
         &mut self,
         id: &str,
@@ -146,6 +164,10 @@ impl LiveSession {
         parse_response_line(&self.line_buf, legacy_secret_redaction).map_err(WireError::Fatal)
     }
 
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "one flag: mask secret values for hosts predating host-side redaction"
+    )]
     fn exchange_wire_with_timeouts(
         &mut self,
         id: &str,
@@ -175,6 +197,10 @@ impl LiveSession {
     /// Connect/write failures **before** the first line may be retried.
     /// After any line is on the wire, errors are fatal so mutating ops
     /// (and even extra reads) are not replayed.
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "one flag: mask secret values for hosts predating host-side redaction"
+    )]
     fn exchange_pipeline(
         &mut self,
         start_id: u64,
@@ -190,7 +216,7 @@ impl LiveSession {
         let mut id_buf = [0u8; 20];
         let mut wrote = false;
         for (i, op) in ops.iter().enumerate() {
-            let id = fmt_u64(start_id + i as u64, &mut id_buf);
+            let id = fmt_u64(start_id + u64::try_from(i).unwrap_or(u64::MAX), &mut id_buf);
             let req = WireRequest {
                 v: PROTOCOL_VERSION,
                 id,
@@ -317,14 +343,14 @@ fn fmt_u64(n: u64, buf: &mut [u8; 20]) -> &str {
     let mut i = buf.len();
     if n == 0 {
         buf[i - 1] = b'0';
-        return std::str::from_utf8(&buf[i - 1..]).unwrap();
+        return std::str::from_utf8(&buf[i - 1..]).expect("ASCII digits");
     }
     while n > 0 {
         i -= 1;
-        buf[i] = b'0' + (n % 10) as u8;
+        buf[i] = b'0' + u8::try_from(n % 10).unwrap_or(b'9');
         n /= 10;
     }
-    std::str::from_utf8(&buf[i..]).unwrap()
+    std::str::from_utf8(&buf[i..]).expect("ASCII digits")
 }
 
 /// Error prefix when the host took the request and sent no reply in time.
@@ -367,6 +393,7 @@ fn read_timed_out(err: &str) -> bool {
 }
 
 impl AgentClient {
+    /// A client for the host at `addr` (no token, 8s timeout).
     pub fn connect(addr: SocketAddr) -> Self {
         Self {
             addr,
@@ -380,10 +407,13 @@ impl AgentClient {
         }
     }
 
+    /// A client for [`default_addr`].
     pub fn default_bind() -> Self {
         Self::connect(default_addr())
     }
 
+    /// Answer the host's challenge with `token` (HMAC, never raw on the wire).
+    #[must_use]
     pub fn with_token(mut self, token: impl Into<String>) -> Self {
         self.token = Some(token.into());
         self
@@ -392,20 +422,25 @@ impl AgentClient {
     /// Send capability-gated ops as written, without local refusal or
     /// `invoke` rewriting. After reconnecting, the client still refreshes
     /// `hello.features` before parsing a reply.
+    #[must_use]
     pub fn as_written(mut self) -> Self {
         self.as_written = true;
         self
     }
 
+    /// Set the connect/request timeout.
+    #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
+    /// The configured timeout.
     pub fn timeout(&self) -> Duration {
         self.timeout
     }
 
+    /// Set the connect/request timeout in place.
     pub fn set_timeout(&mut self, timeout: Duration) {
         self.timeout = timeout;
     }
@@ -439,11 +474,29 @@ impl AgentClient {
         self.drop_session();
     }
 
+    /// Send `op` and return the reply (`ok: false` included).
+    ///
+    /// # Errors
+    ///
+    /// A transport failure (the host's error string is on `resp.error`,
+    /// not returned).
+    #[expect(clippy::needless_pass_by_value, reason = "public API since 0.3.0; a reference changes callers")]
+    /// Send `op` and return the reply (`ok: false` included).
+    ///
+    /// # Errors
+    ///
+    /// A transport failure (the host's error string is on `resp.error`,
+    /// not returned).
     pub fn rpc(&mut self, op: Op) -> Result<Response, String> {
         self.rpc_op(&op)
     }
 
     /// Like [`rpc`](Self::rpc) but does not take ownership of `op`.
+    /// Like [`rpc`](Self::rpc) but does not take ownership of `op`.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure (the host's error string is on `resp.error`).
     pub fn rpc_op(&mut self, op: &Op) -> Result<Response, String> {
         Ok(self.roundtrip_retry(op)?)
     }
@@ -459,6 +512,10 @@ impl AgentClient {
     /// After any request line is written, a transport error is **not** retried
     /// (the host may already have run prefix ops). Connect failures before
     /// the first write still retry until [`Self::with_timeout`].
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn rpc_pipeline(&mut self, ops: &[&Op]) -> Result<Vec<Response>, String> {
         if ops.is_empty() {
             return Ok(Vec::new());
@@ -499,6 +556,12 @@ impl AgentClient {
     ///
     /// This is the historical CLI shape (one TCP handshake per op) and
     /// exists so benches can compare it with session reuse.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure (the host's error string is on `resp.error`,
+    /// not returned).
+    #[expect(clippy::needless_pass_by_value, reason = "public API since 0.3.0; a reference changes callers")]
     pub fn rpc_once(&mut self, op: Op) -> Result<Response, String> {
         self.drop_session();
         let resp = self.roundtrip_retry(&op)?;
@@ -798,7 +861,7 @@ impl AgentClient {
     ) -> Result<Vec<Response>, String> {
         self.drop_idle_session();
         let start_id = self.next_id;
-        self.next_id += ops.len() as u64;
+        self.next_id += u64::try_from(ops.len()).unwrap_or(u64::MAX);
         let mut last_err = String::new();
         let connect_deadline = Instant::now() + self.timeout;
         while Instant::now() < connect_deadline {
@@ -877,6 +940,12 @@ impl AgentClient {
         }
     }
 
+    /// [`rpc`](Self::rpc) that turns `ok: false` into an `Err` of the host's
+    /// error string.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn expect_ok(&mut self, op: Op) -> Result<Response, String> {
         let resp = self.rpc(op)?;
         if resp.ok {
@@ -886,6 +955,11 @@ impl AgentClient {
         }
     }
 
+    /// A full `snapshot` (the v2 JSON tree).
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn snapshot(&mut self) -> Result<Response, String> {
         self.expect_ok(Op::snapshot())
     }
@@ -893,6 +967,10 @@ impl AgentClient {
     /// Parameterized snapshot: `since` asks for a diff against a held
     /// revision, `format` selects json/compact (M3). `None`/`None` is
     /// the v1 byte-identical op.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn snapshot_with(
         &mut self,
         since: Option<u64>,
@@ -906,11 +984,19 @@ impl AgentClient {
     }
 
     /// Observe-only PNG of the app surface. `path` is on the host machine.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn screenshot(&mut self, path: impl Into<String>) -> Result<Response, String> {
         self.expect_ok(Op::screenshot(path))
     }
 
     /// Opt-in tall capture of a named scroller (`mode=scrolled`).
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn screenshot_scrolled(
         &mut self,
         path: impl Into<String>,
@@ -920,6 +1006,11 @@ impl AgentClient {
         self.expect_ok(Op::screenshot_scrolled(path, target, max_height_px))
     }
 
+    /// Fully parameterized `screenshot` (`mode`, `target`, `max_height_px`).
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn screenshot_with(
         &mut self,
         path: impl Into<String>,
@@ -939,6 +1030,10 @@ impl AgentClient {
     /// Capture the app surface and return the PNG bytes over the wire,
     /// for hosts whose files this machine cannot read (a device, a
     /// browser). Needs the `screenshot_inline` feature.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn screenshot_bytes(
         &mut self,
         mode: ScreenshotMode,
@@ -951,6 +1046,10 @@ impl AgentClient {
 
     /// Typed [`screenshot_bytes`](Self::screenshot_bytes): host failures
     /// retain their stable code, hint, and any action delivery status.
+    ///
+    /// # Errors
+    ///
+    /// A [`CallFailure`] on `ok: false` or transport failure.
     pub fn screenshot_bytes_call(
         &mut self,
         mode: ScreenshotMode,
@@ -979,8 +1078,12 @@ impl AgentClient {
         let chunks = blob
             .get("chunks")
             .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| CallFailure::from_message("screenshot blob has no chunk count"))?
-            as u32;
+            .ok_or_else(|| CallFailure::from_message("screenshot blob has no chunk count"))
+            .and_then(|count| {
+                u32::try_from(count).map_err(|_| {
+                    CallFailure::from_message("screenshot blob chunk count exceeds u32")
+                })
+            })?;
         let mut bytes = Vec::new();
         for index in 0..chunks {
             let chunk = self.call(&Op::Blob {
@@ -1018,6 +1121,10 @@ impl AgentClient {
     }
 
     /// The host's `hello.features`, asked once per connection.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn features(&mut self) -> Result<&[String], String> {
         if self.features.is_none() {
             let hello = self
@@ -1035,6 +1142,11 @@ impl AgentClient {
     /// a host built against gpui-agent 0.1 gets the `invoke` spelling it
     /// knew, where one exists; otherwise the call fails with
     /// `unsupported_op` and nothing is sent.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
+    #[expect(clippy::needless_pass_by_value, reason = "public API since 0.3.0; a reference changes callers")]
     pub fn gated(&mut self, op: Op) -> Result<Response, String> {
         let response = if op.feature().is_some() {
             self.roundtrip_gated_retry(&op)?
@@ -1050,6 +1162,10 @@ impl AgentClient {
 
     /// [`gated`](Self::gated) for callers that keep the failed response
     /// (the recipe runner's receipts): `ok: false` is returned, not an `Err`.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure (the host's error string is on `resp.error`).
     pub fn rpc_gated(&mut self, op: &Op) -> Result<Response, String> {
         if op.feature().is_some() {
             Ok(self.roundtrip_gated_retry(op)?)
@@ -1062,6 +1178,10 @@ impl AgentClient {
     /// included, comes back as `Ok` with `error_code`/`hint` set and, for an
     /// op that [acts](Op::acts), a `delivery_status`. A transport failure
     /// is a [`CallFailure`] that says whether the request may have run.
+    ///
+    /// # Errors
+    ///
+    /// A [`CallFailure`] on `ok: false` or transport failure.
     pub fn call_response(&mut self, op: &Op) -> Result<Response, CallFailure> {
         let sent = if op.feature().is_some() {
             self.roundtrip_gated_retry(op)
@@ -1086,6 +1206,10 @@ impl AgentClient {
 
     /// [`call_response`](Self::call_response) that turns `ok: false` into
     /// a [`CallFailure`] too.
+    ///
+    /// # Errors
+    ///
+    /// A [`CallFailure`] on `ok: false` or transport failure.
     pub fn call(&mut self, op: &Op) -> Result<Response, CallFailure> {
         let resp = self.call_response(op)?;
         if resp.ok {
@@ -1105,6 +1229,11 @@ impl AgentClient {
     /// the first read fails with `not_found` and `not_delivered`, and the
     /// action is not sent. On a [secret](crate::tree::UiNode::is_secret)
     /// target `after` says whether the value changed, never what it is.
+    ///
+    /// # Errors
+    ///
+    /// A [`CallFailure`] on `ok: false` or transport failure.
+    #[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether to verify the action with a read-back")]
     pub fn act(&mut self, op: &Op, read_back: bool) -> Result<Response, CallFailure> {
         let Some(target) = op.read_back_target().filter(|_| read_back) else {
             return self.call(op);
@@ -1175,6 +1304,10 @@ impl AgentClient {
     /// it. A wait that is not met fails with the host's `wait_until`
     /// error; the failure has no `delivery_status`, since the action itself
     /// has already been answered: callers set it from that reply.
+    ///
+    /// # Errors
+    ///
+    /// A [`CallFailure`] on `ok: false` or transport failure.
     pub fn wait_after(&mut self, wait: &WaitFor, timeout_ms: u64) -> Result<String, CallFailure> {
         self.call(&Op::wait_until(wait.spec(), timeout_ms))?;
         let snap = self.call(&Op::snapshot())?;
@@ -1228,10 +1361,20 @@ impl AgentClient {
             .ok_or_else(|| crate::protocol::unsupported_op(feature))
     }
 
+    /// A semantic `click` on `target`.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn click(&mut self, target: impl Into<String>) -> Result<Response, String> {
         self.click_with_delivery(target, DeliveryMode::Semantic)
     }
 
+    /// A `click` on `target` delivered by `delivery`.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn click_with_delivery(
         &mut self,
         target: impl Into<String>,
@@ -1244,6 +1387,11 @@ impl AgentClient {
         })
     }
 
+    /// A semantic `type` of `text` into `target`.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn type_text(
         &mut self,
         target: impl Into<String>,
@@ -1252,6 +1400,11 @@ impl AgentClient {
         self.type_with_delivery(target, text, DeliveryMode::Semantic)
     }
 
+    /// A `type` of `text` into `target` delivered by `delivery`.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn type_with_delivery(
         &mut self,
         target: impl Into<String>,
@@ -1266,6 +1419,11 @@ impl AgentClient {
         })
     }
 
+    /// A semantic `key` press on `target`.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn key(
         &mut self,
         target: impl Into<String>,
@@ -1274,6 +1432,11 @@ impl AgentClient {
         self.key_with_delivery(target, key, DeliveryMode::Semantic)
     }
 
+    /// A `key` press on `target` delivered by `delivery`.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn key_with_delivery(
         &mut self,
         target: impl Into<String>,
@@ -1288,6 +1451,11 @@ impl AgentClient {
         })
     }
 
+    /// A `set_value` on `target`.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn set_value(
         &mut self,
         target: impl Into<String>,
@@ -1300,10 +1468,20 @@ impl AgentClient {
         })
     }
 
+    /// Check a node against `spec` (a failure is `assert_failed`).
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn assert(&mut self, spec: AssertSpec) -> Result<Response, String> {
         self.expect_ok(Op::Assert { spec })
     }
 
+    /// `invoke` a host-registered named action with JSON `args`.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn invoke(
         &mut self,
         name: impl Into<String>,
@@ -1315,14 +1493,29 @@ impl AgentClient {
         })
     }
 
+    /// Poll until `hello.ready` (the host's default timeout).
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn wait_ready(&mut self) -> Result<Response, String> {
         self.expect_ok(Op::Wait { timeout_ms: None })
     }
 
+    /// Poll `spec` until it holds or `timeout_ms` elapses.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn wait_until(&mut self, spec: AssertSpec, timeout_ms: u64) -> Result<Response, String> {
         self.expect_ok(Op::WaitUntil { timeout_ms, spec })
     }
 
+    /// The host's registered Action-id keybindings.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn keybindings(&mut self) -> Result<Response, String> {
         self.expect_ok(Op::Keybindings)
     }
@@ -1330,6 +1523,10 @@ impl AgentClient {
     /// `keybindings` result parsed to a catalog (`null`/absent → empty).
     /// Shared by the policy runner and MCP `act` so neither re-parses
     /// the `{"keybindings":[…]}` envelope itself.
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn keybinding_catalog(&mut self) -> Result<Vec<crate::keybinding::KeybindingInfo>, String> {
         let resp = self.keybindings()?;
         crate::keybinding::KeybindingInfo::catalog_from(resp.result.as_ref())
@@ -1339,6 +1536,10 @@ impl AgentClient {
     /// `since` returns events with `seq > N` (`None` → all retained);
     /// the reply's `latest` is the cursor for the next poll. Fails on
     /// hosts without a ring ("events unsupported on this host").
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
     pub fn events(
         &mut self,
         since: Option<u64>,
@@ -1349,6 +1550,12 @@ impl AgentClient {
             .map_err(|err| format!("bad events response: {err}"))
     }
 
+    /// Fire a `keybinding` Action (optionally `confirm`-gated, `activate`d).
+    ///
+    /// # Errors
+    ///
+    /// A transport failure, or the host's error on `ok: false`.
+    #[expect(clippy::fn_params_excessive_bools, reason = "confirm and activate are wire flags of the op")]
     pub fn keybinding(
         &mut self,
         binding: impl Into<String>,
@@ -1399,6 +1606,7 @@ impl WaitFor {
 /// and `not_delivered`; a written request with no usable reply means
 /// `no_reply` and `delivery_uncertain`, unless the text names a refusal
 /// (an unauthenticated challenge, a client-side `unsupported_op`).
+#[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether the op was an action (sets delivery status)")]
 fn transport_failure(err: SendError, acts: bool) -> CallFailure {
     let mut code = error_code_of(&err.message);
     if code == error_code::HOST_ERROR || (!err.sent && code == error_code::NO_REPLY) {
@@ -1460,6 +1668,7 @@ fn read_target(snap: &Response, target: &str) -> Option<(Option<u64>, Target)> {
     Some((rev, state))
 }
 
+#[expect(clippy::fn_params_excessive_bools, reason = "one flag: mask secret values for hosts predating host-side redaction")]
 fn parse_response_line(line: &[u8], legacy_secret_redaction: bool) -> Result<Response, String> {
     if parse_challenge_line(line).is_ok() {
         return Err("automation token required".into());
@@ -1906,6 +2115,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines, reason = "a scripted two-phase fixture conversation")]
     fn pipeline_relearns_features_after_reconnect() {
         fn read_request(reader: &mut BufReader<std::net::TcpStream>) -> serde_json::Value {
             let mut line = String::new();
@@ -2112,13 +2322,13 @@ mod tests {
             })),
             Some(serde_json::json!({
                 "ok": true,
-                "tree": tree.clone(),
-                "fingerprints": fingerprints.clone()
+                "tree": tree,
+                "fingerprints": fingerprints
             })),
             Some(serde_json::json!({
                 "ok": true,
                 "result": { "diff": { "added": [], "removed": [], "changed": [] } },
-                "fingerprints": fingerprints.clone()
+                "fingerprints": fingerprints
             })),
             Some(serde_json::json!({
                 "ok": true,

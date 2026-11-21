@@ -12,14 +12,23 @@ pub const PROTOCOL_VERSION: u32 = 2;
 /// so later hosts can speak the same messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum PlatformKind {
+    /// A host on a desktop OS (macOS, Linux, Windows).
     Desktop,
+    /// A host with no window server (CI, tests, todo-headless).
     Headless,
+    /// Reserved for a browser host; not implemented in this repository.
     Web,
+    /// Reserved for a phone/tablet host; not implemented in this repository.
     Mobile,
 }
 
 impl PlatformKind {
+    /// The `snake_case` wire spelling.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Desktop => "desktop",
@@ -30,15 +39,21 @@ impl PlatformKind {
     }
 }
 
+/// One NDJSON line a client sends a host: envelope plus [`Op`].
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Request {
+    /// Wire format version — [`PROTOCOL_VERSION`].
     pub v: u32,
+    /// Caller-chosen correlation id, echoed back in the [`Response`].
     pub id: String,
+    /// The raw shared token — legacy field. Hosts that enforce a token
+    /// reject requests that send one; [`Self::auth`] is the accepted proof.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
     /// HMAC-SHA256(token, session nonce) as lowercase hex. Never the raw token.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<String>,
+    /// The operation to run.
     #[serde(flatten)]
     pub op: Op,
 }
@@ -61,13 +76,20 @@ impl fmt::Debug for Request {
 /// synthesizes GPUI pointer/key events on the UI thread — never OS HID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum DeliveryMode {
+    /// Call the widget handler by stable id (the default).
     #[default]
     Semantic,
+    /// Synthesize GPUI pointer/key events on the UI thread — never OS HID.
     Virtual,
 }
 
 impl DeliveryMode {
+    /// The `snake_case` wire spelling.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Semantic => "semantic",
@@ -75,10 +97,12 @@ impl DeliveryMode {
         }
     }
 
+    /// `true` for [`DeliveryMode::Semantic`].
     pub fn is_semantic(&self) -> bool {
         matches!(self, Self::Semantic)
     }
 
+    /// `true` for [`DeliveryMode::Virtual`].
     pub fn is_virtual(&self) -> bool {
         matches!(self, Self::Virtual)
     }
@@ -111,12 +135,19 @@ impl std::str::FromStr for DeliveryMode {
 /// HID into another process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum KeybindingScope {
+    /// The app's focused-window keymap (requires OS focus unless `activate`).
     Focused,
+    /// The app's global keymap only — never OS HID into another process.
     Global,
 }
 
 impl KeybindingScope {
+    /// The `snake_case` wire spelling.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Focused => "focused",
@@ -152,13 +183,21 @@ impl std::str::FromStr for KeybindingScope {
 /// `render_to_image` or “full content including unloaded virtualized rows”.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum ScreenshotMode {
+    /// The painted window (the default).
     #[default]
     Viewport,
+    /// Scroll `target`, stitch tiles, restore the offset — not
+    /// `render_to_image`, and not unloaded virtualized rows.
     Scrolled,
 }
 
 impl ScreenshotMode {
+    /// The `snake_case` wire spelling.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Viewport => "viewport",
@@ -166,10 +205,12 @@ impl ScreenshotMode {
         }
     }
 
+    /// `true` for [`ScreenshotMode::Viewport`].
     pub fn is_viewport(&self) -> bool {
         matches!(self, Self::Viewport)
     }
 
+    /// `true` for [`ScreenshotMode::Scrolled`].
     pub fn is_scrolled(&self) -> bool {
         matches!(self, Self::Scrolled)
     }
@@ -195,6 +236,10 @@ impl std::str::FromStr for ScreenshotMode {
     }
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if requires a &T signature"
+)]
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -203,13 +248,26 @@ fn is_false(value: &bool) -> bool {
 /// `Compact` is the one-line-per-visible-node text for token-lean drivers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum SnapshotFormat {
+    /// The full v2 [`UiTree`].
     Json,
+    /// One line per visible node, for token-lean drivers.
     Compact,
 }
+/// The operation a [`Request`] asks the host to run: serialized as
+/// `"op": "<snake_case>"` plus the variant's fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum Op {
+    /// Handshake: the reply carries [`HelloInfo`].
     Hello,
     /// Read the semantic tree. `since` asks for a diff against a revision
     /// the client already holds; `format: "compact"` returns one line per
@@ -217,14 +275,17 @@ pub enum Op {
     /// adds an `id → UiNode::fingerprint` map (M5). Omitting all three
     /// keeps the v2 response byte-identical.
     Snapshot {
+        /// Return a diff against this revision instead of the full tree.
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
             deserialize_with = "integers::optional_u64"
         )]
         since: Option<u64>,
+        /// Response shape (`json` or `compact`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         format: Option<SnapshotFormat>,
+        /// Include an `id → fingerprint` map in the response.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fingerprints: Option<bool>,
     },
@@ -237,12 +298,14 @@ pub enum Op {
     /// `{"events":[{seq,level,target,message}…],"latest":N,"lagged":bool}`.
     /// Hosts without a ring fail closed with "events unsupported".
     Events {
+        /// Return events with `seq` greater than this (`null` → all retained).
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
             deserialize_with = "integers::optional_u64"
         )]
         since: Option<u64>,
+        /// Max events to return (default 256, capped at the ring's capacity).
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
@@ -250,9 +313,12 @@ pub enum Op {
         )]
         limit: Option<u32>,
     },
+    /// Activate a node by stable id or visible text.
     Click {
+        /// The node to activate (stable id or visible text).
         target: String,
         /// Omitted / `semantic` is v1. `virtual` is the in-window event path.
+        /// `semantic` (default) or `virtual` in-window events.
         #[serde(default, skip_serializing_if = "DeliveryMode::is_semantic")]
         delivery: DeliveryMode,
         /// M5 staleness gate: the host recomputes
@@ -266,9 +332,13 @@ pub enum Op {
         )]
         expect_fingerprint: Option<u64>,
     },
+    /// Send text input to an editable node.
     Type {
+        /// The editable node (stable id or visible text).
         target: String,
+        /// The text to input.
         text: String,
+        /// `semantic` (default) or `virtual` in-window events.
         #[serde(default, skip_serializing_if = "DeliveryMode::is_semantic")]
         delivery: DeliveryMode,
         #[serde(
@@ -276,21 +346,30 @@ pub enum Op {
             skip_serializing_if = "Option::is_none",
             deserialize_with = "integers::optional_u64"
         )]
+        /// The M5 staleness gate: recompute `UiNode::fingerprint`; mismatch → `stale_target`.
         expect_fingerprint: Option<u64>,
     },
+    /// Set a node's `value` without simulating key-by-key input.
     SetValue {
+        /// The node to set (stable id or visible text).
         target: String,
+        /// The value to set.
         value: String,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
             deserialize_with = "integers::optional_u64"
         )]
+        /// The M5 staleness gate: recompute `UiNode::fingerprint`; mismatch → `stale_target`.
         expect_fingerprint: Option<u64>,
     },
+    /// Send one key press (a GPUI key name) to a node.
     Key {
+        /// The focused node (stable id or visible text).
         target: String,
+        /// The key name (`enter`, `tab`, `escape`, …).
         key: String,
+        /// `semantic` (default) or `virtual` in-window events.
         #[serde(default, skip_serializing_if = "DeliveryMode::is_semantic")]
         delivery: DeliveryMode,
         #[serde(
@@ -298,6 +377,7 @@ pub enum Op {
             skip_serializing_if = "Option::is_none",
             deserialize_with = "integers::optional_u64"
         )]
+        /// The M5 staleness gate: recompute `UiNode::fingerprint`; mismatch → `stale_target`.
         expect_fingerprint: Option<u64>,
     },
     /// Fire a GPUI **Action** by stable id (keymap path). Never OS HID.
@@ -305,10 +385,15 @@ pub enum Op {
     /// Wire field is `binding` (not `id`) so it does not collide with the
     /// RPC correlation `id`. CLI/MCP `--id` maps here.
     Keybinding {
+        /// The Action's stable id (CLI/MCP `--id` maps here).
         binding: String,
+        /// Human-readable chord (`cmd-shift-p`); informational, the host
+        /// fires the Action regardless.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         chord: Option<String>,
+        /// `focused` or `global` (this app's maps only — never OS HID).
         scope: KeybindingScope,
+        /// When `true`, route through the app's confirmation path.
         #[serde(default, skip_serializing_if = "is_false")]
         confirm: bool,
         /// Opt-in host GPUI activate for `scope=focused` only. Default false.
@@ -320,16 +405,24 @@ pub enum Op {
     /// Alias `keybinding.list` is accepted on the wire.
     #[serde(alias = "keybinding.list")]
     Keybindings,
+    /// Check a node against an [`AssertSpec`]; failure is `assert_failed`.
     Assert {
+        /// The predicate to check.
         #[serde(flatten)]
         spec: AssertSpec,
     },
+    /// Call a host-registered named action with JSON `args` (the op the
+    /// gpui-agent 0.1 nsh adapter exposed; kept for backward compat).
     Invoke {
+        /// The registered action name.
         name: String,
+        /// JSON arguments for the action.
         #[serde(default)]
         args: serde_json::Value,
     },
+    /// Poll `hello.ready` until the app is ready or `timeout_ms` elapses.
     Wait {
+        /// Give up after this long (a host default applies when omitted).
         #[serde(default, deserialize_with = "integers::optional_u64")]
         timeout_ms: Option<u64>,
     },
@@ -338,11 +431,14 @@ pub enum Op {
     /// Distinct from [`Op::Wait`], which only polls `hello.ready` / first
     /// paint. Use this for toasts, overlays, and post-keybinding UI.
     WaitUntil {
+        /// Give up after this long (required).
         #[serde(deserialize_with = "integers::required_u64")]
         timeout_ms: u64,
+        /// The predicate to poll.
         #[serde(flatten)]
         spec: AssertSpec,
     },
+    /// Ask the host to shut down the app.
     Shutdown,
     /// Observe-only PNG of the app surface (not the full desktop).
     ///
@@ -357,8 +453,10 @@ pub enum Op {
     /// original offset. Default `mode` is `viewport` (unchanged).
     Screenshot {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Where the host writes the PNG.
         path: Option<String>,
         #[serde(default, skip_serializing_if = "ScreenshotMode::is_viewport")]
+        /// `viewport` (default) or `scrolled`.
         mode: ScreenshotMode,
         /// Required when `mode` is `scrolled`. Ignored for viewport.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -368,6 +466,7 @@ pub enum Op {
             skip_serializing_if = "Option::is_none",
             deserialize_with = "integers::optional_u32"
         )]
+        /// Cap on the stitched image height, in pixels.
         max_height_px: Option<u32>,
         /// Return the PNG to the client over the wire instead of only a
         /// host path: the response carries a `blob` handle the client
@@ -381,7 +480,9 @@ pub enum Op {
     /// fits the 1 MiB line cap. The host drops the blob after its last
     /// chunk is read.
     Blob {
+        /// The blob handle from the earlier `result.blob`.
         blob: String,
+        /// The zero-based chunk to read.
         #[serde(deserialize_with = "integers::required_u32")]
         index: u32,
     },
@@ -389,6 +490,7 @@ pub enum Op {
     /// platform delivers it: refused when the target is hidden, disabled,
     /// off screen or covered. Feature `press`.
     Press {
+        /// The node to press; omit for a raw `x`,`y` point.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<String>,
         #[serde(
@@ -396,39 +498,47 @@ pub enum Op {
             skip_serializing_if = "Option::is_none",
             deserialize_with = "points::optional"
         )]
+        /// X coordinate in logical points (with `y`; ignored when `target` is set).
         x: Option<f64>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
             deserialize_with = "points::optional"
         )]
+        /// Y coordinate in logical points.
         y: Option<f64>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
             deserialize_with = "integers::optional_u64"
         )]
+        /// The M5 staleness gate: recompute `UiNode::fingerprint`; mismatch → `stale_target`.
         expect_fingerprint: Option<u64>,
     },
     /// Scroll a scrollable node, or whatever is under a point, by a delta
     /// in logical points. Feature `scroll`.
     Scroll {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// The node to act on (stable id or visible text); omit for a point or the whole surface.
         target: Option<String>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
             deserialize_with = "points::optional"
         )]
+        /// X coordinate in logical points (with `y`; ignored when `target` is set).
         x: Option<f64>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
             deserialize_with = "points::optional"
         )]
+        /// Y coordinate in logical points.
         y: Option<f64>,
+        /// Horizontal delta in logical points.
         #[serde(default, deserialize_with = "points::required")]
         dx: f64,
+        /// Vertical delta in logical points.
         #[serde(default, deserialize_with = "points::required")]
         dy: f64,
     },
@@ -436,52 +546,62 @@ pub enum Op {
     /// (phones) do not list the `hover` feature.
     Hover {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// The node to act on (stable id or visible text); omit for a point or the whole surface.
         target: Option<String>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
             deserialize_with = "points::optional"
         )]
+        /// X coordinate in logical points (with `y`; ignored when `target` is set).
         x: Option<f64>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
             deserialize_with = "points::optional"
         )]
+        /// Y coordinate in logical points.
         y: Option<f64>,
     },
     /// Drag node `from` onto node `to`, or drag `target` (or the point
     /// `x`,`y`) by `dx`,`dy`. Feature `drag`.
     Drag {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// The node to start the drag on.
         from: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// The node to drop on.
         to: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// The node to act on (stable id or visible text); omit for a point or the whole surface.
         target: Option<String>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
             deserialize_with = "points::optional"
         )]
+        /// X coordinate in logical points (with `y`; ignored when `target` is set).
         x: Option<f64>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
             deserialize_with = "points::optional"
         )]
+        /// Y coordinate in logical points.
         y: Option<f64>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
             deserialize_with = "points::optional"
         )]
+        /// Horizontal delta in logical points.
         dx: Option<f64>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
             deserialize_with = "points::optional"
         )]
+        /// Vertical delta in logical points.
         dy: Option<f64>,
     },
     /// A one-finger swipe across a node (or the whole surface when
@@ -489,43 +609,52 @@ pub enum Op {
     /// picks a default. Feature `swipe`.
     Swipe {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// The node to act on (stable id or visible text); omit for a point or the whole surface.
         target: Option<String>,
+        /// Which way to swipe.
         direction: SwipeDirection,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
             deserialize_with = "points::optional"
         )]
+        /// Swipe distance in logical points (a host default applies when omitted).
         distance: Option<f64>,
     },
     /// Press and hold. Feature `long_press`.
     LongPress {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// The node to act on (stable id or visible text); omit for a point or the whole surface.
         target: Option<String>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
             deserialize_with = "points::optional"
         )]
+        /// X coordinate in logical points (with `y`; ignored when `target` is set).
         x: Option<f64>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
             deserialize_with = "points::optional"
         )]
+        /// Y coordinate in logical points.
         y: Option<f64>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
             deserialize_with = "integers::optional_u64"
         )]
+        /// How long to hold (a host default applies when omitted).
         duration_ms: Option<u64>,
     },
     /// Two-finger pinch centred on a node: `scale > 1` spreads, `< 1`
     /// pinches in. Feature `pinch`.
     Pinch {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// The node to act on (stable id or visible text); omit for a point or the whole surface.
         target: Option<String>,
+        /// Pinch scale: `> 1` spreads, `< 1` pinches in.
         #[serde(deserialize_with = "points::required")]
         scale: f64,
     },
@@ -538,25 +667,31 @@ pub enum Op {
             skip_serializing_if = "Option::is_none",
             deserialize_with = "points::optional"
         )]
+        /// Content width in logical points.
         width: Option<f64>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
             deserialize_with = "points::optional"
         )]
+        /// Content height in logical points.
         height: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// A host-named size preset (`phone`, `tablet`, `desktop`).
         preset: Option<String>,
     },
     /// Insert text into an editable node as a paste does (one edit, not
     /// key by key). Feature `paste`.
     Paste {
+        /// The node to act on (stable id or visible text); omit for a point or the whole surface.
         target: String,
+        /// The text to input/insert.
         text: String,
     },
     /// A device or system action outside the app's own tree. Each action
     /// is its own feature: `system.back`, `system.rotate`, …
     System {
+        /// The system action to run.
         action: SystemAction,
         /// `rotate`: `portrait` or `landscape`. `open_url`: the URL.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -566,14 +701,24 @@ pub enum Op {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
+/// The direction of a [`Op::Swipe`] gesture.
 pub enum SwipeDirection {
+    /// Toward the top of the surface.
     Up,
+    /// Toward the bottom of the surface.
     Down,
+    /// Toward the left of the surface.
     Left,
+    /// Toward the right of the surface.
     Right,
 }
 
 impl SwipeDirection {
+    /// The `snake_case` wire spelling.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Up => "up",
@@ -602,18 +747,32 @@ impl std::str::FromStr for SwipeDirection {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
+/// A device or system action outside the app's own tree (see [`Op::System`]).
 pub enum SystemAction {
+    /// System back (the Android back button/gesture).
     Back,
+    /// Go to the device's home screen.
     Home,
+    /// Rotate the device; `value` is `portrait` or `landscape`.
     Rotate,
+    /// Show the on-screen keyboard.
     KeyboardShow,
+    /// Hide the on-screen keyboard.
     KeyboardHide,
+    /// Send the app to the background.
     Background,
+    /// Bring the app back to the foreground.
     Foreground,
+    /// Open the URL carried in `value`.
     OpenUrl,
 }
 
 impl SystemAction {
+    /// Every action, in declaration order.
     pub const ALL: [Self; 8] = [
         Self::Back,
         Self::Home,
@@ -625,6 +784,7 @@ impl SystemAction {
         Self::OpenUrl,
     ];
 
+    /// The `snake_case` wire spelling.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Back => "back",
@@ -673,7 +833,7 @@ impl std::str::FromStr for SystemAction {
 /// Float fields of [`Op`] are read through `serde_json::Value`.
 ///
 /// `Request` flattens `Op`, so serde buffers the fields before it reads
-/// them. A host whose build turns on serde_json's `arbitrary_precision`
+/// them. A host whose build turns on `serde_json`'s `arbitrary_precision`
 /// (any crate in its dependency graph can) buffers a float as a map, and a
 /// plain `f64` field then fails with `invalid type: map, expected f64`.
 mod points {
@@ -686,11 +846,11 @@ mod points {
             .ok_or_else(|| E::custom(format!("expected a finite number, got {value}")))
     }
 
-    pub fn required<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+    pub(super) fn required<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
         finite(&serde_json::Value::deserialize(deserializer)?)
     }
 
-    pub fn optional<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Error> {
+    pub(super) fn optional<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Error> {
         match serde_json::Value::deserialize(deserializer)? {
             serde_json::Value::Null => Ok(None),
             value => finite(&value).map(Some),
@@ -722,11 +882,11 @@ mod integers {
         }
     }
 
-    pub fn required_u64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    pub(super) fn required_u64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
         unsigned(serde_json::Value::deserialize(deserializer)?)
     }
 
-    pub fn optional_u64<'de, D: Deserializer<'de>>(
+    pub(super) fn optional_u64<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Option<u64>, D::Error> {
         match serde_json::Value::deserialize(deserializer)? {
@@ -735,12 +895,12 @@ mod integers {
         }
     }
 
-    pub fn required_u32<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+    pub(super) fn required_u32<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
         u32::try_from(required_u64(deserializer)?)
             .map_err(|_| D::Error::custom("unsigned integer exceeds u32"))
     }
 
-    pub fn optional_u32<'de, D: Deserializer<'de>>(
+    pub(super) fn optional_u32<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Option<u32>, D::Error> {
         optional_u64(deserializer)?
@@ -755,10 +915,13 @@ mod integers {
 /// (`unsupported_op: <feature>`). Stable: match the prefix, not the wording.
 pub const UNSUPPORTED_OP: &str = "unsupported_op";
 
+/// The `unsupported_op: <feature>` error a host returns for an op it
+/// does not implement.
 pub fn unsupported_op(feature: &str) -> String {
     format!("{UNSUPPORTED_OP}: this host does not list `{feature}` in hello.features")
 }
 
+/// `true` when `error` is an [`UNSUPPORTED_OP`] refusal.
 pub fn is_unsupported_op(error: &str) -> bool {
     error.starts_with(UNSUPPORTED_OP)
 }
@@ -779,6 +942,7 @@ pub struct DeviceInfo {
     /// Content size in logical points.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<f64>,
+    /// Content height in logical points.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<f64>,
     /// `portrait` or `landscape`.
@@ -793,17 +957,26 @@ pub struct DeviceInfo {
     pub input: Option<String>,
 }
 
+/// The predicate [`Op::Assert`] and [`Op::WaitUntil`] check a node
+/// against: each `Some` field must match for the assert to pass.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AssertSpec {
+    /// The node to check (stable id or visible text).
     pub target: String,
+    /// Expected `UiNode::name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Expected `UiNode::value` (never echoed back for secret nodes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    /// Expected `UiNode::role`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Expected `UiNode::checked`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checked: Option<bool>,
+    /// `true` requires the node to be present (the default), `false`
+    /// requires it absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exists: Option<bool>,
     /// Host-declared visibility (`UiNode.visible`). Distinct from `exists`
@@ -817,17 +990,25 @@ pub struct AssertSpec {
     pub in_viewport: Option<bool>,
 }
 
+/// One NDJSON line a host sends back for a [`Request`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Response {
+    /// Wire format version — [`PROTOCOL_VERSION`].
     pub v: u32,
+    /// The request's `id`, echoed.
     pub id: String,
+    /// `true` when the op ran to completion.
     pub ok: bool,
+    /// Human-readable failure (the stable form is [`Self::error_code`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The [`Op::Hello`] reply.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hello: Option<HelloInfo>,
+    /// The [`Op::Snapshot`] tree.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tree: Option<UiTree>,
+    /// Op-specific payload (`events`, `blob`, receipt fields, …).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
     /// `id → UiNode::fingerprint` map — present only when the request
@@ -858,13 +1039,18 @@ pub struct Response {
 /// Target state read back after an action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadBack {
+    /// Whether the target is still in the tree.
     pub exists: bool,
+    /// The target's `UiNode::value` after the action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    /// The target's `UiNode::checked` after the action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checked: Option<bool>,
+    /// The target's `UiNode::focused` after the action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focused: Option<bool>,
+    /// The target's `UiNode::enabled` after the action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     /// The target's state differs from the snapshot taken before the
@@ -880,13 +1066,20 @@ pub struct ReadBack {
 /// CLI `recipe run` and `mcp` still require a client token either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum HelloAuth {
+    /// The host accepts unauthenticated requests.
     #[default]
     None,
+    /// Every request must prove the configured token.
     Required,
 }
 
 impl HelloAuth {
+    /// `Required` when `token` is `Some` (a token is configured), else `None`.
     pub fn from_token_configured(token: Option<&str>) -> Self {
         if token.is_some() {
             Self::Required
@@ -895,6 +1088,7 @@ impl HelloAuth {
         }
     }
 
+    /// The `snake_case` wire spelling.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
@@ -903,10 +1097,14 @@ impl HelloAuth {
     }
 }
 
+/// The reply to [`Op::Hello`]: who the host is and what it can do.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HelloInfo {
+    /// The wire version the host speaks ([`PROTOCOL_VERSION`]).
     pub protocol: u32,
+    /// The application name the host reports.
     pub app: String,
+    /// The runtime kind the host reports ([`PlatformKind`]).
     pub platform: PlatformKind,
     /// The host's operating system (`std::env::consts::OS`: `macos`, `linux`,
     /// `windows`, …). `platform` says *what kind* of host answered; `os` says
@@ -914,6 +1112,7 @@ pub struct HelloInfo {
     /// host that happens to be forwarded to the same loopback port.
     #[serde(default = "host_os")]
     pub os: String,
+    /// `true` once the app is ready to take ops (first paint).
     pub ready: bool,
     /// Input delivery modes this host actually implements.
     /// Headless typically lists only `semantic`. Desktop GPUI lists both.
@@ -937,6 +1136,7 @@ pub struct HelloInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub framework: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// What the app runs on; every sub-field optional.
     pub device: Option<DeviceInfo>,
 }
 
@@ -946,6 +1146,7 @@ pub fn host_os() -> String {
 }
 
 impl Request {
+    /// A request for `op` at [`PROTOCOL_VERSION`] with no credentials.
     pub fn new(id: impl Into<String>, op: Op) -> Self {
         Self {
             v: PROTOCOL_VERSION,
@@ -956,11 +1157,15 @@ impl Request {
         }
     }
 
+    /// Attach the raw shared token (legacy hosts; see [`Request::token`]).
+    #[must_use]
     pub fn with_token(mut self, token: impl Into<String>) -> Self {
         self.token = Some(token.into());
         self
     }
 
+    /// Attach the HMAC proof (see [`Request::auth`]).
+    #[must_use]
     pub fn with_auth(mut self, auth: impl Into<String>) -> Self {
         self.auth = Some(auth.into());
         self
@@ -968,6 +1173,7 @@ impl Request {
 }
 
 impl Op {
+    /// `Op::Snapshot` with all options unset (the plain v2 JSON tree).
     pub fn snapshot() -> Self {
         Self::Snapshot {
             since: None,
@@ -976,6 +1182,7 @@ impl Op {
         }
     }
 
+    /// A `snapshot` diff against `rev` the client already holds.
     pub fn snapshot_since(rev: u64, format: Option<SnapshotFormat>) -> Self {
         Self::Snapshot {
             since: Some(rev),
@@ -984,6 +1191,7 @@ impl Op {
         }
     }
 
+    /// A semantic `click` on `target`.
     pub fn click(target: impl Into<String>) -> Self {
         Self::Click {
             target: target.into(),
@@ -992,6 +1200,7 @@ impl Op {
         }
     }
 
+    /// A `click` on `target` delivered as in-window pointer events.
     pub fn click_virtual(target: impl Into<String>) -> Self {
         Self::Click {
             target: target.into(),
@@ -1000,6 +1209,7 @@ impl Op {
         }
     }
 
+    /// A semantic `type` of `text` into `target`.
     pub fn type_text(target: impl Into<String>, text: impl Into<String>) -> Self {
         Self::Type {
             target: target.into(),
@@ -1009,6 +1219,7 @@ impl Op {
         }
     }
 
+    /// A `type` of `text` delivered as in-window key events.
     pub fn type_text_virtual(target: impl Into<String>, text: impl Into<String>) -> Self {
         Self::Type {
             target: target.into(),
@@ -1018,6 +1229,7 @@ impl Op {
         }
     }
 
+    /// A semantic `key` press on `target`.
     pub fn key(target: impl Into<String>, key: impl Into<String>) -> Self {
         Self::Key {
             target: target.into(),
@@ -1027,6 +1239,7 @@ impl Op {
         }
     }
 
+    /// A `key` press delivered as in-window key events.
     pub fn key_virtual(target: impl Into<String>, key: impl Into<String>) -> Self {
         Self::Key {
             target: target.into(),
@@ -1038,6 +1251,7 @@ impl Op {
 
     /// Attach the M5 `expect_fingerprint` gate to a mutating op
     /// (`click`/`press`/`type`/`set_value`/`key`); a no-op for other variants.
+    #[must_use]
     pub fn with_fingerprint(self, fingerprint: u64) -> Self {
         match self {
             Self::Click {
@@ -1107,8 +1321,8 @@ impl Op {
                 target,
                 expect_fingerprint: Some(fp),
                 ..
-            } => Some((target.as_str(), *fp)),
-            Self::Press {
+            }
+            | Self::Press {
                 target: Some(target),
                 expect_fingerprint: Some(fp),
                 ..
@@ -1117,6 +1331,7 @@ impl Op {
         }
     }
 
+    /// A `keybinding` fire for `binding` at `scope` (no confirm/activate).
     pub fn keybinding(binding: impl Into<String>, scope: KeybindingScope) -> Self {
         Self::Keybinding {
             binding: binding.into(),
@@ -1127,10 +1342,12 @@ impl Op {
         }
     }
 
+    /// `true` for [`Op::Keybinding`] and [`Op::Keybindings`].
     pub fn is_keybinding(&self) -> bool {
         matches!(self, Self::Keybinding { .. } | Self::Keybindings)
     }
 
+    /// A viewport `screenshot` written to `path` on the host.
     pub fn screenshot(path: impl Into<String>) -> Self {
         Self::Screenshot {
             path: Some(path.into()),
@@ -1141,6 +1358,8 @@ impl Op {
         }
     }
 
+    /// A `scrolled` `screenshot` of `target` stitched to `path`, capped at
+    /// `max_height_px`.
     pub fn screenshot_scrolled(
         path: impl Into<String>,
         target: impl Into<String>,
@@ -1289,10 +1508,13 @@ impl Op {
         })
     }
 
+    /// A [`Op::WaitUntil`] for `spec` bounded by `timeout_ms`.
     pub fn wait_until(spec: AssertSpec, timeout_ms: u64) -> Self {
         Self::WaitUntil { timeout_ms, spec }
     }
 
+    /// The [`DeliveryMode`] this op asks for; `Semantic` for ops that
+    /// carry none.
     pub fn delivery(&self) -> DeliveryMode {
         match self {
             Self::Click { delivery, .. }
@@ -1302,6 +1524,7 @@ impl Op {
         }
     }
 
+    /// `true` for `click`/`type`/`key` with `delivery = virtual`.
     pub fn is_virtual_input(&self) -> bool {
         matches!(
             self,
@@ -1351,6 +1574,7 @@ impl Op {
 }
 
 impl Response {
+    /// An `ok: true` envelope for `id` with no payload.
     pub fn ok(id: impl Into<String>) -> Self {
         Self {
             v: PROTOCOL_VERSION,
@@ -1369,6 +1593,7 @@ impl Response {
         }
     }
 
+    /// An `ok: false` envelope carrying `error`.
     pub fn err(id: impl Into<String>, error: impl Into<String>) -> Self {
         Self {
             v: PROTOCOL_VERSION,
@@ -1425,6 +1650,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a table of (op, field) cases beats indirection"
+    )]
     fn flattened_op_integers_accept_private_number_maps_and_plain_values() {
         let cases = [
             (

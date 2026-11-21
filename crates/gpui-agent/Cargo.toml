@@ -21,6 +21,9 @@ base64 = "0.22"
 [dev-dependencies]
 criterion = "0.5"
 
+[lints]
+workspace = true
+
 [[bench]]
 name = "agent_perf"
 harness = false
