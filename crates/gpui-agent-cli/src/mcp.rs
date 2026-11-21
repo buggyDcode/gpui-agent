@@ -1449,7 +1449,10 @@ mod tests {
             .iter()
             .filter_map(|t| t.get("name").and_then(Value::as_str))
             .collect();
-        #[cfg_attr(not(feature = "instinct"), allow(unused_mut))]
+        #[cfg_attr(
+            not(feature = "instinct"),
+            expect(unused_mut, reason = "instinct-only push keeps the same list mutable")
+        )]
         let mut expected = vec![
             "wait",
             "wait_until",
