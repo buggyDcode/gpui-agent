@@ -1,3 +1,5 @@
+//! TCP host end-to-end tests: CRUD and keybinding ops over a live socket.
+
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -12,7 +14,7 @@ use todo_core::ids;
 fn agent_can_create_toggle_delete_over_tcp() {
     let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
     let (addr, shutdown) =
-        spawn_host("127.0.0.1:0".parse().unwrap(), None, store.clone()).expect("bind");
+        spawn_host("127.0.0.1:0".parse().unwrap(), None, Arc::clone(&store)).expect("bind");
 
     let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(3));
     client.wait_ready().expect("hello");
@@ -157,7 +159,7 @@ fn agent_can_list_and_fire_keybindings_over_tcp() {
 
     let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
     let (addr, shutdown) =
-        spawn_host("127.0.0.1:0".parse().unwrap(), None, store.clone()).expect("bind");
+        spawn_host("127.0.0.1:0".parse().unwrap(), None, Arc::clone(&store)).expect("bind");
     let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(3));
     client.wait_ready().expect("hello");
 
