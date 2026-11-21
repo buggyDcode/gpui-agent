@@ -43,6 +43,11 @@ jobs:
         run: cargo clippy --workspace --exclude todo --all-targets -- -D warnings
       - name: Clippy (all features)
         run: cargo clippy --workspace --exclude todo --all-targets --all-features -- -D warnings
+      # The CLI always enables instinct on the recipe, so neither
+      # workspace pass compiles cfg(not(feature = "instinct")) — the
+      # keyword resolver. Lint the recipe crate on its own defaults.
+      - name: Clippy (recipe keyword resolver)
+        run: cargo clippy -p gpui-agent-recipe --all-targets -- -D warnings
 
   headless:
     name: test + recipe receipt
