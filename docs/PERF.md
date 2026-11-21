@@ -118,3 +118,54 @@ Abstain never becomes a dispatch.
 LLM-arm comparisons (A0/A1 GATE-T, A3 GATE-E, A4) are pending owner
 API keys; the wire and validation paths are covered by scripted
 endpoints, not live models.
+
+## 0.3.0 re-validation (2026-11-21)
+
+Re-run on tag `v0.3.0` on two machines: an Apple M4 Pro VM (macOS 26.6.2,
+rustc 1.100.0) and an x86_64 Ubuntu 22.04 cloud VM (rustc 1.99.0).
+Full Criterion runs plus the `gpui-agent-bench` arms at the debug
+profile CI uses.
+
+### Criterion (`cargo bench -p gpui-agent`)
+
+| Bench | macOS (M4 Pro) | Linux (x86_64) |
+| --- | --- | --- |
+| `rpc_once_reconnect_32_hellos` | 516 ms | 325 ms |
+| `rpc_session_reuse_32_hellos` | 1.79 ms | 1.64 ms |
+| `rpc_pipeline_32_hellos` | 245 µs | 426 µs |
+| `handle_request_inprocess_32_hellos` | 19.4 µs | 97.0 µs |
+| `tree_flatten_capacity` | 714 ns | 1.33 µs |
+| `tree_flatten_into_reuse` | 349 ns | 1.24 µs |
+| `tree_flatten_naive_intermediate_vecs` | 5.85 µs | 6.75 µs |
+| `snapshot_to_string` | 34.6 µs | 54.2 µs |
+| `snapshot_write_json_line_reuse` | 33.6 µs | 52.6 µs |
+| `snapshot_to_string_then_writeln` | 34.6 µs | 50.0 µs |
+| `snapshot_rebuild_1000_nodes` | 278 µs | 613 µs |
+| `snapshot_cached_1000_nodes` | 3.65 ns | 13.0 ns |
+| `snapshot_compact_1000_nodes` | 130 µs | 134 µs |
+| `wait_until_poll_1000_nodes_cached` | 4.06 µs | 6.65 µs |
+| `wait_until_poll_1000_nodes_uncached` | 286 µs | 703 µs |
+| `mailbox_push_take_full` | 8.66 µs | 27.2 µs |
+
+Session reuse vs reconnect: ~289× on the M4 Pro, ~198× on this cloud VM.
+The 605× in the P0 table was a different machine; the gap is machine
+timing, not a wire change.
+
+### `gpui-agent-bench` arms
+
+| Arm | Pass | Wrong | Refused | p50 | p90 |
+| --- | --- | --- | --- | --- | --- |
+| R0 (keywords), Linux | 1120/2500 (44.8%) | 500 | 1240 | 78 µs | 89 µs |
+| R1 (instinct), Linux | 1480/2500 (59.2%) | 0 | 1600 | 197 µs | 354 µs |
+| R0, macOS | 1120/2500 (44.8%) | 500 | 1240 | 69 µs | 97 µs |
+| R1, macOS | 1480/2500 (59.2%) | 0 | 1600 | 131 µs | 233 µs |
+| A2 (`run --goal`), Linux | 48/48 | 0 | 9\* | 20.9 ms | 181 ms |
+| A2, macOS | 48/48 | 0 | 9\* | 36.2 ms | 148 ms |
+
+\* the task set includes refuse tasks; their refusals count as passes.
+
+Release-profile arms on macOS: R0 p50 11 µs / p90 14 µs, R1 p50 28 µs /
+p90 47 µs — under the M2 table's 20 µs / 25 µs and 46 µs / 75 µs. The
+pass, wrong and refused counts match
+[docs/bench/RESULTS.md](bench/RESULTS.md) exactly: the resolver and the
+local policy are deterministic, so only latencies move between machines.
