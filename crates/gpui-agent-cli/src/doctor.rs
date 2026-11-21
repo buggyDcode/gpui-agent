@@ -2,7 +2,7 @@
 //! that should answer does not.
 
 use std::net::{SocketAddr, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -104,31 +104,49 @@ fn simulator_devices() -> Option<Vec<Value>> {
     Some(sims)
 }
 
-/// Host records a Simulator app publishes under its container tmp dir
-/// (`<dataPath>/tmp/gpui-agent-<uid>/hosts`).
+/// Host records a Simulator app publishes under its tmp dir. A device-wide
+/// process lands in `<dataPath>/tmp`; a sandboxed app gets its own
+/// container under `Containers/Data/Application/<uuid>/tmp`.
 fn simulator_device_hosts(data_path: &str) -> Vec<Value> {
     let mut hosts = Vec::new();
-    let Ok(roots) = std::fs::read_dir(Path::new(data_path).join("tmp")) else {
-        return hosts;
-    };
-    for entry in roots.flatten() {
-        if !entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with("gpui-agent-")
-        {
-            continue;
-        }
-        let Ok(records) = gpui_agent::live_hosts(&entry.path()) else {
+    for tmp in simulator_tmp_dirs(Path::new(data_path)) {
+        let Ok(roots) = std::fs::read_dir(&tmp) else {
             continue;
         };
-        hosts.extend(
-            records
-                .into_iter()
-                .filter_map(|rec| serde_json::to_value(rec).ok()),
-        );
+        for entry in roots.flatten() {
+            if !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("gpui-agent-")
+            {
+                continue;
+            }
+            let Ok(records) = gpui_agent::live_hosts(&entry.path()) else {
+                continue;
+            };
+            hosts.extend(
+                records
+                    .into_iter()
+                    .filter_map(|rec| serde_json::to_value(rec).ok()),
+            );
+        }
     }
     hosts
+}
+
+/// Every tmp dir a host process on `device` could publish under: the
+/// device's own and each app container's.
+fn simulator_tmp_dirs(device: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![device.join("tmp")];
+    let containers = device.join("Containers/Data/Application");
+    if let Ok(apps) = std::fs::read_dir(&containers) {
+        dirs.extend(
+            apps.flatten()
+                .filter(|entry| entry.file_type().is_ok_and(|t| t.is_dir()))
+                .map(|entry| entry.path().join("tmp")),
+        );
+    }
+    dirs
 }
 
 fn count(nodes: &[UiNode]) -> usize {
