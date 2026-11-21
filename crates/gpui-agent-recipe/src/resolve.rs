@@ -5,25 +5,36 @@ use serde_json::{Value, json};
 use crate::registry::Registry;
 use crate::schema::{Effect, SchemaKind};
 
+/// A `$param`/slot filled while materializing an op.
 #[derive(Debug, Clone, Serialize)]
 pub struct TokenFill {
+    /// The placeholder name.
     pub name: String,
+    /// The value substituted in.
     pub value: String,
+    /// Where the value came from (`set`, `intent`, schema default).
     pub source: String,
 }
 
+/// An intent resolved to a schema-backed op.
 #[derive(Debug, Clone, Serialize)]
 pub struct ResolveResult {
+    /// Winning schema name.
     pub schema: String,
+    /// The materialized wire op.
     pub op: Op,
+    /// The schema's declared effects.
     pub effects: Vec<Effect>,
+    /// Keyword-path confidence 0..=1 (legacy scorer).
     pub confidence: f32,
     /// Instinct milli-confidence (0..=1000) when the `instinct` feature
     /// resolved this; `None` on the legacy path. Additive — omitted on
     /// the wire when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence_millis: Option<u16>,
+    /// Placeholders filled during materialization.
     pub tokens_filled: Vec<TokenFill>,
+    /// Schema-declared idempotency flag.
     pub idempotent: bool,
 }
 
@@ -33,6 +44,10 @@ pub struct ResolveResult {
 /// With the opt-in `instinct` feature the scoring path is
 /// `gpui_agent_policy`'s evidence + Instinct arbitration; without it the
 /// original keyword scorer runs unchanged.
+///
+/// # Errors
+/// A message on empty/ambiguous intent, a missing schema, or a `title`/
+/// `id` token an invoke needs that cannot be extracted.
 pub fn resolve_intent(intent: &str, registry: &Registry) -> Result<ResolveResult, String> {
     #[cfg(feature = "instinct")]
     {
@@ -78,7 +93,7 @@ fn resolve_intent_keywords(intent: &str, registry: &Registry) -> Result<ResolveR
         schema: schema.name.clone(),
         op,
         effects: schema.effects.clone(),
-        confidence: (best as f32 / 10.0).min(1.0),
+        confidence: f32::from(u16::try_from(best.clamp(0, 10)).unwrap_or(0)) / 10.0,
         confidence_millis: None,
         tokens_filled,
         idempotent: schema.idempotent,
@@ -114,7 +129,7 @@ fn words_of(intent: &str) -> Vec<String> {
     intent
         .split(|c: char| !c.is_ascii_alphanumeric() && c != '.')
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_ascii_lowercase())
+        .map(str::to_ascii_lowercase)
         .collect()
 }
 
@@ -235,7 +250,11 @@ fn invoke_args_from_intent(
 }
 
 /// Args object for an `Invoke` schema resolved from natural-language
-/// `intent`. Errors when a `required` arg cannot be filled.
+/// `intent`.
+///
+/// # Errors
+/// A message when the schema is not an invoke or a `title`/`id` token
+/// it needs cannot be extracted from `intent`.
 pub fn invoke_args(schema: &crate::schema::OpSchema, intent: &str) -> Result<Value, String> {
     if schema.kind != SchemaKind::Invoke {
         return Err(format!("{} is not an invoke schema", schema.name));
@@ -311,7 +330,7 @@ fn extract_id(intent: &str) -> Option<u64> {
     let lower = intent.to_ascii_lowercase();
     if let Some(idx) = lower.find("id") {
         let rest = intent[idx + 2..].trim_start_matches([' ', '=', '#', ':']);
-        let num: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let num: String = rest.chars().take_while(char::is_ascii_digit).collect();
         if !num.is_empty() {
             return num.parse().ok();
         }
@@ -354,7 +373,16 @@ mod instinct_resolve {
     /// the best candidate is noise abstains rather than inflates.
     const RAW_MIN: i64 = 500;
 
-    pub fn resolve(intent: &str, registry: &Registry) -> Result<ResolveResult, String> {
+    /// Instinct evidence + arbitration resolution (feature `instinct`).
+    ///
+    /// # Errors
+    /// A message on empty/ambiguous intent, an unknown winner, or a
+    /// required arg that cannot be filled.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one staged scoring pipeline; splitting per channel would hide the order"
+    )]
+    pub(crate) fn resolve(intent: &str, registry: &Registry) -> Result<ResolveResult, String> {
         let trimmed = intent.trim();
         if trimmed.is_empty() {
             return Err("empty intent".into());
@@ -410,9 +438,7 @@ mod instinct_resolve {
                 blob.push_str(&s.name);
                 blob.push(' ');
                 blob.push_str(&s.keywords.join(" "));
-                *raw += overlap_normalized(q, &blob)
-                    .map(|c| i64::from(c.get()))
-                    .unwrap_or(0);
+                *raw += overlap_normalized(q, &blob).map_or(0, |c| i64::from(c.get()));
             }
         }
         let top_raw = staged.iter().map(|(_, r, _)| *r).max().unwrap_or(0);
@@ -470,8 +496,7 @@ mod instinct_resolve {
                 let millis = ranked
                     .iter()
                     .find(|r| r.id == id)
-                    .map(|r| r.confidence_millis)
-                    .unwrap_or(0);
+                    .map_or(0, |r| r.confidence_millis);
                 let millis = u16::try_from(millis.max(0)).unwrap_or(0);
                 Ok(ResolveResult {
                     schema: schema.name.clone(),
@@ -601,8 +626,7 @@ mod instinct_resolve {
             tokens_iter(&schema.name).any(|t| t.eq_ignore_ascii_case(v))
                 || schema.keywords.iter().any(|k| k.eq_ignore_ascii_case(v))
         })
-        .map(|_| 300)
-        .unwrap_or(0)
+        .map_or(0, |_| 300)
     }
 
     /// hits: distinct intent words found anywhere in the schema's text
@@ -616,11 +640,12 @@ mod instinct_resolve {
                     || schema.keywords.iter().any(|k| k.eq_ignore_ascii_case(t))
                     || tokens_iter(&schema.description).any(|s| s.eq_ignore_ascii_case(t))
             })
-            .count() as i64;
-        if hits > 0 && hits as usize == op_tokens.len() {
+            .count();
+        let hits = i64::try_from(hits).unwrap_or(i64::MAX);
+        if hits > 0 && usize::try_from(hits).unwrap_or(usize::MAX) == op_tokens.len() {
             300
         } else {
-            150 * hits / op_tokens.len().max(1) as i64
+            150 * hits / i64::try_from(op_tokens.len().max(1)).unwrap_or(i64::MAX)
         }
     }
 
@@ -1029,7 +1054,7 @@ mod instinct_tests {
             .iter()
             .map(|i| {
                 resolve_intent(i, &registry)
-                    .map(|r| r.schema.clone())
+                    .map(|r| r.schema)
                     .map_err(|_| ())
             })
             .collect();
@@ -1037,10 +1062,16 @@ mod instinct_tests {
             let mut order: Vec<usize> = (0..base.len()).collect();
             // LCG permutation — deterministic, no RNG dependency.
             let mut state = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             for i in (1..order.len()).rev() {
-                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
+                #[expect(
+                    clippy::as_conversions,
+                    reason = "wrapping truncation of the LCG state is the intended permutation"
+                )]
                 let j = (state >> 33) as usize % (i + 1);
                 order.swap(i, j);
             }
@@ -1050,7 +1081,7 @@ mod instinct_tests {
             }
             for (i, intent) in intents.iter().enumerate() {
                 let got = resolve_intent(intent, &reg)
-                    .map(|r| r.schema.clone())
+                    .map(|r| r.schema)
                     .map_err(|_| ());
                 assert_eq!(got, expected[i], "permutation {seed} intent {intent:?}");
             }

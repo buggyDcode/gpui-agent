@@ -20,13 +20,18 @@ pub const MAX_RECIPE_STEPS: usize = 256;
 /// line-based `.wants` file compiles to the same struct.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Recipe {
+    /// Format version — must equal [`RECIPE_FORMAT_VERSION`].
     #[serde(default = "recipe_v1")]
     pub v: u32,
+    /// Recipe name (file stem for `.wants`).
     pub name: String,
+    /// Optional app the recipe targets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+    /// `$param` names bound by `--set`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<String>,
+    /// Steps in file order.
     pub steps: Vec<RecipeStep>,
 }
 
@@ -34,23 +39,34 @@ fn recipe_v1() -> u32 {
     RECIPE_FORMAT_VERSION
 }
 
+/// One recipe step: an id, optional `needs` dependencies, and the op.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecipeStep {
+    /// Step id — the wave-schedule node name.
     pub id: String,
+    /// Step ids this step must wait for (`[]` = no prerequisites;
+    /// file order applies only when *every* step has empty `needs`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub needs: Vec<String>,
     /// After this step, write a PNG when `recipe run --screenshot-dir` is set.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub screenshot: bool,
+    /// The wire op, flattened into the step JSON.
     #[serde(flatten)]
     pub op: Op,
 }
 
 impl Recipe {
+    /// Parse structured recipe JSON.
+    ///
+    /// # Errors
+    /// A message on malformed JSON.
     pub fn from_json(text: &str) -> Result<Self, String> {
         serde_json::from_str(text).map_err(|err| format!("recipe json: {err}"))
     }
 
+    /// True when any step declares `needs` — disables the implicit
+    /// linear chain in favor of the explicit DAG.
     pub fn uses_explicit_needs(&self) -> bool {
         self.steps.iter().any(|step| !step.needs.is_empty())
     }
@@ -58,6 +74,9 @@ impl Recipe {
 
 /// Parse a file: `.json` as structured recipe, anything else as `.wants`.
 /// Path `-` reads stdin.
+///
+/// # Errors
+/// A message on read or parse failure.
 pub fn parse_recipe(path: &Path) -> Result<Recipe, String> {
     let text = if path.as_os_str() == "-" {
         std::io::read_to_string(std::io::stdin()).map_err(|err| err.to_string())?
@@ -77,6 +96,15 @@ pub fn parse_recipe(path: &Path) -> Result<Recipe, String> {
     parse_recipe_source(&text, &name, hint == "json")
 }
 
+/// Parse recipe text; JSON when `force_json` or the text starts with
+/// `{`, `.wants` line format otherwise.
+///
+/// # Errors
+/// A message on parse failure.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "`force_json` is the caller's parse-mode flag — a bool is the interface"
+)]
 pub fn parse_recipe_source(text: &str, name: &str, force_json: bool) -> Result<Recipe, String> {
     let trimmed = text.trim();
     if force_json || trimmed.starts_with('{') {
@@ -87,6 +115,9 @@ pub fn parse_recipe_source(text: &str, name: &str, force_json: bool) -> Result<R
 }
 
 /// rwmcp-style `--wants`: one protocol op per line, `#` comments.
+///
+/// # Errors
+/// A message on a malformed line or an empty recipe.
 pub fn parse_wants(text: &str, name: &str) -> Result<Recipe, String> {
     let mut steps = Vec::with_capacity(16);
     let mut params = BTreeSet::new();
@@ -117,6 +148,11 @@ pub fn parse_wants(text: &str, name: &str) -> Result<Recipe, String> {
     })
 }
 
+/// Substitute `--set` values into step op payloads (targets, args,
+/// assert names). Step `id`/`needs` are graph identity, never `$param`s.
+///
+/// # Errors
+/// A message naming the first param missing from `set`.
 pub fn apply_params(recipe: &Recipe, set: &BTreeMap<String, String>) -> Result<Recipe, String> {
     for name in &recipe.params {
         if !set.contains_key(name) {
@@ -132,6 +168,11 @@ pub fn apply_params(recipe: &Recipe, set: &BTreeMap<String, String>) -> Result<R
     Ok(out)
 }
 
+/// Check format version, step ids, `needs` edges, and op validity
+/// against `registry`.
+///
+/// # Errors
+/// A message describing the first violation found.
 pub fn validate_recipe(recipe: &Recipe, registry: &Registry) -> Result<(), String> {
     if recipe.v != RECIPE_FORMAT_VERSION {
         return Err(format!(
@@ -544,6 +585,10 @@ fn tokenize(line: &str) -> Result<Vec<String>, String> {
     Ok(tokens)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per op spelling; splitting by op would scatter the parse table"
+)]
 fn parse_wants_step(mut tokens: Vec<String>, id: String) -> Result<RecipeStep, String> {
     let mut screenshot = false;
     tokens.retain(|tok| {
@@ -797,7 +842,7 @@ fn parse_screenshot_op(tokens: &[String]) -> Result<Op, String> {
         }
         i += 1;
     }
-    if mode.is_scrolled() && target.as_deref().map(str::trim).unwrap_or("").is_empty() {
+    if mode.is_scrolled() && target.as_deref().map_or("", str::trim).is_empty() {
         return Err("screenshot mode=scrolled requires --target".into());
     }
     Ok(Op::Screenshot {
@@ -828,10 +873,11 @@ fn parse_assert_spec(tokens: &[String]) -> Result<AssertSpec, String> {
         let token = &tokens[i];
         if token == "--id" || token == "--target" {
             i += 1;
-            spec.target = tokens
-                .get(i)
-                .ok_or_else(|| "missing assert target".to_string())?
-                .clone();
+            spec.target.clone_from(
+                tokens
+                    .get(i)
+                    .ok_or_else(|| "missing assert target".to_string())?,
+            );
         } else if token == "--name" {
             i += 1;
             spec.name = Some(
@@ -879,13 +925,13 @@ fn parse_assert_spec(tokens: &[String]) -> Result<AssertSpec, String> {
         } else if token == "--absent" {
             spec.exists = Some(false);
         } else if token == "--visible" {
-            spec.visible = Some(parse_optional_bool_flag(tokens, &mut i)?);
+            spec.visible = Some(parse_optional_bool_flag(tokens, &mut i));
         } else if token == "--in-viewport" || token == "--in_viewport" {
-            spec.in_viewport = Some(parse_optional_bool_flag(tokens, &mut i)?);
+            spec.in_viewport = Some(parse_optional_bool_flag(tokens, &mut i));
         } else if let Some((key, raw)) = token.split_once('=') {
             apply_assert_kv(&mut spec, key, raw)?;
         } else if spec.target.is_empty() && !token.starts_with('-') {
-            spec.target = token.clone();
+            spec.target.clone_from(token);
         } else {
             return Err(format!("bad assert token `{token}`"));
         }
@@ -922,15 +968,15 @@ fn parse_bool(raw: &str) -> Result<bool, String> {
     }
 }
 
-fn parse_optional_bool_flag(tokens: &[String], i: &mut usize) -> Result<bool, String> {
+fn parse_optional_bool_flag(tokens: &[String], i: &mut usize) -> bool {
     if tokens.get(*i + 1).map(String::as_str) == Some("true") {
         *i += 1;
-        Ok(true)
+        true
     } else if tokens.get(*i + 1).map(String::as_str) == Some("false") {
         *i += 1;
-        Ok(false)
+        false
     } else {
-        Ok(true)
+        true
     }
 }
 
@@ -999,12 +1045,12 @@ mod tests {
 
     #[test]
     fn wants_parse_and_params() {
-        let wants = r#"
+        let wants = r"
 # create a todo
 set-value todo-input $title
 click todo-add
 assert todo-item-1 name=$title checked=false
-"#;
+";
         let recipe = parse_wants(wants, "crud").unwrap();
         assert_eq!(recipe.params, vec!["title"]);
         validate_recipe(&recipe, &todo_registry()).unwrap();

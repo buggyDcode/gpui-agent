@@ -8,12 +8,19 @@
 //! `--screenshot-dir` waves stay one request at a time so a failed write
 //! never continues the wave.
 
+/// Recipe → scheduled plan compilation (DAG waves, param binding).
 pub mod plan;
+/// Deterministic `recipe run` receipt types.
 pub mod receipt;
+/// Recipe file format: parsing, params, validation.
 pub mod recipe;
+/// Operation schemas: protocol registry and user schema files.
 pub mod registry;
+/// Intent → wire-op resolution (`resolve_intent`).
 pub mod resolve;
+/// Plan execution: waves, screenshots, receipts.
 pub mod run;
+/// Schema types (`OpSchema`, `Effect`, `SchemaKind`).
 pub mod schema;
 
 pub use plan::{OrderCheck, Plan, PlannedStep, compile_plan, order_check};

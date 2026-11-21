@@ -1,3 +1,5 @@
+//! End-to-end recipe runs against a spawned todo host.
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -17,7 +19,8 @@ use todo_core::TodoStore;
 
 fn spawn_todo() -> (AgentClient, Arc<std::sync::atomic::AtomicBool>) {
     let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
-    let (addr, shutdown) = spawn_host("127.0.0.1:0".parse().unwrap(), None, store).expect("bind");
+    let (addr, shutdown) =
+        spawn_host("127.0.0.1:0".parse().expect("valid addr"), None, store).expect("bind");
     let client = AgentClient::connect(addr).with_timeout(Duration::from_secs(3));
     (client, shutdown)
 }
@@ -205,7 +208,7 @@ fn independent_read_wave_records_siblings_when_one_fails() {
                 "failed read wave must not start the next wave: {receipt:?}"
             );
         }
-        other => panic!("unexpected {other}"),
+        other @ RunError::NeedsYes => panic!("unexpected {other}"),
     }
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }
@@ -247,7 +250,7 @@ fn independent_write_wave_stops_before_later_sibling() {
                 "later click must not run: {receipt:?}"
             );
         }
-        other => panic!("unexpected {other}"),
+        other @ RunError::NeedsYes => panic!("unexpected {other}"),
     }
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }
@@ -288,7 +291,7 @@ fn mixed_write_and_read_wave_stays_sequential_fail_fast() {
                 "hello sibling must not run after click fail: {receipt:?}"
             );
         }
-        other => panic!("unexpected {other}"),
+        other @ RunError::NeedsYes => panic!("unexpected {other}"),
     }
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }
@@ -336,8 +339,12 @@ fn screenshot_dir_records_a_receipt_entry_per_step() {
 #[test]
 fn recipe_does_not_bypass_token() {
     let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
-    let (addr, shutdown) =
-        spawn_host("127.0.0.1:0".parse().unwrap(), Some("secret".into()), store).expect("bind");
+    let (addr, shutdown) = spawn_host(
+        "127.0.0.1:0".parse().expect("valid addr"),
+        Some("secret".into()),
+        store,
+    )
+    .expect("bind");
 
     let recipe = parse_wants("hello", "auth").unwrap();
     let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
@@ -351,7 +358,7 @@ fn recipe_does_not_bypass_token() {
                 "recipe must still hit auth: {error}"
             );
         }
-        other => panic!("unexpected {other}"),
+        other @ RunError::NeedsYes => panic!("unexpected {other}"),
     }
 
     let mut with_token = AgentClient::connect(addr)
@@ -410,7 +417,7 @@ invoke todo.toggle id=1
             );
             assert_eq!(receipt.steps[2].delivery_status, None, "{receipt:?}");
         }
-        other => panic!("unexpected {other}"),
+        other @ RunError::NeedsYes => panic!("unexpected {other}"),
     }
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
 }
@@ -441,7 +448,7 @@ fn host_down_fails_without_running_later_steps() {
                 "{error}"
             );
         }
-        other => panic!("unexpected {other}"),
+        other @ RunError::NeedsYes => panic!("unexpected {other}"),
     }
 }
 
@@ -470,7 +477,7 @@ fn wrong_token_fails_closed() {
             assert!(!receipt.ok);
             assert_eq!(receipt.steps.len(), 1);
         }
-        other => panic!("unexpected {other}"),
+        other @ RunError::NeedsYes => panic!("unexpected {other}"),
     }
 
     shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -575,7 +582,8 @@ fn mocked_host_writes_step_pngs_onto_receipt() {
     let store = Arc::new(Mutex::new(PngHost {
         inner: TodoStore::new(PlatformKind::Headless),
     }));
-    let (addr, shutdown) = spawn_host("127.0.0.1:0".parse().unwrap(), None, store).expect("bind");
+    let (addr, shutdown) =
+        spawn_host("127.0.0.1:0".parse().expect("valid addr"), None, store).expect("bind");
     let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(3));
 
     let json = r#"{
@@ -606,7 +614,7 @@ fn mocked_host_writes_step_pngs_onto_receipt() {
 
     let flagged_dir = dir.join("flagged");
     let flagged = ScreenshotCapture {
-        dir: flagged_dir.clone(),
+        dir: flagged_dir,
         flagged_only: true,
     };
     let flagged_receipt =

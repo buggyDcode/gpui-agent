@@ -8,27 +8,43 @@ use serde::{Deserialize, Serialize};
 /// intents fail closed; nothing here shells out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpSchema {
+    /// Stable schema name (`todo.add`, `click`, `shutdown`).
     pub name: String,
+    /// How `name` is dispatched: protocol op, `invoke`, or widget id.
     pub kind: SchemaKind,
+    /// Human/agent-facing description used in intent matching.
     pub description: String,
+    /// Declared side effects; empty is treated as Write (fail closed
+    /// — it cannot join a pipelined read wave).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<Effect>,
+    /// True when replaying the op is safe.
     #[serde(default)]
     pub idempotent: bool,
+    /// True when the schema was verified against a real app.
     #[serde(default)]
     pub verified: bool,
+    /// Arg names that must be filled before dispatch.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required: Vec<String>,
+    /// Per-arg type specs for `Invoke` schemas.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub args: BTreeMap<String, ArgSchema>,
+    /// Expected result shape (documentation/eval only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
+    /// Intent-matching keywords beyond the name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
 }
 
+/// How a schema name maps onto the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum SchemaKind {
     /// A first-class protocol op (`click`, `snapshot`, …).
     Protocol,
@@ -38,23 +54,41 @@ pub enum SchemaKind {
     Id,
 }
 
+/// A schema's declared side effects (fail closed: unknown = Write).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum Effect {
+    /// Observation only.
     Read,
+    /// Mutates app state.
     Write,
+    /// Terminates the host.
     Exit,
 }
 
+/// Type/required spec for one `Invoke` arg.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArgSchema {
+    /// Wire type name (`string`, `number`, `bool`, …).
     #[serde(rename = "type")]
     pub ty: String,
+    /// True when the arg must be filled.
     #[serde(default)]
     pub required: bool,
 }
 
 impl OpSchema {
+    /// Reject empty/invalid names and `required` entries with no
+    /// `args` spec. Duplicate names are the registry's job:
+    /// [`Registry::insert`](crate::registry::Registry::insert) replaces,
+    /// [`Registry::merge`](crate::registry::Registry::merge) rejects.
+    ///
+    /// # Errors
+    /// A message naming the broken invariant.
     pub fn validate(&self) -> Result<(), String> {
         if self.name.trim().is_empty() {
             return Err("schema name cannot be empty".into());
@@ -93,7 +127,7 @@ mod tests {
     #[test]
     fn rejects_empty_name() {
         let schema = OpSchema {
-            name: "".into(),
+            name: String::new(),
             kind: SchemaKind::Protocol,
             description: "x".into(),
             effects: vec![],

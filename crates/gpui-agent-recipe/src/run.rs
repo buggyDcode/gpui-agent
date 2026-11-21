@@ -10,14 +10,25 @@ use crate::plan::{Plan, PlannedStep};
 use crate::receipt::{Receipt, ScreenshotReceipt, StepReceipt};
 use crate::schema::Effect;
 
+/// Why a plan run stopped before completing.
 #[derive(Debug, Error)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum RunError {
+    /// The recipe declares shutdown/exit effects and `yes` was not set.
     #[error("recipe has shutdown/exit effects; pass --yes to run it")]
     NeedsYes,
+    /// A step's request failed; carries the receipt so far.
     #[error("step `{id}` failed: {error}")]
     Step {
+        /// The failing step's id.
         id: String,
+        /// Host-returned or transport error text.
         error: String,
+        /// Receipt so far; a failed pipelined read wave keeps every
+        /// reply of that wave, including steps after the failing one.
         receipt: Box<Receipt>,
     },
 }
@@ -28,11 +39,14 @@ pub enum RunError {
 /// `screenshot: true` in JSON / `--screenshot` in wants.
 #[derive(Debug, Clone)]
 pub struct ScreenshotCapture {
+    /// Directory the step PNGs are written into.
     pub dir: PathBuf,
+    /// True: only steps flagged `screenshot: true` are captured.
     pub flagged_only: bool,
 }
 
 impl ScreenshotCapture {
+    /// Filename `{index:03}-{sanitized step id}.png` under `dir`.
     pub fn step_path(&self, index: u32, step_id: &str) -> PathBuf {
         self.dir
             .join(format!("{index:03}-{}.png", sanitize_step_id(step_id)))
@@ -52,12 +66,37 @@ impl ScreenshotCapture {
 /// sequential fail-fast (no later sibling). A failed wave does not start the
 /// next one. The recipe layer never talks to a shell and never skips
 /// `authorize_request`.
+/// # Errors
+/// [`RunError::NeedsYes`] on shutdown/exit effects without `yes`;
+/// [`RunError::Step`] on the first failing request.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "the --yes flag mirrors the CLI; a config struct would churn the 0.3.0 signature"
+)]
 pub fn run_plan(client: &mut AgentClient, plan: &Plan, yes: bool) -> Result<Receipt, RunError> {
     run_plan_with_screenshots(client, plan, yes, None)
 }
 
 /// [`run_plan`] plus optional per-step app-surface PNGs.
 ///
+/// # Errors
+/// [`RunError`] as in [`run_plan`].
+///
+/// # Panics
+/// On a wave/id mismatch between the plan and its schedule (a bug,
+/// not reachable via host failures).
+///
+/// The client best-effort creates `screenshots.dir`; each capture
+/// sends only a filename, so the host writes under its own screenshot
+/// directory and the receipt records the client-side path.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "the --yes flag mirrors the CLI"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one sequential wave loop; splitting pipeline/sequential paths would duplicate the step accounting"
+)]
 /// Screenshot unavailability is recorded on the receipt and does **not**
 /// fail the recipe. No fake PNG is written.
 pub fn run_plan_with_screenshots(
@@ -102,7 +141,8 @@ pub fn run_plan_with_screenshots(
             match client.rpc_pipeline(&ops) {
                 Ok(resps) => {
                     receipt.session_reused = client.has_session();
-                    let elapsed = step_started.elapsed().as_millis() as u64;
+                    let elapsed =
+                        u64::try_from(step_started.elapsed().as_millis()).unwrap_or(u64::MAX);
                     let mut failed: Option<(String, String)> = None;
                     for (step, resp) in wave_steps.iter().zip(resps) {
                         let ok = resp.ok;
@@ -128,7 +168,8 @@ pub fn run_plan_with_screenshots(
                     }
                     if let Some((id, error)) = failed {
                         receipt.ok = false;
-                        receipt.elapsed_ms = started.elapsed().as_millis() as u64;
+                        receipt.elapsed_ms =
+                            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                         return Err(RunError::Step {
                             id,
                             error,
@@ -146,11 +187,13 @@ pub fn run_plan_with_screenshots(
                         error_code: Some(error_code_of(&error).to_string()),
                         delivery_status: None,
                         error: Some(error.clone()),
-                        elapsed_ms: step_started.elapsed().as_millis() as u64,
+                        elapsed_ms: u64::try_from(step_started.elapsed().as_millis())
+                            .unwrap_or(u64::MAX),
                         result: None,
                         screenshot: None,
                     });
-                    receipt.elapsed_ms = started.elapsed().as_millis() as u64;
+                    receipt.elapsed_ms =
+                        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                     return Err(RunError::Step {
                         id: first.id.clone(),
                         error,
@@ -180,13 +223,15 @@ pub fn run_plan_with_screenshots(
                         error: error.clone(),
                         error_code,
                         delivery_status: resp.delivery_status,
-                        elapsed_ms: step_started.elapsed().as_millis() as u64,
+                        elapsed_ms: u64::try_from(step_started.elapsed().as_millis())
+                            .unwrap_or(u64::MAX),
                         result: resp.result,
                         screenshot,
                     });
                     if !ok {
                         receipt.ok = false;
-                        receipt.elapsed_ms = started.elapsed().as_millis() as u64;
+                        receipt.elapsed_ms =
+                            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                         return Err(RunError::Step {
                             id: step.id.clone(),
                             error: error.unwrap_or_else(|| "request failed".into()),
@@ -208,11 +253,13 @@ pub fn run_plan_with_screenshots(
                         error: Some(error.clone()),
                         error_code: Some(failure.error_code),
                         delivery_status: failure.delivery_status,
-                        elapsed_ms: step_started.elapsed().as_millis() as u64,
+                        elapsed_ms: u64::try_from(step_started.elapsed().as_millis())
+                            .unwrap_or(u64::MAX),
                         result: None,
                         screenshot,
                     });
-                    receipt.elapsed_ms = started.elapsed().as_millis() as u64;
+                    receipt.elapsed_ms =
+                        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                     return Err(RunError::Step {
                         id: step.id.clone(),
                         error,
@@ -223,7 +270,7 @@ pub fn run_plan_with_screenshots(
         }
     }
 
-    receipt.elapsed_ms = started.elapsed().as_millis() as u64;
+    receipt.elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     receipt.session_reused = client.has_session();
     Ok(receipt)
 }

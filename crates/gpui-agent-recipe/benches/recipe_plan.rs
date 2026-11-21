@@ -1,3 +1,9 @@
+//! Criterion benches for recipe compile and run paths.
+#![expect(
+    missing_docs,
+    reason = "criterion_main! generates an undocumented main"
+)]
+
 use std::collections::BTreeMap;
 use std::hint::black_box;
 use std::sync::{Arc, Mutex};
@@ -15,7 +21,8 @@ use gpui_agent_recipe::{Recipe, compile_plan, parse_wants, run_plan, todo_regist
 fn wants_body(n: usize) -> String {
     let mut body = String::from("wait\n");
     for i in 0..n {
-        body.push_str(&format!("invoke todo.add title=item-{i}\n"));
+        use std::fmt::Write as _;
+        writeln!(body, "invoke todo.add title=item-{i}").expect("String is infallible");
     }
     body
 }
@@ -64,16 +71,20 @@ fn wide_dag_json(n: usize) -> String {
 
 fn compile_linear(c: &mut Criterion) {
     let body = wants_body(40);
-    let recipe = parse_wants(&body, "many").unwrap();
+    let recipe = parse_wants(&body, "many").expect("bench fixture");
     let registry = todo_registry();
     c.bench_function("compile_40_invoke_adds", |b| {
-        b.iter(|| compile_plan(black_box(&recipe), &BTreeMap::new(), &registry).unwrap());
+        b.iter(|| {
+            compile_plan(black_box(&recipe), &BTreeMap::new(), &registry).expect("bench fixture")
+        });
     });
 
     let body256 = wants_body(255);
-    let recipe256 = parse_wants(&body256, "cap").unwrap();
+    let recipe256 = parse_wants(&body256, "cap").expect("bench fixture");
     c.bench_function("compile_255_invoke_adds", |b| {
-        b.iter(|| compile_plan(black_box(&recipe256), &BTreeMap::new(), &registry).unwrap());
+        b.iter(|| {
+            compile_plan(black_box(&recipe256), &BTreeMap::new(), &registry).expect("bench fixture")
+        });
     });
 }
 
@@ -81,21 +92,24 @@ fn parse_paths(c: &mut Criterion) {
     let wants = wants_body(40);
     let json = json_recipe(40);
     c.bench_function("parse_wants_40_invoke_adds", |b| {
-        b.iter(|| parse_wants(black_box(&wants), "many").unwrap());
+        b.iter(|| parse_wants(black_box(&wants), "many").expect("bench fixture"));
     });
     c.bench_function("parse_json_40_invoke_adds", |b| {
-        b.iter(|| Recipe::from_json(black_box(&json)).unwrap());
+        b.iter(|| Recipe::from_json(black_box(&json)).expect("bench fixture"));
     });
     let mut set = BTreeMap::new();
     set.insert("title".into(), "Buy milk".into());
-    let parameterized = r#"
+    let parameterized = r"
 set-value todo-input $title
 click todo-add
 assert todo-item-1 name=$title
-"#;
-    let recipe = parse_wants(parameterized, "p").unwrap();
+";
+    let recipe = parse_wants(parameterized, "p").expect("bench fixture");
     c.bench_function("apply_params_three_steps", |b| {
-        b.iter(|| gpui_agent_recipe::apply_params(black_box(&recipe), black_box(&set)).unwrap());
+        b.iter(|| {
+            gpui_agent_recipe::apply_params(black_box(&recipe), black_box(&set))
+                .expect("bench fixture")
+        });
     });
 }
 
@@ -111,15 +125,19 @@ fn compile_dag(c: &mut Criterion) {
         ]
     }"#,
     )
-    .unwrap();
+    .expect("bench fixture");
     let registry = todo_registry();
     c.bench_function("compile_small_dag", |b| {
-        b.iter(|| compile_plan(black_box(&recipe), &BTreeMap::new(), &registry).unwrap());
+        b.iter(|| {
+            compile_plan(black_box(&recipe), &BTreeMap::new(), &registry).expect("bench fixture")
+        });
     });
 
-    let wide = Recipe::from_json(&wide_dag_json(32)).unwrap();
+    let wide = Recipe::from_json(&wide_dag_json(32)).expect("bench fixture");
     c.bench_function("compile_wide_dag_32_leaves", |b| {
-        b.iter(|| compile_plan(black_box(&wide), &BTreeMap::new(), &registry).unwrap());
+        b.iter(|| {
+            compile_plan(black_box(&wide), &BTreeMap::new(), &registry).expect("bench fixture")
+        });
     });
 }
 
@@ -128,9 +146,9 @@ fn cli_recipe_path(c: &mut Criterion) {
     let registry = todo_registry();
     c.bench_function("cli_validate_plan_wants_40", |b| {
         b.iter(|| {
-            let recipe = parse_wants(black_box(&wants), "many").unwrap();
-            gpui_agent_recipe::validate_recipe(&recipe, &registry).unwrap();
-            compile_plan(&recipe, &BTreeMap::new(), &registry).unwrap()
+            let recipe = parse_wants(black_box(&wants), "many").expect("bench fixture");
+            gpui_agent_recipe::validate_recipe(&recipe, &registry).expect("bench fixture");
+            compile_plan(&recipe, &BTreeMap::new(), &registry).expect("bench fixture")
         });
     });
 }
@@ -173,28 +191,29 @@ impl AgentHost for EmptyHost {
 fn recipe_run_session(c: &mut Criterion) {
     let host = Arc::new(Mutex::new(EmptyHost));
     let server = AgentServer::bind_with_limits(
-        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().expect("bench fixture"),
         None,
         ServerLimits {
             idle_timeout: Duration::from_secs(5),
             ..ServerLimits::default()
         },
     )
-    .unwrap();
-    let addr = server.local_addr().unwrap();
+    .expect("bench fixture");
+    let addr = server.local_addr().expect("bench fixture");
     std::thread::spawn(move || server.serve_host(host));
 
     let mut hellos = String::new();
     for _ in 0..32 {
         hellos.push_str("hello\n");
     }
-    let recipe = parse_wants(&hellos, "hellos").unwrap();
-    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
+    let recipe = parse_wants(&hellos, "hellos").expect("bench fixture");
+    let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).expect("bench fixture");
 
     c.bench_function("recipe_run_32_hellos_one_session", |b| {
         let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
         b.iter(|| {
-            let receipt = run_plan(black_box(&mut client), black_box(&plan), false).unwrap();
+            let receipt =
+                run_plan(black_box(&mut client), black_box(&plan), false).expect("bench fixture");
             black_box(receipt.ok);
         });
     });
@@ -210,12 +229,14 @@ fn recipe_run_session(c: &mut Criterion) {
     let hello_wide = Recipe::from_json(
         &serde_json::json!({"name": "wide-hello", "steps": hello_steps}).to_string(),
     )
-    .unwrap();
-    let hello_plan = compile_plan(&hello_wide, &BTreeMap::new(), &todo_registry()).unwrap();
+    .expect("bench fixture");
+    let hello_plan =
+        compile_plan(&hello_wide, &BTreeMap::new(), &todo_registry()).expect("bench fixture");
     c.bench_function("recipe_run_32_hello_wave_sequential", |b| {
         let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(2));
         b.iter(|| {
-            let receipt = run_plan(black_box(&mut client), black_box(&hello_plan), false).unwrap();
+            let receipt = run_plan(black_box(&mut client), black_box(&hello_plan), false)
+                .expect("bench fixture");
             black_box(receipt.ok);
         });
     });

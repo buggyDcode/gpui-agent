@@ -8,42 +8,66 @@ use crate::recipe::{Recipe, RecipeStep, apply_params, validate_recipe};
 use crate::registry::Registry;
 use crate::schema::{Effect, SchemaKind};
 
+/// One scheduled recipe step with its wave placement and annotations.
 #[derive(Debug, Clone, Serialize)]
 pub struct PlannedStep {
+    /// Step id from the recipe.
     pub id: String,
+    /// The wire op to send.
     pub op: Op,
+    /// Step ids this step waits for.
     pub needs: Vec<String>,
     /// Capture a PNG after this step when `--screenshot-dir` / `--screenshot-flagged`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub screenshot: bool,
+    /// Effects the op declares (Read/Write/Exit/…).
     pub effects: Vec<Effect>,
+    /// Registry schema the op resolved to.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema: Option<String>,
+    /// Schema-declared idempotency flag.
     pub idempotent: bool,
 }
 
+/// A compiled recipe: ordered steps plus dependency waves.
 #[derive(Debug, Clone, Serialize)]
 pub struct Plan {
+    /// Recipe name (bound name when params applied).
     pub name: String,
+    /// Optional app the recipe targets.
     pub app: Option<String>,
+    /// Steps in schedule order.
     pub steps: Vec<PlannedStep>,
     /// Waves of independent step ids. All-Read waves may
     /// [`rpc_pipeline`](gpui_agent::client::AgentClient::rpc_pipeline);
     /// Write / Exit / mixed waves stay sequential fail-fast. A failed
     /// wave does not start the next one.
     pub waves: Vec<Vec<String>>,
+    /// Union of all step effects.
     pub effects: Vec<Effect>,
+    /// True when the plan includes an Exit effect — needs `--yes`.
     pub requires_yes: bool,
+    /// Content hash of the plan for receipts/caching.
     pub fingerprint: String,
 }
 
+/// Whether a recipe's wave schedule changes when steps are reversed.
 #[derive(Debug, Clone, Serialize)]
 pub struct OrderCheck {
+    /// Forward and reverse waves differ — the recipe is order-dependent.
     pub order_dependent: bool,
+    /// Waves from the recipe as written.
     pub forward_waves: Vec<Vec<String>>,
+    /// Waves from the reversed recipe.
     pub reverse_waves: Vec<Vec<String>>,
 }
 
+/// Validate `recipe`, apply `--set` params, and schedule its steps
+/// into dependency waves against `registry` schemas.
+///
+/// # Errors
+/// A message on validation failure, missing params, unknown `needs`,
+/// unknown invokes, or a dependency cycle.
 pub fn compile_plan(
     recipe: &Recipe,
     set: &BTreeMap<String, String>,
@@ -57,12 +81,10 @@ pub fn compile_plan(
     };
     let name = bound
         .as_ref()
-        .map(|b| b.name.as_str())
-        .unwrap_or(&recipe.name);
+        .map_or(recipe.name.as_str(), |b| b.name.as_str());
     let app = bound
         .as_ref()
-        .map(|b| b.app.clone())
-        .unwrap_or_else(|| recipe.app.clone());
+        .map_or_else(|| recipe.app.clone(), |b| b.app.clone());
     let steps = match &bound {
         Some(bound) => bound.steps.as_slice(),
         None => recipe.steps.as_slice(),
@@ -109,6 +131,11 @@ pub fn compile_plan(
     })
 }
 
+/// Compile the recipe and its reversal; the result flags
+/// order-dependence when the wave sets differ.
+///
+/// # Errors
+/// As [`compile_plan`].
 pub fn order_check(
     recipe: &Recipe,
     set: &BTreeMap<String, String>,
@@ -377,7 +404,7 @@ mod tests {
     fn implicit_linear_needs_are_chained() {
         let recipe = parse_wants("hello\nsnapshot", "lin").unwrap();
         let plan = compile_plan(&recipe, &BTreeMap::new(), &todo_registry()).unwrap();
-        assert!(plan.steps[0].needs.is_empty());
+        assert_eq!(plan.steps[0].needs, Vec::<String>::new());
         assert_eq!(plan.steps[1].needs, vec!["s1"]);
         assert_eq!(plan.waves.len(), 2);
     }
