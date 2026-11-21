@@ -22,13 +22,17 @@ use crate::evidence::{
 };
 use crate::goal::UiGoal;
 
+/// Confidence lost when the same target repeats without verification.
 pub const HABITUATION_STEP: i16 = 250;
 
 /// One ranked candidate the policy considered (for trails / escalation).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RankedAction {
+    /// Offered action id.
     pub id: ActionId,
+    /// The operation kind it would perform.
     pub kind: ActionKind,
+    /// Evidence text it scored on.
     pub label: String,
     /// Instinct confidence millis 0..=1000 (not a probability).
     pub confidence_millis: i16,
@@ -37,15 +41,22 @@ pub struct RankedAction {
 /// Successful finite choice from a policy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PolicyDecision {
+    /// Chosen offered action id.
     pub action_id: ActionId,
+    /// The operation kind chosen.
     pub kind: ActionKind,
+    /// Evidence text of the chosen target.
     pub target_label: String,
+    /// Final confidence millis 0..=1000.
     pub confidence_millis: i16,
+    /// Operation-knowledge ranking before evidence ordering.
     pub operation_ranked: Vec<RankedAction>,
+    /// Target-evidence ranking, the deciding list.
     pub target_ranked: Vec<RankedAction>,
 }
 
 impl PolicyDecision {
+    /// `done`/`blocked` choices end the run.
     pub fn is_terminal(&self) -> bool {
         matches!(self.kind, ActionKind::Done | ActionKind::Blocked)
     }
@@ -53,16 +64,26 @@ impl PolicyDecision {
 
 /// Policy result: choose, abstain, or hard error.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum PolicyOutcome {
+    /// The policy chose a finite action.
     Choice(PolicyDecision),
+    /// Abstain over guess: no offered action scores past the gate.
     Abstain {
+        /// Why the policy abstained (gate name or description).
         reason: String,
+        /// Operation-knowledge ranking at abstain time.
         operation_ranked: Vec<RankedAction>,
+        /// Target-evidence ranking at abstain time.
         target_ranked: Vec<RankedAction>,
     },
 }
 
 impl PolicyOutcome {
+    /// The decision, when the outcome is a choice.
     pub fn as_choice(&self) -> Option<&PolicyDecision> {
         match self {
             Self::Choice(d) => Some(d),
@@ -73,9 +94,16 @@ impl PolicyOutcome {
 
 /// Errors that prevent a decision attempt (not abstention).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum PolicyError {
+    /// The goal has no decidable clause.
     EmptyGoal,
+    /// The offered action space is empty.
     EmptyActionSpace,
+    /// Internal invariant violation (policy bug or hostile input).
     Internal(String),
 }
 
@@ -95,10 +123,15 @@ impl std::error::Error for PolicyError {}
 /// repetition dampening and done-detection).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryEntry {
+    /// Runner step index (0-based).
     pub step: u32,
+    /// Action id dispatched at this step.
     pub action_id: ActionId,
+    /// Operation kind dispatched.
     pub kind: ActionKind,
+    /// Evidence label of the chosen target.
     pub label: String,
+    /// Post-dispatch verification note (empty when unchecked).
     pub verification: String,
 }
 
@@ -116,6 +149,12 @@ impl HistoryEntry {
 
 /// Policy over a finite [`ActionSpace`].
 pub trait UiPolicy {
+    /// Decide what to do next given the space, goal and run history.
+    ///
+    /// # Errors
+    /// [`PolicyError`] when the decision cannot even be attempted
+    /// (empty goal/space, internal failure) — abstention is not an
+    /// error, it is [`PolicyOutcome::Abstain`].
     fn decide(
         &mut self,
         space: &ActionSpace,
@@ -150,10 +189,12 @@ impl Default for InstinctPolicy {
 }
 
 impl InstinctPolicy {
+    /// Create a policy under a confidence `profile`.
     pub fn new(profile: Profile) -> Self {
         Self { profile }
     }
 
+    /// The confidence profile in use.
     pub fn profile(&self) -> Profile {
         self.profile
     }
@@ -169,6 +210,10 @@ fn evidence_of(action: &OfferedAction) -> EvidenceTarget<'_> {
 }
 
 impl UiPolicy for InstinctPolicy {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one linear score→gate→choose flow per clause; splitting it would obscure the gate order"
+    )]
     fn decide(
         &mut self,
         space: &ActionSpace,

@@ -52,6 +52,7 @@ pub const TEXT_CAP: usize = 256;
 /// Why the local policy abstained, forwarded to the endpoint.
 #[derive(Clone, Debug, Default)]
 pub struct AbstainReport {
+    /// Why the local policy abstained (gate name or description).
     pub reason: String,
     /// Best-ranked candidates at abstain time (`target_ranked` if any,
     /// else `operation_ranked`) — evidence, not an offer to re-score.
@@ -84,13 +85,18 @@ impl AbstainReport {
 /// Try `local` first; on [`PolicyOutcome::Abstain`] call `fallback`
 /// exactly once (never on a local choice, never to re-score a winner;
 /// PRD M7.1).
+#[derive(Debug)]
 pub struct EscalatingPolicy<L, H> {
+    /// The local policy; decides first on every observation.
     pub local: L,
+    /// The endpoint consulted once per run, on local abstain only.
     pub fallback: Option<H>,
     calls: u32,
 }
 
 impl<L, H> EscalatingPolicy<L, H> {
+    /// Wrap `local`; `fallback` (when present) receives the abstain
+    /// report and gets at most one call per run.
     pub fn new(local: L, fallback: Option<H>) -> Self {
         Self {
             local,
@@ -149,6 +155,11 @@ fn ambiguous_contenders(ranked: &[RankedAction]) -> bool {
 /// Fallback contract: receives the local abstain as evidence. The
 /// default ignores it and re-runs `decide`.
 pub trait UiEscalate: UiPolicy {
+    /// Decide after the local policy abstained; `abstain` is evidence,
+    /// not an offer to re-score.
+    ///
+    /// # Errors
+    /// [`PolicyError`] as in [`UiPolicy::decide`].
     fn decide_escalating(
         &mut self,
         space: &ActionSpace,
@@ -174,6 +185,9 @@ pub struct CommandEscalation {
 
 impl CommandEscalation {
     /// `cmd` is the argv the CLI collected for `--escalate-cmd`.
+    ///
+    /// # Errors
+    /// A message when `cmd` is empty — the endpoint needs a program.
     pub fn new(cmd: &[String]) -> Result<Self, String> {
         let (program, args) = cmd
             .split_first()
@@ -186,14 +200,18 @@ impl CommandEscalation {
     }
 
     /// Test / CLI override for the 30 s default.
+    #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
     /// Spawn the endpoint, write `req`, read up to [`STDOUT_CAP`],
-    /// enforce `timeout`. Every failure is [`ESCALATION_PROTOCOL`]
-    /// text — a hard error the runner turns into `Blocked`.
+    /// enforce `timeout`.
+    ///
+    /// # Errors
+    /// Every failure is [`ESCALATION_PROTOCOL`] text — a hard error
+    /// the runner turns into `Blocked`.
     fn call(&self, req: &Value) -> Result<String, String> {
         let bad = |m: &str| format!("{ESCALATION_PROTOCOL} {m}");
         let mut child = Command::new(&self.program)
@@ -252,7 +270,7 @@ impl CommandEscalation {
             }
         };
         let _ = child.wait();
-        if buf.len() as u64 > STDOUT_CAP {
+        if u64::try_from(buf.len()).unwrap_or(u64::MAX) > STDOUT_CAP {
             return Err(bad("reply exceeds 64 KiB cap"));
         }
         String::from_utf8(buf).map_err(|_| bad("reply is not UTF-8"))
@@ -301,8 +319,11 @@ impl CommandEscalation {
         })
     }
 
-    /// One `choose` round-trip; violations surface as
-    /// [`ESCALATION_PROTOCOL`] strings for the caller to classify.
+    /// One `choose` round-trip.
+    ///
+    /// # Errors
+    /// Violations surface as [`ESCALATION_PROTOCOL`] strings for the
+    /// caller to classify.
     pub fn choose(
         &mut self,
         space: &ActionSpace,
@@ -320,6 +341,10 @@ impl CommandEscalation {
     /// id is offered and its offered op matches; a `dangerous` offer is
     /// never executable, so it becomes `needs_confirmation` like the
     /// local gate.
+    ///
+    /// # Errors
+    /// [`ESCALATION_PROTOCOL`] text on malformed JSON, wrong shape, an
+    /// unoffered id, or an op mismatch.
     pub fn parse_choose_reply(space: &ActionSpace, reply: &str) -> Result<PolicyOutcome, String> {
         let bad = |m: &str| format!("{ESCALATION_PROTOCOL} {m}");
         let value: Value = serde_json::from_str(reply).map_err(|e| bad(&e.to_string()))?;
@@ -384,6 +409,10 @@ impl CommandEscalation {
     /// `kind:"text"` fallback for a deterministic [`TextError::Missing`]:
     /// ask the endpoint for the payload of the chosen field. Password
     /// fields are never sent (PRD M7.2) — callers check before this.
+    ///
+    /// # Errors
+    /// [`TextError::Invalid`] on a protocol violation or a rejected
+    /// value; endpoint abstentions map to [`TextError::Missing`].
     pub fn resolve_text(
         &mut self,
         goal: &UiGoal,
@@ -405,6 +434,10 @@ impl CommandEscalation {
     /// Parse a `text` reply: `{"text":"…"}` ≤ [`TEXT_CAP`] and single
     /// line; `{"abstain":"…"}` maps back to [`TextError::Missing`] so
     /// the caller abstains as the local tier would.
+    ///
+    /// # Errors
+    /// [`TextError::Invalid`] on malformed JSON, an oversized or
+    /// multi-line payload, or a stale fingerprint.
     pub fn parse_text_reply(
         reply: &str,
         context_fingerprint: u64,
@@ -495,7 +528,7 @@ mod tests {
     }
 
     /// window → textbox + Add button; plus a dangerous `app.quit`
-    /// invoke so the needs_confirmation path has an offer.
+    /// invoke so the `needs_confirmation` path has an offer.
     fn space() -> ActionSpace {
         let tree = UiTree {
             app: "todo".to_owned(),
@@ -753,8 +786,8 @@ mod tests {
         assert_eq!(esc.args, ["a1"]);
     }
 
-    /// The Instinct local path must be unaffected: an InstinctPolicy
-    /// inside EscalatingPolicy still decides normally.
+    /// The Instinct local path must be unaffected: an `InstinctPolicy`
+    /// inside `EscalatingPolicy` still decides normally.
     #[test]
     fn instinct_under_wrapper_still_decides() {
         let space = space();
@@ -865,8 +898,8 @@ mod tests {
         assert!(err.contains("cap"), "{err}");
     }
 
-    /// Exactly STDOUT_CAP bytes is in-budget: `>` not `>=`/`==`.
-    /// Literal 65536 so a mutated cap can't satisfy the test too.
+    /// Exactly `STDOUT_CAP` bytes is in-budget: `>` not `>=`/`==`.
+    /// Literal `65536` so a mutated cap can't satisfy the test too.
     #[cfg(unix)]
     #[test]
     fn call_accepts_exact_cap_reply() {
@@ -893,7 +926,10 @@ mod tests {
         assert_eq!(req["kind"], "choose");
         assert_eq!(req["goal"], "goal x");
         assert_eq!(req["clause"], "goal x");
-        assert!(!req["actions"].as_array().expect("actions").is_empty());
+        assert_ne!(
+            req["actions"].as_array().expect("actions"),
+            &Vec::<serde_json::Value>::new()
+        );
         assert_eq!(req["abstain"]["reason"], "margin");
         assert_eq!(req["abstain"]["ranked"][0]["id"], "CLICK:a");
     }

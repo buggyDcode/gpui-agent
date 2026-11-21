@@ -29,13 +29,22 @@ pub const UNNAMED_OPERATION_CAP: i16 = 500;
 /// cap correctly, but no `ActionKind` maps to them, so they are never
 /// offerable or dispatchable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum OperationKind {
+    /// `click` — activate a clickable node.
     Click,
+    /// `type_text` — typed input into a field.
     TypeText,
     /// Goal-side only — see enum docs.
     Select,
+    /// `done` — every requirement is satisfied.
     Done,
+    /// `blocked` — nothing offered can progress.
     Blocked,
+    /// `wait` — pause for the app to settle.
     Wait,
     /// Goal-side only — see enum docs.
     ScrollDown,
@@ -52,6 +61,7 @@ pub enum OperationKind {
 }
 
 impl OperationKind {
+    /// The wire/evidence name of the kind (`click`, `type_text`, …).
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Click => "click",
@@ -84,9 +94,13 @@ impl OperationKind {
 /// `kind`.
 #[derive(Debug, Clone, Copy)]
 pub struct EvidenceTarget<'a> {
+    /// Offered action's target id.
     pub id: &'a str,
+    /// Evidence text (node label / exploded entity name).
     pub label: &'a str,
+    /// Protocol role of the target, when node-bound.
     pub role: Option<&'a str>,
+    /// The offered operation kind.
     pub kind: OperationKind,
 }
 
@@ -105,7 +119,7 @@ pub fn score_action(goal: &str, target: &EvidenceTarget<'_>) -> Confidence {
 /// Clause-level evidence the policy computes once per `decide` from
 /// the goal text and the observed space. Every channel is additive —
 /// it may raise or withhold evidence but never dispatches — and all
-/// defaults make [`score_action`]/`[`score_operation`] behave exactly
+/// defaults make [`score_action`]/[`score_operation`] behave exactly
 /// as the context-free form.
 #[derive(Clone, Debug, Default)]
 pub struct GoalEvidence {
@@ -183,7 +197,9 @@ pub fn score_action_ctx(goal: &str, target: &EvidenceTarget<'_>, ctx: &GoalEvide
     // near-identical labels ("Delete task 149" vs "Delete task 150")
     // saturate together and the margin collapses.
     let mut soft = |bonus: i32| {
-        let lifted = best.get().saturating_add(bonus as i16);
+        let lifted = best
+            .get()
+            .saturating_add(i16::try_from(bonus).unwrap_or(i16::MAX));
         best = if exact {
             Confidence::saturating(i32::from(lifted))
         } else {
@@ -1231,15 +1247,18 @@ mod tests {
         // arithmetic mutations in scale_by_coverage must move it.
         let expected_scale = {
             let ov = lexical_overlap(goal, "Save Now").map(|c| i32::from(c.get()));
-            let goal_tokens = tokenize(goal).len() as i64;
-            let hits = tokenize(goal)
-                .iter()
-                .filter(|g| tokenize("Save Now").contains(g))
-                .count() as i64;
-            ov.map(|o| o as i64 * hits / goal_tokens)
+            let goal_tokens = i64::try_from(tokenize(goal).len()).expect("len fits i64");
+            let hits = i64::try_from(
+                tokenize(goal)
+                    .iter()
+                    .filter(|g| tokenize("Save Now").contains(g))
+                    .count(),
+            )
+            .expect("count fits i64");
+            ov.map(|o| i64::from(o) * hits / goal_tokens)
         };
         if let Some(scaled) = expected_scale {
-            let hits_part = 150 * 2 / tokenize(goal).len() as i64;
+            let hits_part = 150 * 2 / i64::try_from(tokenize(goal).len()).expect("len fits i64");
             assert_eq!(i64::from(c.get()), scaled + hits_part);
         }
     }
@@ -1361,7 +1380,7 @@ mod tests {
         let ov = lexical_overlap("type milk into the search field", "search");
         assert!(ov.is_some_and(|c| c.get() > 0), "{ov:?}");
         assert_eq!(
-            lexical_overlap("type milk", "zebra").map(|c| c.get()),
+            lexical_overlap("type milk", "zebra").map(instinct_core::Confidence::get),
             Some(0)
         );
         let q = normalize(
@@ -1378,6 +1397,6 @@ mod tests {
             tokens("Type 'Milk' into Search!"),
             ["type", "milk", "into", "search"]
         );
-        assert!(tokens("   ").is_empty());
+        assert_eq!(tokens("   "), Vec::<String>::new());
     }
 }

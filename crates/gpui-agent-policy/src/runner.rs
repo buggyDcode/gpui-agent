@@ -160,11 +160,15 @@ fn substitute_pronouns(clause: &str, typed: &[String]) -> String {
 /// A named candidate reported inside an abstain outcome or receipt.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Candidate {
+    /// Offered action id.
     pub id: String,
+    /// The operation kind (`click`, `type`, …).
     pub op: String,
     /// Target role at offer time (`""` for entity-bound/controls).
     pub role: String,
+    /// Evidence label of the candidate.
     pub name: String,
+    /// Final confidence millis 0..=1000.
     pub confidence_millis: i16,
 }
 
@@ -195,11 +199,17 @@ pub fn top_candidates(space: &ActionSpace, ranked: &[RankedAction], k: usize) ->
 /// no clocks, no host timings.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct StepRecord {
+    /// Step index in the run (1-based).
     pub step: u32,
+    /// The clause the step was acting on.
     pub clause: String,
+    /// Dispatched operation kind.
     pub op: String,
+    /// Dispatched action id.
     pub id: String,
+    /// Evidence label of the dispatched target.
     pub name: String,
+    /// Final confidence millis at dispatch.
     pub confidence_millis: i16,
     /// `success` | `state-changed` | `no-effect` | `wrong-effect` |
     /// `stale` | `done` | `wait` — the strings the policy's
@@ -209,15 +219,27 @@ pub struct StepRecord {
 
 /// Terminal run state (PRD M6.2 outcomes).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum RunOutcome {
+    /// Every clause satisfied — run complete.
     Done,
+    /// The runner could not dispatch (escalation protocol failure,
+    /// confirmation refused, …).
     Blocked {
+        /// Why the run was blocked.
         reason: String,
     },
+    /// The policy abstained on a clause.
     Abstained {
+        /// Why the policy abstained.
         reason: String,
+        /// Best-ranked candidates at abstain time.
         candidates: Vec<Candidate>,
     },
+    /// The step cap tripped before completion.
     CapHit,
 }
 
@@ -245,27 +267,38 @@ impl RunOutcome {
 /// behavior (no clocks in the payload).
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct RunReceipt {
+    /// The goal text as passed to `run`.
     pub goal: String,
+    /// Goal split into sequential clauses (`PronounBinder` output).
     pub clauses: Vec<String>,
     /// The `outcome` label's enum — kept alongside the serialized
     /// string so callers reuse `RunOutcome::exit_code` instead of
     /// re-matching labels.
     #[serde(skip_serializing)]
     pub outcome_kind: RunOutcome,
+    /// `done` | `blocked` | `abstained` | `cap_hit`.
     pub outcome: String,
+    /// Blocking/abstain reason when the run did not finish `done`.
     pub reason: Option<String>,
+    /// Best-ranked candidates when the run abstained.
     pub candidates: Vec<Candidate>,
+    /// Every step taken, in order.
     pub steps: Vec<StepRecord>,
+    /// Last observed tree revision.
     pub final_rev: Option<u64>,
     /// Protocol ops the runner sent (snapshot/keybindings/dispatch/
     /// since) — the M6.4 call-budget tripwire.
     pub calls: u32,
+    /// Policy/instinct build info embedded in receipts.
     pub engine: EngineInfo,
 }
 
+/// The policy/instinct versions that produced a receipt.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct EngineInfo {
+    /// `gpui-agent-policy` crate version.
     pub policy: &'static str,
+    /// `instinct-core` version requirement at build time.
     pub instinct: &'static str,
 }
 
@@ -277,6 +310,8 @@ const INSTINCT_VERSION_REQ: &str = "0.1";
 /// by the caller (recipe crate) so this crate stays recipe-free.
 pub type InvokeArgs = dyn FnMut(&str, &str) -> Result<serde_json::Value, String>;
 
+/// Sequential-goal runner: observe → decide → dispatch → verify until
+/// done, blocked, abstained, or capped.
 pub struct Runner<'a> {
     client: &'a mut AgentClient,
     policy: Box<dyn UiPolicy>,
@@ -291,7 +326,22 @@ pub struct Runner<'a> {
     pub calls: u32,
 }
 
+impl std::fmt::Debug for Runner<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Runner")
+            .field("delivery", &self.delivery)
+            .field("invokes", &self.invokes)
+            .field("caps", &self.caps)
+            .field("wait_poll_ms", &self.wait_poll_ms)
+            .field("calls", &self.calls)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a> Runner<'a> {
+    /// Build a runner over `client` with `policy`; `invokes` are the
+    /// host's offered invoke schemas and `invoke_args` resolves their
+    /// args at dispatch time.
     pub fn new(
         client: &'a mut AgentClient,
         policy: impl UiPolicy + 'static,
@@ -315,6 +365,7 @@ impl<'a> Runner<'a> {
     /// Optional `kind:"text"` command fallback used only when the
     /// deterministic resolver answers [`TextError::Missing`] (M7.2);
     /// password-role fields are never escalated.
+    #[must_use]
     pub fn with_text_escalation(mut self, escalation: Option<CommandEscalation>) -> Self {
         self.text_escalation = escalation;
         self
@@ -342,12 +393,15 @@ impl<'a> Runner<'a> {
         )
     }
 
+    /// Override the default run limits (steps, repeats, waits).
+    #[must_use]
     pub fn with_caps(mut self, caps: RunnerCaps) -> Self {
         self.caps = caps;
         self
     }
 
     /// Shorter polls for tests / bounded `wait for` loops.
+    #[must_use]
     pub fn with_wait_poll_ms(mut self, ms: u64) -> Self {
         self.wait_poll_ms = ms.max(1);
         self
@@ -432,6 +486,15 @@ impl<'a> Runner<'a> {
 
     /// Run `goal` to a terminal outcome. Deterministic given the same
     /// host behavior; `Err` is a transport/protocol failure (exit 1).
+    /// Run `goal` end to end.
+    ///
+    /// # Errors
+    /// Protocol/IO failures (`observe`, `keybindings`, dispatch) surface
+    /// as strings; abstentions and caps are outcomes, not errors.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one linear observe-decide-dispatch-verify loop; splitting it would hide clause-state threading"
+    )]
     pub fn run(&mut self, goal: &str) -> Result<RunReceipt, String> {
         let clauses: Vec<String> = split_sequential_clauses(goal)
             .iter()
@@ -453,7 +516,7 @@ impl<'a> Runner<'a> {
         let mut rev = tree.rev;
         let keybindings = self.keybinding_catalog()?;
 
-        while steps.len() < self.caps.max_steps as usize {
+        while steps.len() < usize::try_from(self.caps.max_steps).unwrap_or(usize::MAX) {
             let clause = match clauses.get(clause_idx) {
                 Some(c) => substitute_pronouns(c, &typed),
                 // Every clause completed — reached when a WaitFor
@@ -671,7 +734,7 @@ impl<'a> Runner<'a> {
             } else {
                 no_effect += 1;
             }
-            let n = steps.len() as u32 + 1;
+            let n = u32::try_from(steps.len()).unwrap_or(u32::MAX) + 1;
             history.push(HistoryEntry {
                 step: n,
                 action_id: decision.action_id.clone(),
@@ -718,6 +781,14 @@ impl<'a> Runner<'a> {
 
     /// `TYPE`/`SET_VALUE` verify on the value read back; every other op
     /// verifies on a non-empty diff (PRD M6.2 "consistent with the op").
+    #[expect(
+        clippy::unused_self,
+        reason = "kept a method so a future caps field can tune verification"
+    )]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "`changed` is the since-diff answer — a bool is the interface"
+    )]
     fn verify(
         &self,
         decision: &PolicyDecision,
@@ -752,6 +823,10 @@ impl<'a> Runner<'a> {
         }
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "receipt() consumes the built clause/step lists — callers move, not lend"
+    )]
     fn receipt(
         &self,
         goal: &str,
@@ -788,6 +863,10 @@ impl<'a> Runner<'a> {
 /// Build the wire op for a decision — node-bound kinds carry the
 /// build-time fingerprint as `expect_fingerprint` (M5). Shared by
 /// `Runner` and MCP `act` so the dispatch table can't drift apart.
+///
+/// # Errors
+/// A message when the decision's kind is not dispatchable or its
+/// target is missing from the offered space.
 pub fn op_for_decision(
     decision: &PolicyDecision,
     action: &OfferedAction,
