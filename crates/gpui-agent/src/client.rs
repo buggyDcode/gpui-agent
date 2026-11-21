@@ -994,7 +994,8 @@ impl AgentClient {
     /// second snapshot. A read-back that cannot be taken leaves the action's
     /// own result as it was (`delivered_unverified`). A target absent from
     /// the first read fails with `not_found` and `not_delivered`, and the
-    /// action is not sent.
+    /// action is not sent. On a [secret](crate::tree::UiNode::is_secret)
+    /// target `after` says whether the value changed, never what it is.
     pub fn act(&mut self, op: &Op, read_back: bool) -> Result<Response, CallFailure> {
         let Some(target) = op.read_back_target().filter(|_| read_back) else {
             return self.call(op);
@@ -1013,7 +1014,10 @@ impl AgentClient {
         };
         // The read just taken has no such node: the action could only
         // fail, so it is not sent and the caller learns why.
-        if before.as_ref().is_some_and(|(_, state)| !state.exists) {
+        if before
+            .as_ref()
+            .is_some_and(|(_, target)| !target.state.exists)
+        {
             return Err(CallFailure::with_code(
                 format!("node `{target}` not found"),
                 crate::error_code::NOT_FOUND,
@@ -1024,6 +1028,7 @@ impl AgentClient {
         let Some((before_rev, before_state)) = before else {
             return Ok(resp);
         };
+        let before_secret = before_state.secret;
         let unchanged_rev = before_rev.is_some_and(|rev| {
             self.call_response(&Op::Revision)
                 .is_ok_and(|probe| probe.ok && probe.rev == Some(rev))
@@ -1036,10 +1041,19 @@ impl AgentClient {
                 Err(_) => None,
             }
         };
-        if let Some(mut after) = after {
-            after.changed = after != before_state;
+        if let Some(Target {
+            state: mut after,
+            secret,
+        }) = after
+        {
+            after.changed = after != before_state.state;
             if after.changed {
                 resp.delivery_status = Some(DeliveryStatus::DeliveredVerified);
+            }
+            // The masked value told whether a secret changed; the reply
+            // says only that.
+            if secret || before_secret {
+                after.value = None;
             }
             resp.after = Some(after);
         }
@@ -1292,28 +1306,44 @@ fn transport_failure(err: SendError, acts: bool) -> CallFailure {
     CallFailure::with_code(err.message, code, acts.then_some(delivery))
 }
 
+/// A read-back of the target, and whether it is a
+/// [secret](crate::tree::UiNode::is_secret) node: its `value` is then
+/// masked, compared, and left out of the reply.
+#[derive(Debug, Clone)]
+struct Target {
+    state: ReadBack,
+    secret: bool,
+}
+
 /// The snapshot's revision and `target`'s state in it. `None` when the
 /// snapshot failed or the id is ambiguous, so there is nothing to compare.
-fn read_target(snap: &Response, target: &str) -> Option<(Option<u64>, ReadBack)> {
+/// A secret value is masked here as well, for hosts that predate redaction.
+fn read_target(snap: &Response, target: &str) -> Option<(Option<u64>, Target)> {
     let tree = snap.tree.as_ref().filter(|_| snap.ok)?;
     let rev = snap.rev.or(tree.rev);
     let found = tree.find_all(target);
     let state = match found.as_slice() {
-        [] => ReadBack {
-            exists: false,
-            value: None,
-            checked: None,
-            focused: None,
-            enabled: None,
-            changed: false,
+        [] => Target {
+            state: ReadBack {
+                exists: false,
+                value: None,
+                checked: None,
+                focused: None,
+                enabled: None,
+                changed: false,
+            },
+            secret: false,
         },
-        [node] => ReadBack {
-            exists: true,
-            value: node.value.clone(),
-            checked: node.checked,
-            focused: Some(node.focused),
-            enabled: Some(node.enabled),
-            changed: false,
+        [node] => Target {
+            state: ReadBack {
+                exists: true,
+                value: node.redacted_value().map(std::borrow::Cow::into_owned),
+                checked: node.checked,
+                focused: Some(node.focused),
+                enabled: Some(node.enabled),
+                changed: false,
+            },
+            secret: node.is_secret(),
         },
         _ => return None,
     };
@@ -1329,6 +1359,11 @@ fn parse_response_line(line: &[u8]) -> Result<Response, String> {
     // Hosts that predate `error_code` send only the prefixed text; classify
     // it with the same table the server uses.
     resp.fill_error_code();
+    // Hosts that predate redaction send secret values in full: mask them on
+    // arrival, so no output built from this tree can show one.
+    if let Some(tree) = resp.tree.as_mut() {
+        tree.redact_secrets();
+    }
     Ok(resp)
 }
 
@@ -1641,6 +1676,36 @@ mod tests {
         assert!(after.exists && after.changed);
         assert_eq!(after.value.as_deref(), Some("xy"));
         assert_eq!(after.enabled, Some(true));
+    }
+
+    /// A host that predates redaction sends a password field's real
+    /// value: the read-back still says it changed, and never what it is.
+    #[test]
+    fn read_back_of_a_password_reports_the_change_without_the_value() {
+        let password = |value: &str, rev: u64| {
+            let mut snap = tree_with(value, rev);
+            snap["tree"]["nodes"][0]["role"] = serde_json::json!("password");
+            snap
+        };
+        let (addr, server) = fake_host(vec![
+            Some(password("hunter", 1)),
+            Some(serde_json::json!({ "ok": true })),
+            Some(serde_json::json!({ "ok": true, "rev": 2 })),
+            Some(password("hunter2", 2)),
+        ]);
+        let resp = client_for(addr)
+            .act(&Op::type_text("a", "2"), true)
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(
+            resp.delivery_status,
+            Some(DeliveryStatus::DeliveredVerified)
+        );
+        let after = resp.after.unwrap();
+        assert!(after.exists && after.changed);
+        assert_eq!(after.value, None);
+        let json = serde_json::to_string(&after).unwrap();
+        assert!(!json.contains("hunter"), "{json}");
     }
 
     #[test]

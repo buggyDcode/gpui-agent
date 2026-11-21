@@ -144,6 +144,8 @@ Read-back (`AgentClient::act`) snapshots the target before and after
 `long_press`, and reports it as `after`:
 `{exists, value?, checked?, focused?, enabled?, changed}`. When the host
 reports the same `rev` after the action, the second snapshot is skipped.
+On a [secret](#secret-values) target `after` has no `value`: `changed`
+still says whether the value moved.
 When the first snapshot has no node with the target id, the action is
 not sent: it fails with `not_found` and `not_delivered`.
 The CLI and MCP read back by default; `--no-read-back` / `no_read_back:
@@ -184,13 +186,13 @@ The server keeps a per-connection ring of recent snapshots. For
 `format:"compact"` returns `result: {"compact": "<text>"}` instead of
 `tree`: one line per **visible** node,
 `"<indent><id> <role> \"<name>\"  [<flag>|<flag>]"` with flags
-`checked` / `disabled` / `focused` / `value="…"` (truncated; password
-nodes never emit `value`). Indentation is two spaces per depth. Compact
+`checked` / `disabled` / `focused` / `value="…"` (truncated;
+[secret](#secret-values) nodes never emit `value`). Indentation is two spaces per depth. Compact
 responses carry `rev` too — they combine with `since`.
 
 `fingerprints:true` adds `Response.fingerprints`:
-`{id → FNV-1a hash of the node's stable fields}`. Bounds and focus are
-excluded — layout wobble does not churn the hash. Used by
+`{id → FNV-1a hash of the node's stable fields}`, the value in its
+[masked](#secret-values) form. Bounds and focus are excluded — layout wobble does not churn the hash. Used by
 `expect_fingerprint` below; hosts that implement it list
 `expect_fingerprint` in `hello.features`.
 
@@ -272,6 +274,21 @@ gpui-agent assert --id todo-add --in-viewport   # desktop with real bounds
 ```json
 {"v":2,"id":"1","op":"wait_until","timeout_ms":1000,"target":"todo-nav","visible":false}
 ```
+
+### Secret values
+
+A node whose `role` or one of whose `states` is `password` or `secret`
+(`gpui_agent::SECRET_MARKERS`) holds a secret. Its `value` never leaves
+the host: every snapshot, `since` diff (`added` and `changed`) and
+resync tree carries it masked, one `•` per character, so an agent still
+sees that typing changed the field and how long it is. Compact lines omit
+it. Fingerprints hash the masked value, so a fingerprint computed from the
+tree a client received matches the host's, and cannot be used to test
+guesses. `assert` / `wait_until` compare the real value; a mismatch says
+`expected another value (secret values are not shown)` without echoing
+either value. A host marks such a field with role `password` or adds the
+`secret` state (an API key in a plain text field). The client masks trees
+from hosts that predate this rule as they arrive.
 
 ## Delivery modes (`click` / `type` / `key`)
 

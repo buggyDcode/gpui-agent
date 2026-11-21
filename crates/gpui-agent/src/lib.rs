@@ -90,8 +90,8 @@ pub use server::{
 };
 pub use testing::TestHost;
 pub use tree::{
-    Bounds, IN_VIEWPORT_UNAVAILABLE, UiNode, UiTree, in_viewport_unavailable,
-    is_in_viewport_unavailable, role,
+    Bounds, IN_VIEWPORT_UNAVAILABLE, SECRET_MARKERS, SECRET_MASK, UiNode, UiTree,
+    in_viewport_unavailable, is_in_viewport_unavailable, role,
 };
 pub use virtual_input::{
     AgentCursor, VIRTUAL_UNAVAILABLE, VirtualPointerClick, hit_point, keystroke_token, plan_click,

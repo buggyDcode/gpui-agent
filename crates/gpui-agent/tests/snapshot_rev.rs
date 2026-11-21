@@ -380,6 +380,158 @@ fn snapshot_compact_format() {
     assert!(compact.contains("in password \"Secret\""));
 }
 
+// ---------- secret redaction ----------
+
+fn secret_nodes(password: &str, key: &str) -> Vec<UiNode> {
+    let mut api_key = node("key", "textbox", "API key").with_value(key);
+    api_key.states.push("secret".into());
+    vec![node("w", "window", "W").with_children(vec![
+        node("pw", "password", "Password").with_value(password),
+        api_key,
+        node("user", "textbox", "User").with_value("ada"),
+    ])]
+}
+
+#[test]
+fn json_snapshot_masks_secret_values() {
+    let mut host = CountingHost::new(Some(1), secret_nodes("hunter2", "sk-123"));
+    let mut cache = TreeCache::new();
+    let resp = handle_request_cached(&mut host, &mut cache, req(Op::snapshot()), None, None);
+    let wire = serde_json::to_string(&resp).unwrap();
+    assert!(!wire.contains("hunter2"), "{wire}");
+    assert!(!wire.contains("sk-123"), "{wire}");
+    let tree = resp.tree.expect("tree");
+    assert_eq!(tree.find("pw").unwrap().value.as_deref(), Some("•••••••"));
+    assert_eq!(tree.find("key").unwrap().value.as_deref(), Some("••••••"));
+    assert_eq!(tree.find("user").unwrap().value.as_deref(), Some("ada"));
+}
+
+#[test]
+fn compact_snapshot_omits_secret_state_values() {
+    let mut host = CountingHost::new(Some(1), secret_nodes("hunter2", "sk-123"));
+    let mut cache = TreeCache::new();
+    let resp = handle_request_cached(
+        &mut host,
+        &mut cache,
+        req(Op::snapshot_since(0, Some(SnapshotFormat::Compact))),
+        None,
+        None,
+    );
+    let compact = resp.result.expect("result")["compact"]
+        .as_str()
+        .expect("compact")
+        .to_string();
+    assert!(!compact.contains("sk-123"), "{compact}");
+    assert!(!compact.contains("hunter2"), "{compact}");
+    assert!(compact.contains("value=\"ada\""), "{compact}");
+}
+
+#[test]
+fn diff_masks_changed_and_added_secret_values() {
+    let mut host = CountingHost::new(Some(1), secret_nodes("hunter", "sk-1"));
+    let mut cache = TreeCache::new();
+    let _ = handle_request_cached(&mut host, &mut cache, req(Op::snapshot()), None, None);
+    host.rev = Some(2);
+    let mut nodes = secret_nodes("hunter2", "sk-1");
+    nodes[0]
+        .children
+        .push(node("pw2", "password", "Confirm").with_value("hunter2"));
+    host.nodes = nodes;
+    let resp = handle_request_cached(
+        &mut host,
+        &mut cache,
+        req(Op::snapshot_since(1, None)),
+        None,
+        None,
+    );
+    let result = resp.result.expect("result");
+    let wire = result.to_string();
+    assert!(!wire.contains("hunter"), "{wire}");
+    // The typed character still shows as a change.
+    let changed = result["diff"]["changed"].as_array().expect("changed");
+    let pw = changed
+        .iter()
+        .find(|c| c["id"] == "pw")
+        .expect("pw changed");
+    assert_eq!(pw["fields"]["value"], "•••••••");
+    let added = result["diff"]["added"].as_array().expect("added");
+    assert_eq!(added[0]["value"], "•••••••");
+}
+
+#[test]
+fn fingerprints_do_not_hash_secret_values() {
+    let tree = tree_with(Some(1), secret_nodes("hunter2", "sk-123"));
+    let other = tree_with(Some(1), secret_nodes("letmein", "sk-999"));
+    // Same length: the fingerprint cannot tell the values apart, so it
+    // cannot be used to test guesses.
+    assert_eq!(tree.fingerprint_of("pw"), other.fingerprint_of("pw"));
+    assert_eq!(tree.fingerprint_of("key"), other.fingerprint_of("key"));
+    // A client fingerprinting the redacted tree gets the host's values.
+    let mut redacted = tree.clone();
+    redacted.redact_secrets();
+    assert_eq!(redacted.fingerprint_map(), tree.fingerprint_map());
+    // The gate still accepts the fingerprint the client saw.
+    let mut host = CountingHost::new(Some(1), secret_nodes("hunter2", "sk-123"));
+    let mut cache = TreeCache::new();
+    let fp = redacted.fingerprint_of("pw").unwrap();
+    let resp = handle_request_cached(
+        &mut host,
+        &mut cache,
+        req(Op::type_text("pw", "x").with_fingerprint(fp)),
+        None,
+        None,
+    );
+    assert!(resp.ok, "{:?}", resp.error);
+}
+
+#[test]
+fn assert_compares_the_real_secret_without_echoing_it() {
+    let mut host = CountingHost::new(Some(1), secret_nodes("hunter2", "sk-123"));
+    let mut cache = TreeCache::new();
+    let spec = |value: &str| AssertSpec {
+        target: "pw".into(),
+        value: Some(value.into()),
+        ..AssertSpec::default()
+    };
+    let ok = handle_request_cached(
+        &mut host,
+        &mut cache,
+        req(Op::Assert {
+            spec: spec("hunter2"),
+        }),
+        None,
+        None,
+    );
+    assert!(ok.ok, "{:?}", ok.error);
+    let wrong = handle_request_cached(
+        &mut host,
+        &mut cache,
+        req(Op::Assert {
+            spec: spec("guess-1"),
+        }),
+        None,
+        None,
+    );
+    let error = wrong.error.expect("error");
+    assert!(
+        !error.contains("hunter2") && !error.contains("guess-1"),
+        "{error}"
+    );
+    assert_eq!(gpui_agent::error_code_of(&error), "assert_failed");
+    let waited = handle_request_cached(
+        &mut host,
+        &mut cache,
+        req(Op::wait_until(spec("guess-1"), 20)),
+        None,
+        None,
+    );
+    let error = waited.error.expect("error");
+    assert!(
+        !error.contains("hunter2") && !error.contains("guess-1"),
+        "{error}"
+    );
+}
+
 // ---------- diff correctness ----------
 
 #[test]

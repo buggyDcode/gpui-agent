@@ -19,6 +19,16 @@ pub mod role {
     pub const DIALOG: &str = "dialog";
 }
 
+/// Roles and states that mark a node whose value is a secret (a password
+/// field, an API key). Such a value never leaves the host: snapshots,
+/// diffs, fingerprints and `assert` errors see it [masked](UiNode::redacted_value).
+pub const SECRET_MARKERS: &[&str] = &["password", "secret"];
+
+/// The character a secret value is masked with, one per character of the
+/// value: the length is what the field shows on screen, and a masked
+/// value still changes when text is typed into it.
+pub const SECRET_MASK: char = '•';
+
 /// Axis-aligned bounds in logical pixels. Hosts that cannot measure
 /// layout (headless, or before the first frame) send zeros.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -247,6 +257,44 @@ impl UiNode {
             .find_map(|child| child.find_with_parent(id, Some(self.id.as_str())))
     }
 
+    /// True when the node's role or one of its states is in
+    /// [`SECRET_MARKERS`] (`password`, `secret`).
+    pub fn is_secret(&self) -> bool {
+        SECRET_MARKERS.contains(&self.role.as_str())
+            || self
+                .states
+                .iter()
+                .any(|state| SECRET_MARKERS.contains(&state.as_str()))
+    }
+
+    /// The value as it may leave the host: unchanged on an ordinary node,
+    /// one [`SECRET_MASK`] per character on a [secret](Self::is_secret)
+    /// node. Masking a masked value gives the same value, so a client that
+    /// works on a redacted tree computes the host's fingerprints.
+    pub fn redacted_value(&self) -> Option<std::borrow::Cow<'_, str>> {
+        let value = self.value.as_deref()?;
+        Some(if self.is_secret() {
+            std::borrow::Cow::Owned(
+                std::iter::repeat_n(SECRET_MASK, value.chars().count()).collect(),
+            )
+        } else {
+            std::borrow::Cow::Borrowed(value)
+        })
+    }
+
+    /// Mask the value of this node and of every secret descendant
+    /// ([`redacted_value`](Self::redacted_value)).
+    pub fn redact_secrets(&mut self) {
+        if self.is_secret() {
+            if let Some(masked) = self.redacted_value().map(std::borrow::Cow::into_owned) {
+                self.value = Some(masked);
+            }
+        }
+        for child in &mut self.children {
+            child.redact_secrets();
+        }
+    }
+
     /// Content fingerprint for the M5 `expect_fingerprint` staleness
     /// gate: FNV-1a/64 over
     /// `id, role, name, enabled, visible, checked, value-hash, states
@@ -256,6 +304,10 @@ impl UiNode {
     /// and a paint/resize that moves a node does not make the action
     /// unsafe. Focus is excluded for the same reason — a focus shift
     /// alone does not change what a click on `id` would do.
+    ///
+    /// The value hashed is the [redacted](Self::redacted_value) one: a
+    /// fingerprint is sent to the client, and a hash of a short password
+    /// can be reversed by trying candidates.
     ///
     /// Not serialized by default; `snapshot` exposes fingerprints only
     /// with `fingerprints: true`.
@@ -283,8 +335,7 @@ impl UiNode {
             }],
         );
         let value_hash = self
-            .value
-            .as_deref()
+            .redacted_value()
             .map_or(0u64, |v| feed(OFF, v.as_bytes()));
         h = feed(h, &value_hash.to_le_bytes());
         for state in &self.states {
@@ -427,6 +478,13 @@ impl UiTree {
     pub fn apply_bounds_map(&mut self, map: &std::collections::HashMap<String, Bounds>) {
         for node in &mut self.nodes {
             node.apply_bounds_map(map);
+        }
+    }
+
+    /// Mask every secret value in the tree ([`UiNode::redact_secrets`]).
+    pub fn redact_secrets(&mut self) {
+        for node in &mut self.nodes {
+            node.redact_secrets();
         }
     }
 

@@ -338,7 +338,8 @@ pub fn handle_request_cached(
 /// `snapshot` — with `format:"compact"` the payload is one line per
 /// visible node in `result.compact`; with `since` it is `unchanged`, a
 /// `diff` against a ring-cached revision, or the full tree + `full:true`
-/// when the client's revision is no longer remembered.
+/// when the client's revision is no longer remembered. Every form masks
+/// secret values ([`UiNode::redact_secrets`]), fingerprints included.
 fn snapshot_response(
     host: &dyn AgentHost,
     cache: &mut TreeCache,
@@ -370,15 +371,23 @@ fn snapshot_response(
                 resp.result = Some(serde_json::json!({ "diff": diff }));
             }
             None => {
-                resp.tree = Some((*tree).clone());
+                resp.tree = Some(redacted(&tree));
                 resp.result = Some(serde_json::json!({ "full": true }));
             }
         },
         None => {
-            resp.tree = Some((*tree).clone());
+            resp.tree = Some(redacted(&tree));
         }
     }
     resp
+}
+
+/// The tree as it is sent: secret values masked. The cache keeps the
+/// host's own values, so `assert` and `wait_until` compare against them.
+fn redacted(tree: &UiTree) -> UiTree {
+    let mut tree = tree.clone();
+    tree.redact_secrets();
+    tree
 }
 
 static INLINE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -602,6 +611,14 @@ pub fn assert_tree(tree: &UiTree, spec: &AssertSpec) -> Result<(), String> {
         }
         if let Some(value) = spec.value.as_deref() {
             if node.value.as_deref() != Some(value) {
+                // Neither value is echoed: the caller's guess at a secret is
+                // as sensitive as the secret itself.
+                if node.is_secret() {
+                    return Err(format!(
+                        "node `{}` value: expected another value (secret values are not shown)",
+                        spec.target
+                    ));
+                }
                 return Err(format!(
                     "node `{}` value: expected {value:?}, got {:?}",
                     spec.target, node.value
