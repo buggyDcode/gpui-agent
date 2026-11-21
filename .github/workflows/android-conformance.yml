@@ -6,8 +6,6 @@
 name: Android conformance
 
 on:
-  push:
-    branches: [devin/1795228651-issue77-m5-android-ci]
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
