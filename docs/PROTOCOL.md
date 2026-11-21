@@ -298,6 +298,10 @@ older hosts' raw-value hashes from being exposed.
 `run --goal` verifies a `TYPE` / `SET_VALUE` into a secret field by the
 masked value's length, and counts the text it typed there as entered
 while the field still holds that many characters.
+On hosts without `secret_redaction`, `run --goal` and MCP `act` dispatch
+known secret-field actions without `expect_fingerprint`, since the legacy
+host's raw-value fingerprint cannot be derived safely from the masked tree.
+Other node actions still require their fingerprint.
 
 To type a secret without putting it in the process list or the shell
 history, pipe it: `gpui-agent type --stdin <id> < secret.txt` (also

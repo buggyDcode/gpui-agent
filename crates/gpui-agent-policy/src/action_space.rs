@@ -215,6 +215,7 @@ pub struct OfferedAction {
     /// only for node-bound kinds; `act` sends it as
     /// `expect_fingerprint` on every mutating dispatch.
     fingerprint: Option<u64>,
+    fingerprint_omitted_for_legacy_secret: bool,
     /// Observed `value`/`checked`/`states` of the target (M7 wire).
     /// `None` for entities, controls, and nodes with no state.
     state: Option<NodeState>,
@@ -243,6 +244,9 @@ impl OfferedAction {
     /// Build-time `UiNode::fingerprint` for node-bound actions (M5).
     pub fn fingerprint(&self) -> Option<u64> {
         self.fingerprint
+    }
+    pub(crate) fn fingerprint_omitted_for_legacy_secret(&self) -> bool {
+        self.fingerprint_omitted_for_legacy_secret
     }
     /// Observed control state of the target at build time.
     pub fn state(&self) -> Option<&NodeState> {
@@ -342,6 +346,7 @@ impl ActionSpace {
                     role: Some("keybinding".to_owned()),
                     dangerous: binding_is_dangerous(kb),
                     fingerprint: None,
+                    fingerprint_omitted_for_legacy_secret: false,
                     state: None,
                 },
             );
@@ -358,6 +363,7 @@ impl ActionSpace {
                     role: Some("invoke".to_owned()),
                     dangerous: invoke.dangerous,
                     fingerprint: None,
+                    fingerprint_omitted_for_legacy_secret: false,
                     state: None,
                 },
             );
@@ -379,6 +385,7 @@ impl ActionSpace {
                     role: None,
                     dangerous: false,
                     fingerprint: None,
+                    fingerprint_omitted_for_legacy_secret: false,
                     state: None,
                 },
             );
@@ -532,8 +539,9 @@ fn collect_node(
         });
         let parent_role = parent.map(|p| p.role.as_str());
         let parent_id = parent.map(|p| p.id.as_str());
+        let fingerprint_omitted_for_legacy_secret = node.is_secret() && !secret_redaction;
         let fingerprint =
-            (!node.is_secret() || secret_redaction).then(|| node.fingerprint(parent_id));
+            (!fingerprint_omitted_for_legacy_secret).then(|| node.fingerprint(parent_id));
         let state = NodeState::of(node);
         let clickable = matches!(
             node.role.as_str(),
@@ -551,6 +559,7 @@ fn collect_node(
                     role: Some(node.role.clone()),
                     dangerous: false,
                     fingerprint,
+                    fingerprint_omitted_for_legacy_secret,
                     state: state.clone(),
                 },
             );
@@ -567,6 +576,7 @@ fn collect_node(
                         role: Some(node.role.clone()),
                         dangerous: false,
                         fingerprint,
+                        fingerprint_omitted_for_legacy_secret,
                         state: state.clone(),
                     },
                 );
@@ -584,6 +594,7 @@ fn collect_node(
                     role: Some(node.role.clone()),
                     dangerous: false,
                     fingerprint,
+                    fingerprint_omitted_for_legacy_secret,
                     state,
                 },
             );
@@ -725,6 +736,7 @@ mod tests {
         let space = ActionSpace::from_tree_with_secret_redaction(&tree, &[], &[], false);
         let action = space.get_str("TYPE:password-field").unwrap();
         assert_eq!(action.fingerprint(), None);
+        assert!(action.fingerprint_omitted_for_legacy_secret());
         assert_eq!(
             ActionSpace::from_tree(&tree, &[], &[])
                 .get_str("TYPE:password-field")
@@ -733,12 +745,48 @@ mod tests {
             None
         );
         assert!(
-            ActionSpace::from_tree_with_secret_redaction(&tree, &[], &[], true)
+            !ActionSpace::from_tree_with_secret_redaction(&tree, &[], &[], true)
                 .get_str("TYPE:password-field")
                 .unwrap()
-                .fingerprint()
-                .is_some()
+                .fingerprint_omitted_for_legacy_secret()
         );
         server.join().unwrap();
+    }
+
+    #[test]
+    fn unmarked_node_action_without_a_fingerprint_is_rejected() {
+        let tree = UiTree {
+            app: "test".into(),
+            platform: PlatformKind::Headless,
+            ready: true,
+            nodes: vec![UiNode::new("plain", role::TEXTBOX, "Plain")],
+            rev: None,
+        };
+        let mut action = ActionSpace::from_tree(&tree, &[], &[])
+            .get_str("TYPE:plain")
+            .unwrap()
+            .clone();
+        action.fingerprint = None;
+        assert!(!action.fingerprint_omitted_for_legacy_secret());
+        let decision = crate::policy::PolicyDecision {
+            action_id: action.id().clone(),
+            kind: ActionKind::Type,
+            target_label: action.label().to_owned(),
+            confidence_millis: 1000,
+            operation_ranked: Vec::new(),
+            target_ranked: Vec::new(),
+        };
+
+        let error = crate::runner::op_for_decision(
+            &decision,
+            &action,
+            Some("text"),
+            gpui_agent::protocol::DeliveryMode::Semantic,
+            "type text",
+            &[],
+            |_, _| Ok(serde_json::Value::Null),
+        )
+        .unwrap_err();
+        assert!(error.contains("has no fingerprint"), "{error}");
     }
 }

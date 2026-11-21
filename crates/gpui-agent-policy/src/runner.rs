@@ -806,10 +806,11 @@ pub fn op_for_decision(
             .ok_or_else(|| format!("{} has no dispatch target", decision.action_id))
     };
     let gated = |op: Op| -> Result<Op, String> {
-        let fp = action
-            .fingerprint()
-            .ok_or_else(|| format!("{} has no fingerprint", decision.action_id))?;
-        Ok(op.with_fingerprint(fp))
+        match action.fingerprint() {
+            Some(fp) => Ok(op.with_fingerprint(fp)),
+            None if action.fingerprint_omitted_for_legacy_secret() => Ok(op),
+            None => Err(format!("{} has no fingerprint", decision.action_id)),
+        }
     };
     match decision.kind {
         ActionKind::Click => gated(Op::Click {
@@ -865,7 +866,11 @@ mod tests {
     use gpui_agent::host::AgentHost;
     use gpui_agent::protocol::{DeliveryMode, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind};
     use gpui_agent::tree::{UiNode, UiTree};
-    use gpui_agent::{SECRET_MASK, TestHost};
+    use gpui_agent::{AgentClient, SECRET_MASK, TestHost};
+    use serde_json::{Value, json};
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{SocketAddr, TcpListener};
+    use std::thread;
 
     /// One text field, a submit button and the list of submitted
     /// values. `marker` (when set) is the field's extra state, so a
@@ -1027,6 +1032,125 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn legacy_secret_host() -> (
+        SocketAddr,
+        thread::JoinHandle<(Vec<Value>, Vec<String>)>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut requests = Vec::new();
+            let mut received = Vec::new();
+            let mut value = "initial".to_owned();
+            let mut rev = 1u64;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                let request: Value = serde_json::from_str(&line).unwrap();
+                requests.push(request.clone());
+                let response = match request["op"].as_str() {
+                    Some("hello") => json!({
+                        "ok": true,
+                        "hello": {
+                            "protocol": PROTOCOL_VERSION,
+                            "app": "legacy",
+                            "platform": "headless",
+                            "ready": true,
+                            "features": []
+                        }
+                    }),
+                    Some("keybindings") => json!({
+                        "ok": true,
+                        "result": { "keybindings": [] }
+                    }),
+                    Some("snapshot") => {
+                        let mut secret = UiNode::new("password-field", "textbox", "Password")
+                            .with_value(&value);
+                        secret.states.push("secret".into());
+                        let raw_fingerprint = secret.fingerprint(None);
+                        json!({
+                            "ok": true,
+                            "rev": rev,
+                            "tree": {
+                                "app": "legacy",
+                                "platform": "headless",
+                                "ready": true,
+                                "rev": rev,
+                                "nodes": [{
+                                    "id": "password-field",
+                                    "role": "textbox",
+                                    "name": "Password",
+                                    "value": value.clone(),
+                                    "states": ["secret"],
+                                    "enabled": true,
+                                    "visible": true
+                                }]
+                            },
+                            "fingerprints": { "password-field": raw_fingerprint }
+                        })
+                    }
+                    Some("type") => {
+                        let text = request["text"].as_str().unwrap().to_owned();
+                        value.clone_from(&text);
+                        received.push(text);
+                        rev += 1;
+                        json!({ "ok": true })
+                    }
+                    op => panic!("unexpected op: {op:?}"),
+                };
+                let mut response = response;
+                response["v"] = json!(PROTOCOL_VERSION);
+                response["id"] = request["id"].clone();
+                writeln!(stream, "{response}").unwrap();
+                stream.flush().unwrap();
+            }
+            (requests, received)
+        });
+        (addr, server)
+    }
+
+    #[test]
+    fn run_types_into_a_secret_field_on_a_legacy_host() {
+        let (addr, server) = legacy_secret_host();
+        let mut client = AgentClient::connect(addr).with_timeout(std::time::Duration::from_secs(3));
+        let mut no_invokes = |_: &str, _: &str| Err::<serde_json::Value, String>("none".into());
+        let receipt = Runner::new(
+            &mut client,
+            InstinctPolicy::default(),
+            DeliveryMode::Semantic,
+            Vec::new(),
+            &mut no_invokes,
+        )
+        .run(r#"Enter "hunter2" in Password"#)
+        .expect("run");
+        assert_eq!(receipt.outcome, "done", "{receipt:?}");
+        assert!(
+            receipt.steps.iter().any(|step| step.op == "TYPE"),
+            "{:?}",
+            receipt.steps
+        );
+        drop(client);
+        let (requests, received) = server.join().unwrap();
+        assert_eq!(received, ["hunter2"]);
+        let type_request = requests
+            .iter()
+            .find(|request| request["op"] == "type")
+            .unwrap();
+        assert_eq!(type_request["text"], "hunter2");
+        assert!(type_request.get("expect_fingerprint").is_none(), "{type_request}");
+        let since_request = requests
+            .iter()
+            .find(|request| request["op"] == "snapshot" && request.get("since").is_some());
+        assert!(since_request.is_none(), "{requests:?}");
     }
 
     /// The receipt's `engine.instinct` must equal the manifest's
