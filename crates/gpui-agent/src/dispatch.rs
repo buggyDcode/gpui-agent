@@ -13,14 +13,19 @@ use crate::tree::{UiNode, UiTree, in_viewport_unavailable, is_in_viewport_unavai
 /// Optional structured payload returned by `invoke` / mutating ops.
 #[derive(Debug, Clone, Default)]
 pub struct DispatchResult {
+    /// The structured payload, when the op produces one.
     pub value: Option<serde_json::Value>,
 }
 
 impl DispatchResult {
+    /// No payload (`result` stays `null` on the wire).
+    #[must_use]
     pub fn empty() -> Self {
         Self { value: None }
     }
 
+    /// A result payload.
+    #[must_use]
     pub fn json(value: serde_json::Value) -> Self {
         Self { value: Some(value) }
     }
@@ -39,6 +44,11 @@ pub fn is_stale_dispatch_error(err: &str) -> bool {
 }
 
 /// Validate an op's expected target fingerprint against a snapshot.
+///
+/// # Errors
+///
+/// `{TARGET_GONE}` when the target left the tree, `{STALE_TARGET}` when
+/// its fingerprint changed.
 pub fn check_fingerprint_gate(tree: &UiTree, op: &Op) -> Result<(), String> {
     let Some((target, expected)) = op.fingerprint_gate() else {
         return Ok(());
@@ -56,6 +66,11 @@ pub fn check_fingerprint_gate(tree: &UiTree, op: &Op) -> Result<(), String> {
 
 /// Version + optional HMAC gate. Call this before dispatching,
 /// including on the mailbox path where virtual ops skip [`handle_request`].
+///
+/// # Errors
+///
+/// The reply to send back on a version mismatch, a wire `token`, a
+/// missing or wrong HMAC.
 pub fn authorize_request(
     req: &Request,
     expected_token: Option<&str>,
@@ -124,17 +139,23 @@ pub struct TreeCache {
 }
 
 impl TreeCache {
+    /// An empty cache.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Shared tree, rebuilt only when the host reports a different rev
     /// (or no rev at all).
+    ///
+    /// # Panics
+    ///
+    /// Never: the `expect` reads the entry this call just pushed.
     pub fn snapshot(&mut self, host: &dyn AgentHost) -> Arc<UiTree> {
         if let Some(rev) = host.revision() {
             if let Some((cached_rev, tree)) = self.ring.back() {
                 if *cached_rev == rev {
-                    return tree.clone();
+                    return Arc::clone(tree);
                 }
             }
         }
@@ -147,7 +168,7 @@ impl TreeCache {
             while self.ring.len() > REV_RING_DEPTH {
                 self.ring.pop_front();
             }
-            self.ring.back().expect("just pushed").1.clone()
+            Arc::clone(&self.ring.back().expect("just pushed").1)
         } else {
             Arc::new(tree)
         }
@@ -158,7 +179,7 @@ impl TreeCache {
         self.ring
             .iter()
             .find(|(r, _)| *r == rev)
-            .map(|(_, t)| t.clone())
+            .map(|(_, t)| Arc::clone(t))
     }
 
     /// Number of real `host.snapshot()` calls this cache made.
@@ -186,6 +207,7 @@ pub fn handle_request(
 
 /// [`handle_request`] with a caller-owned [`TreeCache`] so a session can
 /// reuse trees across requests and answer `snapshot since` with diffs.
+#[expect(clippy::too_many_lines, reason = "one linear dispatch match over the op vocabulary")]
 pub fn handle_request_cached(
     host: &mut dyn AgentHost,
     cache: &mut TreeCache,
@@ -198,8 +220,9 @@ pub fn handle_request_cached(
     }
 
     match req.op {
-        Op::Hello => hello_response(host, &req.id, expected_token),
-        Op::Wait { timeout_ms: None } => hello_response(host, &req.id, expected_token),
+        Op::Hello | Op::Wait { timeout_ms: None } => {
+            hello_response(host, &req.id, expected_token)
+        }
         Op::Wait {
             timeout_ms: Some(ms),
         } => wait_until_ready(host, &req.id, expected_token, ms),
@@ -276,7 +299,9 @@ pub fn handle_request_cached(
                 let poll = ring.since(
                     since,
                     limit
-                        .map_or(crate::event::EVENTS_DEFAULT_LIMIT, |l| l as usize),
+                        .map_or(crate::event::EVENTS_DEFAULT_LIMIT, |l| {
+                            usize::try_from(l).unwrap_or(usize::MAX)
+                        }),
                 );
                 let mut resp = Response::ok(req.id);
                 resp.result = serde_json::to_value(poll).ok();
@@ -416,6 +441,7 @@ pub fn prepare_inline_screenshot(op: &mut Op) -> Option<bool> {
 
 /// Attach the blob to a mailbox host's screenshot reply. A reply that
 /// already carries one (the host went through [`handle_request`]) is kept.
+#[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether the path was a server-side scratch file")]
 pub fn finish_inline_screenshot(resp: &mut Response, scratch: bool) {
     if !resp.ok {
         return;
@@ -444,6 +470,7 @@ pub fn finish_inline_screenshot(resp: &mut Response, scratch: bool) {
 /// Read the PNG the host just wrote (`result.path`) into a blob and
 /// announce it as `result.blob`. A scratch file is removed and its path
 /// withheld: it never existed for the client.
+#[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether the path was a server-side scratch file")]
 fn attach_screenshot_blob(resp: &mut Response, scratch: bool) -> Result<(), String> {
     let path = resp
         .result
@@ -594,6 +621,13 @@ pub(crate) fn wait_step(
     }
 }
 
+/// Check `spec` against `tree` (`require_id` for the target, then each
+/// named field).
+///
+/// # Errors
+///
+/// `not_found` / `duplicate_id`, or `assert_failed`-style text for a
+/// field mismatch. Secret `value`s are compared but never echoed.
 pub fn assert_tree(tree: &UiTree, spec: &AssertSpec) -> Result<(), String> {
     let exists = spec.exists.unwrap_or(true);
     if exists {
@@ -674,6 +708,10 @@ pub fn assert_tree(tree: &UiTree, spec: &AssertSpec) -> Result<(), String> {
 ///
 /// Headless hosts and zero-area bounds return [`in_viewport_unavailable`] —
 /// never `Ok(false)` from missing geometry.
+///
+/// # Errors
+///
+/// [`in_viewport_unavailable`] on headless hosts and zero-area bounds.
 pub fn node_in_viewport(tree: &UiTree, node: &UiNode) -> Result<bool, String> {
     if tree.platform == PlatformKind::Headless {
         return Err(in_viewport_unavailable(
@@ -1260,9 +1298,9 @@ mod tests {
 
         let ready = Arc::new(AtomicBool::new(false));
         let mut host = FlipHost {
-            ready: ready.clone(),
+            ready: Arc::clone(&ready),
         };
-        let flag = ready.clone();
+        let flag = ready;
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(30));
             flag.store(true, Ordering::SeqCst);
@@ -1329,6 +1367,7 @@ mod tests {
         );
     }
 
+    #[expect(clippy::fn_params_excessive_bools, reason = "test helper mirroring the node field")]
     fn sample_tree(platform: PlatformKind, visible: bool, bounds: crate::tree::Bounds) -> UiTree {
         UiTree {
             app: "test".into(),
@@ -1587,9 +1626,9 @@ mod tests {
 
         let visible = Arc::new(AtomicBool::new(false));
         let mut host = FlipVisible {
-            visible: visible.clone(),
+            visible: Arc::clone(&visible),
         };
-        let flag = visible.clone();
+        let flag = visible;
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(30));
             flag.store(true, Ordering::SeqCst);
