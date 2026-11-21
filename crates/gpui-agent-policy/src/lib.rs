@@ -26,6 +26,13 @@
 //! `then`/`and then` goals into single intents. `escalate` (M7) adds an
 //! optional abstain-only fallback over a closed command wire — the
 //! local policy still decides first and an abstain is never re-scored.
+//!
+//! # Policy
+//!
+//! gpui-agent keeps its own policy: everything above lives in this
+//! crate. It shares only the Instinct libraries `instinct-core`,
+//! `instinct-text` and `instinct-lexicon` from crates.io, and does not
+//! depend on ultra-instinct or any of its crates.
 #![forbid(unsafe_code)]
 
 pub mod action_space;

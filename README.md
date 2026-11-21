@@ -180,6 +180,14 @@ gpui-agent invoke todo.list
 
 Thin wrappers for that demo live in [`examples/todo.sh`](examples/todo.sh). Do not treat them as the public API.
 
+### Policy
+
+gpui-agent keeps its own policy: the action space, evidence scoring,
+two-head decide, text resolver, goal splitting and escalation all live
+in `crates/gpui-agent-policy`. It shares only the Instinct libraries
+`instinct-core`, `instinct-text` and `instinct-lexicon` (from
+crates.io), and does not depend on ultra-instinct or any of its crates.
+
 ## What this proves
 
 A scripted agent (or `gpui-agent` CLI) can, without a human mouse or keyboard:
