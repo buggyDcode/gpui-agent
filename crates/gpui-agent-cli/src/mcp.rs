@@ -829,6 +829,16 @@ fn call_tool(
             } else {
                 None
             };
+            if name == "press"
+                && press_fingerprint.is_some()
+                && args.get("target").and_then(Value::as_str).is_none()
+            {
+                return Err(fail(CallFailure::with_code(
+                    "expect_fingerprint needs a target",
+                    error_code::BAD_REQUEST,
+                    None,
+                )));
+            }
             let mut wire = match args {
                 Value::Object(map) => map,
                 _ => return Err(format!("{name} takes an object")),
@@ -2236,5 +2246,37 @@ mod tests {
             assert!(envelope["hint"].is_string(), "{envelope}");
         }
         shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[test]
+    fn press_rejects_fingerprint_without_target_before_sending() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client =
+            AgentClient::connect(addr).with_timeout(std::time::Duration::from_millis(100));
+        let error = call_tool(
+            &mut client,
+            &json!({
+                "name": "press",
+                "arguments": {
+                    "x": 12.0,
+                    "y": 34.0,
+                    "expect_fingerprint": "123"
+                }
+            }),
+            &[],
+        )
+        .unwrap_err();
+        let envelope: Value = serde_json::from_str(&error).expect("failure envelope");
+        assert_eq!(envelope["error_code"], "bad_request", "{envelope}");
+        assert_eq!(
+            envelope["error"], "expect_fingerprint needs a target",
+            "{envelope}"
+        );
+        assert!(matches!(
+            listener.accept(),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock
+        ));
     }
 }
