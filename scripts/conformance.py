@@ -20,9 +20,10 @@ or --addr / --token passed through) and checks that:
   a failure with --require-screenshot.
 
 - a failed command prints a JSON envelope on stdout with a stable
-  `error_code`: `not_found` for an `assert` on a missing node, `not_found`
-  and `not_delivered` for a `click` on one (with and without read-back, so
-  the host must refuse an id that is not in its tree) and, when the
+  `error_code`: `not_found` for an `assert` on a missing node,
+  `not_delivered` for a `click` on one with and without read-back (so the
+  host must refuse an id that is not in its tree), with `not_found` after
+  read-back and `not_found` or `target_gone` from the host, and, when the
   host lists `expect_fingerprint`, `stale_target` (with `delivery_status`
   `not_delivered`) for a `click` whose fingerprint does not match. The
   host refuses that click before dispatching, so nothing acts.
@@ -261,14 +262,20 @@ def error_code_checks(run, features, ids):
         err if envelope is None else str(code),
     )
     # With read-back (the default) the client finds no such node and sends
-    # nothing; with --no-read-back the host itself must refuse the id.
-    for extra, how in (((), "after read-back"), (("--no-read-back",), "from the host")):
+    # nothing, so the code is always not_found. With --no-read-back the host
+    # itself must refuse the id before dispatching: `not_found` and
+    # `target_gone` both say that (nsh's adapter answers `target_gone: <id>`).
+    passes = (
+        ((), "after read-back", ("not_found",)),
+        (("--no-read-back",), "from the host", ("not_found", "target_gone")),
+    )
+    for extra, how, accepted in passes:
         envelope, err = run.failure("click", "conformance-no-such-node", *extra)
         code = (envelope or {}).get("error_code")
         delivery = (envelope or {}).get("delivery_status")
         run.check(
-            f"a click on a missing target fails with not_found {how}",
-            code == "not_found",
+            f"a click on a missing target fails with {' or '.join(accepted)} {how}",
+            code in accepted,
             err if envelope is None else str(code),
         )
         run.check(

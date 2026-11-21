@@ -123,10 +123,12 @@ A failed response keeps its human-readable `error` and adds a stable
 Both fields are optional and wire protocol stays 2. A host that predates
 them sends only `error`; the client classifies that text with the same
 table (`gpui_agent::error_code_of`), so callers see one code either way.
-A host that refuses an action because its target id is not in the tree
-should say so before acting, as ``node `<id>` not found`` (the text
-`UiTree::require_id` returns) or a `not_found: …` prefix; any other
-refusal text is `host_error` with `delivery_uncertain`.
+A host must refuse an action whose target id is not in the tree before
+acting, and say so as ``node `<id>` not found`` (the text
+`UiTree::require_id` returns), a `not_found: …` prefix or a
+`target_gone: …` prefix; conformance accepts `not_found` or `target_gone`,
+both `not_delivered`. Any other refusal text is `host_error` with
+`delivery_uncertain`.
 
 The client (not the host) adds `delivery_status` to an op that acts:
 
