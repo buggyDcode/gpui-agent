@@ -117,7 +117,10 @@ An argument spelled exactly like a ref (`@e1`) is always read as one, text to ty
 `--addr`: `python3 scripts/conformance.py --addr 127.0.0.1:17421`. Protocol versions
 other than 2 fail. A host that does not advertise `screenshot_inline` warns and skips
 screenshot checks; `--require-screenshot` makes that a failure. CI runs it against
-`todo-headless` without requiring a screenshot.
+`todo-headless` without requiring a screenshot. A nightly workflow
+(`.github/workflows/android-conformance.yml`, also started by hand) runs it against a
+phone host: GPUI has no phone platform, so that host is an nsh app, the nsh gallery on
+an Android emulator, reached through `adb forward`.
 
 When a host does not answer, two commands say why:
 
