@@ -61,6 +61,8 @@ gpui-agent snapshot --refs          # @e1 button "Add" …; every op takes @eN r
 gpui-agent set-value todo-input "Buy milk"
 gpui-agent click todo-add
 gpui-agent assert --id todo-item-1 --name "Buy milk" --checked false
+gpui-agent click nav-settings
+gpui-agent assert --id page-settings --role page
 gpui-agent shutdown
 ```
 
