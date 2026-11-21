@@ -767,11 +767,15 @@ fn run() -> Result<()> {
                 visible,
                 in_viewport,
             };
-            print_resp(rpc(client.wait_until(spec, timeout_ms))?)
+            print_resp(call(client.call(&Op::WaitUntil { timeout_ms, spec }))?)
         }
         Command::Hello => print_resp(call(client.call(&Op::Hello))?),
         Command::Snapshot { pretty, refs } => {
-            let resp = rpc(client.snapshot())?;
+            let resp = call(client.call(&Op::Snapshot {
+                since: None,
+                format: None,
+                fingerprints: None,
+            }))?;
             if refs {
                 let tree = resp
                     .tree
@@ -794,7 +798,7 @@ fn run() -> Result<()> {
             inline,
         } => {
             if inline {
-                let png = rpc(client.screenshot_bytes(mode, target, max_height_px))?;
+                let png = call(client.screenshot_bytes_call(mode, target, max_height_px))?;
                 std::fs::write(&out, &png)
                     .map_err(|err| anyhow!("write {}: {err}", out.display()))?;
                 println!(
@@ -808,12 +812,13 @@ fn run() -> Result<()> {
                     "screenshot --mode scrolled requires --target <scroll-view-id>"
                 ));
             }
-            print_resp(rpc(client.screenshot_with(
-                out.to_string_lossy().into_owned(),
+            print_resp(call(client.call(&Op::Screenshot {
+                path: Some(out.to_string_lossy().into_owned()),
                 mode,
                 target,
                 max_height_px,
-            ))?)
+                inline: false,
+            }))?)
         }
         Command::Press { target, x, y } => print_resp(call(client.act(
             &Op::Press {

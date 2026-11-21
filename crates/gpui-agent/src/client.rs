@@ -860,7 +860,19 @@ impl AgentClient {
         target: Option<String>,
         max_height_px: Option<u32>,
     ) -> Result<Vec<u8>, String> {
-        let resp = self.gated(Op::Screenshot {
+        self.screenshot_bytes_call(mode, target, max_height_px)
+            .map_err(|failure| failure.error)
+    }
+
+    /// Typed [`screenshot_bytes`](Self::screenshot_bytes): host failures
+    /// retain their stable code, hint, and any action delivery status.
+    pub fn screenshot_bytes_call(
+        &mut self,
+        mode: ScreenshotMode,
+        target: Option<String>,
+        max_height_px: Option<u32>,
+    ) -> Result<Vec<u8>, CallFailure> {
+        let resp = self.call(&Op::Screenshot {
             path: None,
             mode,
             target,
@@ -871,25 +883,34 @@ impl AgentClient {
             .result
             .as_ref()
             .and_then(|result| result.get("blob"))
-            .ok_or_else(|| crate::protocol::unsupported_op("screenshot_inline"))?;
+            .ok_or_else(|| {
+                CallFailure::from_message(crate::protocol::unsupported_op("screenshot_inline"))
+            })?;
         let name = blob
             .get("blob")
             .and_then(serde_json::Value::as_str)
-            .ok_or("screenshot blob has no name")?
+            .ok_or_else(|| CallFailure::from_message("screenshot blob has no name"))?
             .to_string();
         let chunks = blob
             .get("chunks")
             .and_then(serde_json::Value::as_u64)
-            .ok_or("screenshot blob has no chunk count")? as u32;
+            .ok_or_else(|| CallFailure::from_message("screenshot blob has no chunk count"))?
+            as u32;
         let mut bytes = Vec::new();
         for index in 0..chunks {
-            let chunk = self.expect_ok(Op::Blob {
+            let chunk = self.call(&Op::Blob {
                 blob: name.clone(),
                 index,
             })?;
-            bytes.extend(crate::blob::decode_chunk(
-                chunk.result.as_ref().ok_or("blob chunk has no result")?,
-            )?);
+            bytes.extend(
+                crate::blob::decode_chunk(
+                    chunk
+                        .result
+                        .as_ref()
+                        .ok_or_else(|| CallFailure::from_message("blob chunk has no result"))?,
+                )
+                .map_err(CallFailure::from_message)?,
+            );
         }
         Ok(bytes)
     }
