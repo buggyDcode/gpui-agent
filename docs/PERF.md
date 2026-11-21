@@ -99,8 +99,9 @@ GATE-P verdicts:
 
 ## M2–M8 — Instinct policy (GATE-R / GATE-L)
 
-`gpui-agent-policy` is the opt-in local decision engine (`instinct`
-feature; `jev` adds the optional System One fallback). Everything below
+`gpui-agent-policy` is the local decision engine (`instinct` feature,
+on in the CLI's default build; opt-in `jev` adds the System One
+fallback). Everything below
 is in [docs/bench/RESULTS.md](bench/RESULTS.md).
 
 | Number | Value |

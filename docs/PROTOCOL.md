@@ -433,8 +433,8 @@ Reuse `gpui-agent-cli` unchanged. Details: [INTEGRATING.md](INTEGRATING.md).
 
 plus experimental `recipe_validate` / `recipe_plan` / `recipe_run` /
 `recipe_resolve` (JSON canonical; client-side batching; see
-[RECIPES.md](RECIPES.md)), and — with the opt-in `instinct` build
-feature — `locate` (ranked target resolution, abstains instead of
+[RECIPES.md](RECIPES.md)), and — with the `instinct` build feature, on
+by default — `locate` (ranked target resolution, abstains instead of
 guessing), `act` (resolve → fingerprint-gated dispatch → re-observe →
 verify), and `snapshot` `since` / `compact` parameters that mirror the
 wire fields above.
