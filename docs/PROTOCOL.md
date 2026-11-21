@@ -289,9 +289,11 @@ guesses. `assert` / `wait_until` compare the real value; a mismatch says
 either value. A host marks such a field with role `password` or adds the
 `secret` state (an API key in a plain text field). The client masks trees
 from hosts that predate this rule as they arrive. When `hello.features` lacks
-`secret_redaction`, the client also drops secret-node fingerprints; if a
-partial reply has no tree to classify, it drops the entire fingerprint map.
-This prevents older hosts' raw-value hashes from being exposed.
+`secret_redaction`, the client does not request `since` diffs: it asks for a
+full snapshot, masks it, and marks the reply `result.full` so consumers replace
+their cached tree. It also drops secret-node fingerprints; if a partial reply
+has no tree to classify, it drops the entire fingerprint map. This prevents
+older hosts' raw-value hashes from being exposed.
 
 `run --goal` verifies a `TYPE` / `SET_VALUE` into a secret field by the
 masked value's length, and counts the text it typed there as entered

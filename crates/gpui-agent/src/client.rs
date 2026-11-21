@@ -462,12 +462,26 @@ impl AgentClient {
             }
             return Ok(out);
         }
-        let timeout = ops
+        let mut force_full = Vec::with_capacity(ops.len());
+        let mut prepared = Vec::with_capacity(ops.len());
+        for op in ops {
+            let (op, full) = self.prepare_legacy_snapshot_since(op)?;
+            prepared.push(op);
+            force_full.push(full);
+        }
+        let prepared: Vec<&Op> = prepared.iter().collect();
+        let timeout = prepared
             .iter()
             .map(|op| self.timeout_for(op))
             .max()
             .unwrap_or(self.timeout);
-        self.pipeline_retry(ops, timeout)
+        let mut responses = self.pipeline_retry(&prepared, timeout)?;
+        for (response, full) in responses.iter_mut().zip(force_full) {
+            if full && response.ok {
+                response.result = Some(serde_json::json!({ "full": true }));
+            }
+        }
+        Ok(responses)
     }
 
     /// One request on a fresh connection, then drop it.
@@ -483,9 +497,42 @@ impl AgentClient {
 
     fn roundtrip_retry(&mut self, op: &Op) -> Result<Response, SendError> {
         self.drop_idle_session();
-        let timeout = self.timeout_for(op);
+        let (op, force_full) = self
+            .prepare_legacy_snapshot_since(op)
+            .map_err(SendError::unsent)?;
+        let timeout = self.timeout_for(&op);
         let connect_deadline = Instant::now() + self.timeout;
-        self.roundtrip_retry_until(op, connect_deadline, timeout, None)
+        let mut response = self.roundtrip_retry_until(&op, connect_deadline, timeout, None)?;
+        if force_full && response.ok {
+            response.result = Some(serde_json::json!({ "full": true }));
+        }
+        Ok(response)
+    }
+
+    fn prepare_legacy_snapshot_since(&mut self, op: &Op) -> Result<(Op, bool), String> {
+        let Op::Snapshot {
+            since: Some(_),
+            fingerprints,
+            ..
+        } = op
+        else {
+            return Ok((op.clone(), false));
+        };
+        let secret_redaction = self
+            .features()?
+            .iter()
+            .any(|feature| feature == "secret_redaction");
+        if secret_redaction {
+            return Ok((op.clone(), false));
+        }
+        Ok((
+            Op::Snapshot {
+                since: None,
+                format: None,
+                fingerprints: *fingerprints,
+            },
+            true,
+        ))
     }
 
     fn roundtrip_retry_until(
@@ -1609,6 +1656,114 @@ mod tests {
 
     fn client_for(addr: SocketAddr) -> AgentClient {
         AgentClient::connect(addr).with_timeout(Duration::from_millis(600))
+    }
+
+    fn legacy_since_host() -> (SocketAddr, thread::JoinHandle<Vec<serde_json::Value>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut secret = crate::tree::UiNode::new("secret", "textbox", "Password")
+            .with_value("hunter2");
+        secret.states.push("secret".into());
+        let raw_fingerprint = secret.fingerprint(None);
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut requests = Vec::new();
+            for _ in 0..2 {
+                let mut line = String::new();
+                assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                requests.push(request.clone());
+                let response = match request["op"].as_str() {
+                    Some("hello") => serde_json::json!({
+                        "ok": true,
+                        "hello": {
+                            "protocol": PROTOCOL_VERSION,
+                            "app": "legacy",
+                            "platform": "headless",
+                            "ready": true,
+                            "features": []
+                        }
+                    }),
+                    Some("snapshot") if request.get("since").is_some() => serde_json::json!({
+                        "ok": true,
+                        "result": {
+                            "diff": {
+                                "added": [],
+                                "removed": [],
+                                "changed": [{"id": "secret", "value": "hunter2"}]
+                            }
+                        },
+                        "fingerprints": {"secret": raw_fingerprint, "plain": 456}
+                    }),
+                    Some("snapshot") => serde_json::json!({
+                        "ok": true,
+                        "rev": 2,
+                        "tree": {
+                            "app": "legacy",
+                            "platform": "headless",
+                            "ready": true,
+                            "nodes": [
+                                {
+                                    "id": "secret",
+                                    "role": "textbox",
+                                    "name": "Password",
+                                    "value": "hunter2",
+                                    "states": ["secret"],
+                                    "enabled": true
+                                },
+                                {
+                                    "id": "plain",
+                                    "role": "button",
+                                    "name": "Submit",
+                                    "enabled": true
+                                }
+                            ]
+                        },
+                        "fingerprints": {"secret": raw_fingerprint, "plain": 456}
+                    }),
+                    op => panic!("unexpected op: {op:?}"),
+                };
+                let mut response = response;
+                response["v"] = serde_json::json!(PROTOCOL_VERSION);
+                response["id"] = request["id"].clone();
+                serde_json::to_writer(&mut stream, &response).unwrap();
+                stream.write_all(b"\n").unwrap();
+                stream.flush().unwrap();
+            }
+            requests
+        });
+        (addr, server)
+    }
+
+    #[test]
+    fn legacy_since_snapshot_requests_a_full_masked_tree() {
+        let (addr, server) = legacy_since_host();
+        let mut client = client_for(addr);
+        let response = client
+            .call(&Op::Snapshot {
+                since: Some(1),
+                format: Some(SnapshotFormat::Compact),
+                fingerprints: Some(true),
+            })
+            .unwrap();
+        let tree = response.tree.expect("full tree");
+        assert_eq!(
+            tree.find("secret").and_then(|node| node.value.as_deref()),
+            Some("•••••••")
+        );
+        assert_eq!(response.result, Some(serde_json::json!({ "full": true })));
+        let fingerprints = response.fingerprints.unwrap();
+        assert!(!fingerprints.contains_key("secret"));
+        assert_eq!(fingerprints.get("plain"), Some(&456));
+        let requests = server.join().unwrap();
+        assert_eq!(requests[0]["op"], "hello");
+        assert_eq!(requests[1]["op"], "snapshot");
+        assert!(requests[1].get("since").is_none(), "{requests:?}");
+        assert!(requests[1].get("format").is_none(), "{requests:?}");
     }
 
     #[test]

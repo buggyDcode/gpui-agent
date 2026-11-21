@@ -1702,6 +1702,107 @@ mod tests {
         }
     }
 
+    #[test]
+    fn legacy_snapshot_since_uses_a_full_masked_tree() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut secret = gpui_agent::tree::UiNode::new("secret", "textbox", "Password")
+            .with_value("hunter2");
+        secret.states.push("secret".into());
+        let raw_fingerprint = secret.fingerprint(None);
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut requests = Vec::new();
+            for _ in 0..2 {
+                let mut line = String::new();
+                assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                let request: Value = serde_json::from_str(&line).unwrap();
+                requests.push(request.clone());
+                let mut response = match request["op"].as_str() {
+                    Some("hello") => json!({
+                        "ok": true,
+                        "hello": {
+                            "protocol": gpui_agent::protocol::PROTOCOL_VERSION,
+                            "app": "legacy",
+                            "platform": "headless",
+                            "ready": true,
+                            "features": []
+                        }
+                    }),
+                    Some("snapshot") if request.get("since").is_some() => json!({
+                        "ok": true,
+                        "result": {
+                            "diff": {
+                                "added": [],
+                                "removed": [],
+                                "changed": [{"id": "secret", "value": "hunter2"}]
+                            }
+                        },
+                        "fingerprints": {"secret": raw_fingerprint, "plain": 456}
+                    }),
+                    Some("snapshot") => json!({
+                        "ok": true,
+                        "rev": 2,
+                        "tree": {
+                            "app": "legacy",
+                            "platform": "headless",
+                            "ready": true,
+                            "nodes": [
+                                {
+                                    "id": "secret",
+                                    "role": "textbox",
+                                    "name": "Password",
+                                    "value": "hunter2",
+                                    "states": ["secret"],
+                                    "enabled": true
+                                },
+                                {
+                                    "id": "plain",
+                                    "role": "button",
+                                    "name": "Submit",
+                                    "enabled": true
+                                }
+                            ]
+                        },
+                        "fingerprints": {"secret": raw_fingerprint, "plain": 456}
+                    }),
+                    op => panic!("unexpected op: {op:?}"),
+                };
+                response["v"] = json!(gpui_agent::protocol::PROTOCOL_VERSION);
+                response["id"] = request["id"].clone();
+                writeln!(stream, "{response}").unwrap();
+                stream.flush().unwrap();
+            }
+            requests
+        });
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_secs(3));
+        let result = tools_call_result(
+            &mut client,
+            &json!({
+                "name": "snapshot",
+                "arguments": { "since": 1, "fingerprints": true }
+            }),
+            &[],
+        );
+        assert!(result.get("isError").is_none(), "{result}");
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(!text.contains("hunter2"), "{text}");
+        let snapshot: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(snapshot["result"]["full"], json!(true), "{snapshot}");
+        assert_eq!(snapshot["tree"]["nodes"][0]["value"], json!("•••••••"));
+        assert!(snapshot["fingerprints"].get("secret").is_none(), "{snapshot}");
+        assert_eq!(snapshot["fingerprints"]["plain"], json!("456"));
+        let requests = server.join().unwrap();
+        assert_eq!(requests[0]["op"], "hello");
+        assert_eq!(requests[1]["op"], "snapshot");
+        assert!(requests[1].get("since").is_none(), "{requests:?}");
+        assert!(requests[1].get("format").is_none(), "{requests:?}");
+    }
+
     fn spawn_todo_client() -> (AgentClient, std::sync::Arc<std::sync::atomic::AtomicBool>) {
         use std::sync::{Arc, Mutex};
 
