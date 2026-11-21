@@ -1,6 +1,6 @@
-//! Thin wrapper over `CandidateSet` + `Scores` + `arbitrate`, shaped like
-//! `aui-policy/src/instinct_policy.rs`'s `choose_*` heads minus
-//! habituation history (no history exists in gpui-agent yet).
+//! Thin wrapper over `CandidateSet` + `Scores` + `arbitrate`: one
+//! decision head without habituation history (the two-head policy in
+//! [`crate::policy`] adds that).
 //!
 //! Callers supply `(id, evidence-millis)` pairs; [`choose`] returns a
 //! [`Choice`] — `Chosen` names exactly one offered id, `Abstained` can

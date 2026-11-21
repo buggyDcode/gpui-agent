@@ -1,11 +1,10 @@
 //! Finite action space derived from a [`UiTree`] snapshot.
 //!
-//! Port of `aui-core/src/action_space.rs` (InteractionManifold → ActionSpace)
-//! with gpui-agent's role vocabulary and op ids. Invariants preserved:
-//! every observation yields a dynamic finite space; policies may only
-//! choose offered operations/target ids; hard-invalid nodes (hidden,
-//! disabled — inside an invisible or disabled ancestor too) are filtered
-//! *before* scoring, never penalized.
+//! Maps a snapshot onto gpui-agent's role vocabulary and op ids.
+//! Invariants: every observation yields a dynamic finite space; policies
+//! may only choose offered operations/target ids; hard-invalid nodes
+//! (hidden, disabled — inside an invisible or disabled ancestor too) are
+//! filtered *before* scoring, never penalized.
 //!
 //! Op mapping (PRD M4.1): clickable roles → `CLICK:<id>`; textbox →
 //! `TYPE:<id>`, `SET_VALUE:<id>` and `KEY:<id>:Enter` (submit); each
