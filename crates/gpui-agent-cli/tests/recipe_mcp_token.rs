@@ -1,3 +1,5 @@
+//! MCP recipe token exchange over the stdio surface.
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -107,9 +109,9 @@ fn recipe_validate_without_token_still_works() {
         .args([
             "recipe",
             "validate",
-            path.to_str().unwrap(),
+            path.to_str().expect("test fixture"),
             "--schema",
-            todo_schema_path().to_str().unwrap(),
+            todo_schema_path().to_str().expect("test fixture"),
         ])
         .output()
         .expect("spawn");
@@ -126,7 +128,7 @@ fn recipe_validate_without_token_still_works() {
 fn recipe_run_with_matching_token_is_ok_and_reuses_session() {
     let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
     let (addr, shutdown) = spawn_host(
-        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().expect("test fixture"),
         Some("p2-secret".into()),
         store,
     )
@@ -141,9 +143,9 @@ fn recipe_run_with_matching_token_is_ok_and_reuses_session() {
             "p2-secret",
             "recipe",
             "run",
-            recipe.to_str().unwrap(),
+            recipe.to_str().expect("test fixture"),
             "--schema",
-            todo_schema_path().to_str().unwrap(),
+            todo_schema_path().to_str().expect("test fixture"),
             "--set",
             "title=Buy milk",
         ])
@@ -162,7 +164,8 @@ fn recipe_run_with_matching_token_is_ok_and_reuses_session() {
 #[test]
 fn hello_without_token_still_allowed_when_host_has_none() {
     let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
-    let (addr, shutdown) = spawn_host("127.0.0.1:0".parse().unwrap(), None, store).expect("bind");
+    let (addr, shutdown) =
+        spawn_host("127.0.0.1:0".parse().expect("test fixture"), None, store).expect("bind");
 
     let output = cli_bin()
         .args(["--addr", &addr.to_string(), "hello"])
@@ -183,8 +186,12 @@ fn hello_without_token_still_allowed_when_host_has_none() {
 #[test]
 fn mcp_with_token_starts_and_answers_initialize() {
     let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
-    let (addr, shutdown) =
-        spawn_host("127.0.0.1:0".parse().unwrap(), Some("p2-mcp".into()), store).expect("bind");
+    let (addr, shutdown) = spawn_host(
+        "127.0.0.1:0".parse().expect("test fixture"),
+        Some("p2-mcp".into()),
+        store,
+    )
+    .expect("bind");
 
     let mut child = cli_bin()
         .args(["--addr", &addr.to_string(), "--token", "p2-mcp", "mcp"])

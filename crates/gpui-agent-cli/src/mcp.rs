@@ -21,11 +21,11 @@ use serde_json::{Value, json};
 ///
 /// One [`AgentClient`] lives for the process: protocol `rpc` reuses a single
 /// TCP session across `tools/call` (no per-tool reconnect).
-pub fn run(
+pub(crate) fn run(
     addr: SocketAddr,
     token: String,
     timeout: Option<std::time::Duration>,
-    schema_paths: Vec<PathBuf>,
+    schema_paths: &[PathBuf],
 ) -> Result<()> {
     let mut client = AgentClient::connect(addr).with_token(token);
     if let Some(timeout) = timeout {
@@ -44,7 +44,7 @@ pub fn run(
             Err(err) => {
                 write_msg(
                     &mut stdout,
-                    json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":err.to_string()}}),
+                    &json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":err.to_string()}}),
                 )?;
                 continue;
             }
@@ -62,32 +62,36 @@ pub fn run(
                 continue;
             }
             "tools/list" => json!({ "tools": tools() }),
-            "tools/call" => tools_call_result(&mut client, &params, &schema_paths),
+            "tools/call" => tools_call_result(&mut client, &params, schema_paths),
             "ping" => json!({}),
             other => {
                 write_msg(
                     &mut stdout,
-                    json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":format!("unknown method {other}")}}),
+                    &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":format!("unknown method {other}")}}),
                 )?;
                 continue;
             }
         };
         write_msg(
             &mut stdout,
-            json!({"jsonrpc":"2.0","id":id,"result":result}),
+            &json!({"jsonrpc":"2.0","id":id,"result":result}),
         )?;
     }
     Ok(())
 }
 
-fn write_msg(stdout: &mut std::io::Stdout, value: Value) -> Result<()> {
-    writeln!(stdout, "{}", serde_json::to_string(&value)?)?;
+fn write_msg(stdout: &mut std::io::Stdout, value: &Value) -> Result<()> {
+    writeln!(stdout, "{}", serde_json::to_string(value)?)?;
     stdout.flush()?;
     Ok(())
 }
 
 // Attach, detach and session listing are CLI-only: an MCP process already
 // holds one address and token for its lifetime.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one json! literal per tool; splitting splits the tool list"
+)]
 pub(crate) fn tools() -> Vec<Value> {
     let mut tools = vec![
         tool(
@@ -447,6 +451,10 @@ fn schema_arg() -> Value {
     })
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the schema is a json! literal per tool — a reference adds noise, not cost"
+)]
 fn tool(name: &str, description: &str, input_schema: Value) -> Value {
     json!({
         "name": name,
@@ -557,6 +565,10 @@ fn requested_wait(name: &str, args: &Value) -> Result<Option<(WaitFor, u64)>, St
 
 /// `snapshot` with `depth` and/or `root`: the host's full tree cut in the
 /// client, as JSON (`tree` is the outline) or compact text.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "the fingerprints flag mirrors the CLI switch"
+)]
 fn outline_snapshot(
     client: &mut AgentClient,
     args: &Value,
@@ -658,6 +670,10 @@ fn wait_reply_timeout(reply_timeout: Duration, bound_ms: Option<u64>) -> Duratio
     reply_timeout.max(bound)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per MCP tool; splitting splits the tool table"
+)]
 fn call_tool(
     client: &mut AgentClient,
     params: &Value,
@@ -723,8 +739,8 @@ fn call_tool(
             let max_height_px = args
                 .get("max_height_px")
                 .and_then(Value::as_u64)
-                .map(|n| n as u32);
-            if mode.is_scrolled() && target.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                .map(|n| u32::try_from(n).unwrap_or(u32::MAX));
+            if mode.is_scrolled() && target.as_deref().map_or("", str::trim).is_empty() {
                 return Err("screenshot mode=scrolled requires target".into());
             }
             client
@@ -803,7 +819,7 @@ fn call_tool(
             let limit = args
                 .get("limit")
                 .and_then(Value::as_u64)
-                .map(|v| v.min(u32::MAX as u64) as u32);
+                .map(|v| u32::try_from(v.min(u64::from(u32::MAX))).unwrap_or(u32::MAX));
             let poll = client.events(since, limit).map_err(fail_text)?;
             return serde_json::to_value(poll).map_err(|e| e.to_string());
         }
@@ -839,9 +855,8 @@ fn call_tool(
                     None,
                 )));
             }
-            let mut wire = match args {
-                Value::Object(map) => map,
-                _ => return Err(format!("{name} takes an object")),
+            let Value::Object(mut wire) = args else {
+                return Err(format!("{name} takes an object"));
             };
             if let Some(fingerprint) = press_fingerprint {
                 wire.insert("expect_fingerprint".into(), json!(fingerprint));
@@ -1043,7 +1058,10 @@ fn parse_assert_spec(args: &Value) -> Result<AssertSpec, String> {
 /// Abstention is a value: `act` never dispatches after an abstain.
 #[cfg(feature = "instinct")]
 mod instinct {
-    use super::*;
+    use super::{
+        AgentClient, ArgsExt, CallFailure, PathBuf, Result, Value, error_code, fail, fail_text,
+        json, parse_delivery, recipe_schema_paths, registry_from_schema_paths,
+    };
     use gpui_agent::dispatch::is_stale_dispatch_error;
     use gpui_agent::keybinding::KeybindingInfo;
     use gpui_agent_policy::{
@@ -1146,7 +1164,8 @@ mod instinct {
         schema_paths: &[PathBuf],
     ) -> Result<Value, String> {
         let query = args.string("query")?;
-        let k = args.get("k").and_then(Value::as_u64).unwrap_or(5).min(64) as usize;
+        let k = usize::try_from(args.get("k").and_then(Value::as_u64).unwrap_or(5).min(64))
+            .unwrap_or(usize::MAX);
         let obs = observe(client, args, schema_paths)?;
         match decide(&obs, &query, &[])? {
             PolicyOutcome::Choice(d) => {
@@ -1227,6 +1246,10 @@ mod instinct {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one linear observe-decide-verify attempt"
+    )]
     fn act_attempt(
         client: &mut AgentClient,
         args: &Value,
@@ -1234,7 +1257,8 @@ mod instinct {
         clause: &str,
     ) -> Result<ActStep, String> {
         let delivery = parse_delivery(args)?;
-        let k = args.get("k").and_then(Value::as_u64).unwrap_or(5).min(64) as usize;
+        let k = usize::try_from(args.get("k").and_then(Value::as_u64).unwrap_or(5).min(64))
+            .unwrap_or(usize::MAX);
 
         let obs = observe(client, args, schema_paths)?;
         let outcome = decide(&obs, clause, &[])?;
@@ -1425,7 +1449,10 @@ mod tests {
             .iter()
             .filter_map(|t| t.get("name").and_then(Value::as_str))
             .collect();
-        #[cfg_attr(not(feature = "instinct"), allow(unused_mut))]
+        #[cfg_attr(
+            not(feature = "instinct"),
+            expect(unused_mut, reason = "instinct-only push keeps the same list mutable")
+        )]
         let mut expected = vec![
             "wait",
             "wait_until",

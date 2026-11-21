@@ -23,9 +23,9 @@ fn cli_with_stdin(runtime: &RuntimeRoot, addr: &str, args: &[&str], stdin: &str)
     child
         .stdin
         .take()
-        .unwrap()
+        .expect("test fixture")
         .write_all(stdin.as_bytes())
-        .unwrap();
+        .expect("test fixture");
     child.wait_with_output().expect("gpui-agent output")
 }
 

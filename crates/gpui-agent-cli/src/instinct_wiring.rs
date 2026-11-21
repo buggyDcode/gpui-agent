@@ -8,7 +8,7 @@ use gpui_agent_recipe::{Effect, Registry, SchemaKind};
 /// Invoke schemas become the space's `INVOKE:<name>` offers;
 /// `description + keywords` is the policy's evidence label, and
 /// `Effect::Exit` marks the offer dangerous (listed, never chosen).
-pub fn offered_invokes(registry: &Registry) -> Vec<OfferedInvoke> {
+pub(crate) fn offered_invokes(registry: &Registry) -> Vec<OfferedInvoke> {
     registry
         .iter()
         .filter(|s| s.kind == SchemaKind::Invoke)

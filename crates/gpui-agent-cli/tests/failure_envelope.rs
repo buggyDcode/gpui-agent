@@ -40,17 +40,17 @@ fn cli_without_token(addr: &str, args: &[&str]) -> Output {
 }
 
 fn coded_error_host() -> (String, JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test fixture");
+    let addr = listener.local_addr().expect("test fixture").to_string();
     let server = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let (mut stream, _) = listener.accept().expect("test fixture");
+        let mut reader = BufReader::new(stream.try_clone().expect("test fixture"));
         loop {
             let mut line = String::new();
-            if reader.read_line(&mut line).unwrap() == 0 {
+            if reader.read_line(&mut line).expect("test fixture") == 0 {
                 break;
             }
-            let request: Request = serde_json::from_str(&line).unwrap();
+            let request: Request = serde_json::from_str(&line).expect("test fixture");
             let is_hello = matches!(request.op, Op::Hello);
             let response = if is_hello {
                 let mut response = Response::ok(&request.id);
@@ -75,9 +75,9 @@ fn coded_error_host() -> (String, JoinHandle<()>) {
                 response.hint = Some("host supplied recovery hint".into());
                 response
             };
-            let response = serde_json::to_string(&response).unwrap();
-            writeln!(stream, "{response}").unwrap();
-            stream.flush().unwrap();
+            let response = serde_json::to_string(&response).expect("test fixture");
+            writeln!(stream, "{response}").expect("test fixture");
+            stream.flush().expect("test fixture");
             if !is_hello {
                 break;
             }
@@ -87,11 +87,11 @@ fn coded_error_host() -> (String, JoinHandle<()>) {
 }
 
 fn legacy_fingerprint(node: &UiNode, parent_id: Option<&str>) -> u64 {
-    const OFFSET: u64 = 0xcbf29ce484222325;
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     fn feed(mut hash: u64, bytes: &[u8]) -> u64 {
         for byte in bytes {
             hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x100000001b3);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
         }
         hash
     }
@@ -126,8 +126,8 @@ fn legacy_fingerprint(node: &UiNode, parent_id: Option<&str>) -> u64 {
 }
 
 fn legacy_secret_host() -> (String, u64, JoinHandle<bool>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test fixture");
+    let addr = listener.local_addr().expect("test fixture").to_string();
     let mut raw_secret =
         UiNode::new("password-field", role::TEXTBOX, "Password").with_value("hunter2");
     raw_secret.states.push("secret".into());
@@ -141,17 +141,17 @@ fn legacy_secret_host() -> (String, u64, JoinHandle<bool>) {
         nodes: vec![masked_secret],
         rev: None,
     };
-    let server_tree = tree.clone();
+    let server_tree = tree;
     let server = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let (mut stream, _) = listener.accept().expect("test fixture");
+        let mut reader = BufReader::new(stream.try_clone().expect("test fixture"));
         let mut type_dispatched = false;
         loop {
             let mut line = String::new();
-            if reader.read_line(&mut line).unwrap() == 0 {
+            if reader.read_line(&mut line).expect("test fixture") == 0 {
                 break;
             }
-            let request: Request = serde_json::from_str(&line).unwrap();
+            let request: Request = serde_json::from_str(&line).expect("test fixture");
             let id = request.id;
             let response = match request.op {
                 Op::Hello => {
@@ -206,9 +206,9 @@ fn legacy_secret_host() -> (String, u64, JoinHandle<bool>) {
                 }
                 _ => Response::err(id, "unexpected operation"),
             };
-            let response = serde_json::to_string(&response).unwrap();
-            writeln!(stream, "{response}").unwrap();
-            stream.flush().unwrap();
+            let response = serde_json::to_string(&response).expect("test fixture");
+            writeln!(stream, "{response}").expect("test fixture");
+            stream.flush().expect("test fixture");
         }
         type_dispatched
     });
@@ -222,7 +222,7 @@ fn failed_envelope(out: &Output) -> Value {
     let envelope: Value = serde_json::from_slice(&out.stdout).expect("envelope on stdout");
     assert_eq!(envelope["ok"], false, "{envelope}");
     assert!(
-        stderr.contains(envelope["error"].as_str().unwrap()),
+        stderr.contains(envelope["error"].as_str().expect("test fixture")),
         "stderr and envelope disagree: {stderr} / {envelope}"
     );
     envelope
@@ -295,7 +295,7 @@ fn legacy_host_rejects_stale_secret_fingerprint_before_dispatch() {
     ));
     assert_eq!(envelope["error_code"], "stale_target", "{envelope}");
     assert_eq!(envelope["delivery_status"], "not_delivered", "{envelope}");
-    assert!(!server.join().unwrap());
+    assert!(!server.join().expect("test fixture"));
 }
 
 #[test]
@@ -308,7 +308,7 @@ fn legacy_snapshot_refs_do_not_print_or_save_secret_fingerprints() {
         !stdout.contains(&format!("fp={raw_fingerprint}")),
         "{stdout}"
     );
-    assert!(!server.join().unwrap());
+    assert!(!server.join().expect("test fixture"));
 
     let guarded = cli_without_token(
         &addr,
@@ -322,8 +322,8 @@ fn legacy_snapshot_refs_do_not_print_or_save_secret_fingerprints() {
 
 #[test]
 fn unreachable_host_reports_connect_failed() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("test fixture");
+    let addr = listener.local_addr().expect("test fixture").to_string();
     drop(listener);
     // The client retries a refused connect until its reply timeout.
     let envelope = failed_envelope(&cli(
@@ -336,8 +336,8 @@ fn unreachable_host_reports_connect_failed() {
 
 #[test]
 fn string_api_commands_report_connect_failed() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("test fixture");
+    let addr = listener.local_addr().expect("test fixture").to_string();
     drop(listener);
     for command in ["events", "snapshot", "keybindings"] {
         let envelope = failed_envelope(&cli(&addr, &["--reply-timeout-ms", "300", command]));
@@ -353,13 +353,13 @@ fn action_reads_back_by_default() {
     let todo = Todo::spawn(TOKEN);
     let out = cli(&todo.addr, &["type", "todo-input", "Milk"]);
     assert!(out.status.success(), "{out:?}");
-    let reply: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let reply: Value = serde_json::from_slice(&out.stdout).expect("test fixture");
     assert_eq!(reply["delivery_status"], "delivered_verified", "{reply}");
     assert_eq!(reply["after"]["value"], "Milk", "{reply}");
 
     let out = cli(&todo.addr, &["type", "todo-input", "!", "--no-read-back"]);
     assert!(out.status.success(), "{out:?}");
-    let reply: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let reply: Value = serde_json::from_slice(&out.stdout).expect("test fixture");
     assert_eq!(reply["delivery_status"], "delivered_unverified", "{reply}");
     assert!(reply.get("after").is_none(), "{reply}");
 }
@@ -378,7 +378,7 @@ fn keybinding_reports_delivery_status() {
         ],
     );
     assert!(out.status.success(), "{out:?}");
-    let reply: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let reply: Value = serde_json::from_slice(&out.stdout).expect("test fixture");
     assert_eq!(reply["delivery_status"], "delivered_unverified", "{reply}");
 }
 
@@ -426,6 +426,6 @@ fn cli_preserves_host_error_metadata_for_legacy_operations() {
         if args[0] == "keybinding" {
             assert!(envelope["delivery_status"].is_string(), "{envelope}");
         }
-        server.join().unwrap();
+        server.join().expect("test fixture");
     }
 }

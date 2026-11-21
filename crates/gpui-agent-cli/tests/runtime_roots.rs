@@ -1,3 +1,5 @@
+//! Per-run isolated runtime roots: creation and collision handling.
+
 mod common;
 
 use std::path::Path;
@@ -54,7 +56,7 @@ fn unsafe_runtime_root_errors_reach_discovery_commands() {
     let runtime = RuntimeRoot::new();
     let target = RuntimeRoot::new();
     let unsafe_root = runtime.path().join("runtime-link");
-    std::os::unix::fs::symlink(target.path(), &unsafe_root).unwrap();
+    std::os::unix::fs::symlink(target.path(), &unsafe_root).expect("test fixture");
 
     let adb_dir = RuntimeRoot::new();
     let adb = adb_dir.path().join("adb");
@@ -62,8 +64,8 @@ fn unsafe_runtime_root_errors_reach_discovery_commands() {
         &adb,
         "#!/bin/sh\ncase \"$1\" in\n  devices) printf 'List of devices attached\\nemulator-5554\\tdevice\\n' ;;\n  forward) printf 'emulator-5554 tcp:17421 tcp:17421\\n' ;;\nesac\n",
     )
-    .unwrap();
-    std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o700)).unwrap();
+    .expect("test fixture");
+    std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o700)).expect("test fixture");
 
     let targets = cli_with_root_and_path(&unsafe_root, &["targets"], adb_dir.path());
     assert!(!targets.status.success());
@@ -72,7 +74,7 @@ fn unsafe_runtime_root_errors_reach_discovery_commands() {
         "{}",
         stderr(&targets)
     );
-    let targets: serde_json::Value = serde_json::from_str(&stdout(&targets)).unwrap();
+    let targets: serde_json::Value = serde_json::from_str(&stdout(&targets)).expect("test fixture");
     assert_eq!(targets["adb"][0]["serial"], "emulator-5554");
     assert_eq!(targets["adb"][0]["forwarded"][0], "127.0.0.1:17421");
 
@@ -127,7 +129,7 @@ fn unsafe_runtime_root_errors_reach_discovery_commands() {
     );
     assert!(!stderr(&connect).contains("no AgentHost"));
 
-    std::fs::remove_file(&unsafe_root).unwrap();
+    std::fs::remove_file(&unsafe_root).expect("test fixture");
 }
 
 #[cfg(unix)]
@@ -137,7 +139,8 @@ fn snapshot_refs_tightens_legacy_runtime_root_before_attach() {
 
     let todo = Todo::spawn(TOKEN);
     let runtime = RuntimeRoot::new();
-    std::fs::set_permissions(runtime.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::set_permissions(runtime.path(), std::fs::Permissions::from_mode(0o755))
+        .expect("test fixture");
 
     let snapshot = cli(
         &runtime,
@@ -150,7 +153,7 @@ fn snapshot_refs_tightens_legacy_runtime_root_before_attach() {
     );
     assert_eq!(
         std::fs::metadata(runtime.path())
-            .unwrap()
+            .expect("test fixture")
             .permissions()
             .mode()
             & 0o777,
