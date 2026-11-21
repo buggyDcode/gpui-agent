@@ -7,6 +7,8 @@
 //! by the depth cap reports how many it had in `children_count`; the agent
 //! can then ask again with that node as the root.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::Serialize;
 
 use crate::protocol::PlatformKind;
@@ -130,6 +132,20 @@ impl Outline {
         }
         out
     }
+
+    /// Drop the fingerprints of nodes the outline cut, so a snapshot's
+    /// `fingerprints` map stays as small as its tree.
+    pub fn retain_fingerprints(&self, fingerprints: &mut BTreeMap<String, u64>) {
+        fn ids<'a>(nodes: &'a [OutlineNode], kept: &mut BTreeSet<&'a str>) {
+            for node in nodes {
+                kept.insert(node.node.id.as_str());
+                ids(&node.children, kept);
+            }
+        }
+        let mut kept = BTreeSet::new();
+        ids(&self.nodes, &mut kept);
+        fingerprints.retain(|id, _| kept.contains(id.as_str()));
+    }
 }
 
 fn compact_node(node: &OutlineNode, depth: usize, out: &mut String) {
@@ -251,5 +267,19 @@ mod tests {
         assert!(err.contains("nope"), "{err}");
         let err = outline(&tree(), &OutlineOptions::new().depth(0)).unwrap_err();
         assert!(err.contains("at least 1"), "{err}");
+    }
+
+    #[test]
+    fn fingerprints_of_cut_nodes_are_dropped() {
+        let cut = outline(&tree(), &OutlineOptions::new().root("panel").depth(1)).unwrap();
+        let mut fps: BTreeMap<String, u64> = [("window", 1), ("panel", 2), ("a", 3)]
+            .into_iter()
+            .map(|(id, fp)| (id.to_string(), fp))
+            .collect();
+        cut.retain_fingerprints(&mut fps);
+        assert_eq!(
+            fps.into_iter().collect::<Vec<_>>(),
+            [("panel".to_string(), 2)]
+        );
     }
 }

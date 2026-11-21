@@ -1244,20 +1244,7 @@ fn print_snapshot(
         ))
     })?;
     let mut fps = resp.fingerprints.take().unwrap_or_default();
-    if !options.is_full() {
-        let mut kept = std::collections::BTreeSet::new();
-        fn ids<'a>(
-            nodes: &'a [gpui_agent::OutlineNode],
-            kept: &mut std::collections::BTreeSet<&'a str>,
-        ) {
-            for node in nodes {
-                kept.insert(node.node.id.as_str());
-                ids(&node.children, kept);
-            }
-        }
-        ids(&outline.nodes, &mut kept);
-        fps.retain(|id, _| kept.contains(id.as_str()));
-    }
+    outline.retain_fingerprints(&mut fps);
     if refs {
         let (text, table) = refs::render(&outline, &fps, fingerprints);
         refs::save(&gpui_agent::runtime_root(), addr, &table).context("saving the ref table")?;
