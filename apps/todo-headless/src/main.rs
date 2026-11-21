@@ -1,3 +1,11 @@
+//! Headless todo host: runs the `TodoStore` domain logic and speaks the
+//! GPUI agent protocol over TCP without a GPUI window.
+#![expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "a CLI's output is stdout/stderr; libraries log"
+)]
+
 use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
@@ -68,7 +76,7 @@ fn serve() -> Result<(), ExitCode> {
     let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
     let token_set = config.token.is_some();
     let (addr, shutdown) =
-        spawn_host(config.addr, config.token, store.clone()).expect("bind agent server");
+        spawn_host(config.addr, config.token, Arc::clone(&store)).expect("bind agent server");
 
     eprintln!("gpui-agent listening on {addr} (platform=headless, app=todo)");
     eprintln!("opt-in: GPUI_AGENT=1 · bind via from_env · protocol v2");

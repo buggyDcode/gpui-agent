@@ -14,3 +14,6 @@ clap.workspace = true
 gpui-agent.workspace = true
 serde_json.workspace = true
 todo-core.workspace = true
+
+[lints]
+workspace = true
