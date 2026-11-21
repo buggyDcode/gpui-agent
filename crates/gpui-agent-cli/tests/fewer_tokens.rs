@@ -131,18 +131,12 @@ fn guard_does_not_use_a_wait_ref_for_a_plain_action_target() {
         &todo.addr,
         &["type", "todo-input", "before"],
     ));
-    let result = ok_json(&cli(
+    ok_json(&cli(
         &runtime,
         &todo.addr,
-        &[
-            "--guard",
-            "--wait-for",
-            &input,
-            "click",
-            "todo-input",
-        ],
+        &["--guard", "--wait-for", &input, "click", "todo-add"],
     ));
-    assert_eq!(result["delivery_status"], "delivered_verified", "{result}");
+    assert_eq!(todo.titles(), ["before"]);
 }
 
 #[test]
@@ -221,8 +215,7 @@ fn failed_keybinding_wait_reports_keybinding_delivery_status() {
     ));
     assert_eq!(failure["error_code"], "timeout", "{failure}");
     assert_eq!(
-        failure["delivery_status"],
-        "delivered_unverified",
+        failure["delivery_status"], "delivered_unverified",
         "{failure}"
     );
 }
