@@ -7,26 +7,37 @@ use crate::protocol::PROTOCOL_VERSION;
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// Challenge nonce length in bytes.
 pub const NONCE_LEN: usize = 32;
 
 /// Wire challenge written immediately after accept when the host has a token.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Challenge {
+    /// Protocol version (`v`).
     pub v: u32,
+    /// Always `"challenge"`.
     pub op: String,
+    /// The nonce, hex-encoded.
     pub nonce: String,
 }
 
+/// Lowercase hex of `bytes`.
+#[must_use]
 pub fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for &b in bytes {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0xf) as usize] as char);
+        out.push(char::from(HEX[usize::from(b >> 4)]));
+        out.push(char::from(HEX[usize::from(b & 0xf)]));
     }
     out
 }
 
+/// Bytes of a hex string (case-insensitive).
+///
+/// # Errors
+///
+/// Odd length or a non-hex character.
 pub fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
     let s = s.trim();
     if s.len() % 2 != 0 {
@@ -54,6 +65,10 @@ fn hex_nibble(b: u8) -> Result<u8, String> {
 }
 
 /// 32-byte nonce from `/dev/urandom` (Unix) or `BCryptGenRandom` (Windows).
+///
+/// # Errors
+///
+/// The platform CSPRNG fails or the target has none.
 pub fn random_nonce() -> Result<[u8; NONCE_LEN], String> {
     let mut buf = [0u8; NONCE_LEN];
     #[cfg(unix)]
@@ -81,7 +96,7 @@ pub fn random_nonce() -> Result<[u8; NONCE_LEN], String> {
             BCryptGenRandom(
                 core::ptr::null_mut(),
                 buf.as_mut_ptr(),
-                NONCE_LEN as u32,
+                u32::try_from(NONCE_LEN).unwrap_or(u32::MAX),
                 BCRYPT_USE_SYSTEM_PREFERRED_RNG,
             )
         };
@@ -97,6 +112,11 @@ pub fn random_nonce() -> Result<[u8; NONCE_LEN], String> {
     }
 }
 
+/// `HMAC-SHA256(token, nonce)`, hex-encoded.
+///
+/// # Errors
+///
+/// The key cannot initialize (does not happen for arbitrary bytes).
 pub fn hmac_hex(token: &str, nonce: &[u8]) -> Result<String, String> {
     let mut mac =
         HmacSha256::new_from_slice(token.as_bytes()).map_err(|_| "invalid HMAC key".to_string())?;
@@ -104,18 +124,21 @@ pub fn hmac_hex(token: &str, nonce: &[u8]) -> Result<String, String> {
     Ok(hex_encode(&mac.finalize().into_bytes()))
 }
 
+/// Whether `auth_hex` is `HMAC-SHA256(token, nonce)` (constant-time compare).
+#[must_use]
 pub fn hmac_verify(token: &str, nonce: &[u8], auth_hex: &str) -> bool {
     let Ok(got) = hex_decode(auth_hex) else {
         return false;
     };
-    let mut mac = match HmacSha256::new_from_slice(token.as_bytes()) {
-        Ok(mac) => mac,
-        Err(_) => return false,
+    let Ok(mut mac) = HmacSha256::new_from_slice(token.as_bytes()) else {
+        return false;
     };
     mac.update(nonce);
     mac.verify_slice(&got).is_ok()
 }
 
+/// The `{"op":"challenge",...}` the server writes on connect.
+#[must_use]
 pub fn challenge_for_nonce(nonce: &[u8; NONCE_LEN]) -> Challenge {
     Challenge {
         v: PROTOCOL_VERSION,
@@ -124,6 +147,12 @@ pub fn challenge_for_nonce(nonce: &[u8; NONCE_LEN]) -> Challenge {
     }
 }
 
+/// The nonce of a challenge line the server sent.
+///
+/// # Errors
+///
+/// Bad JSON, a version or op mismatch, a non-hex nonce, or the wrong
+/// nonce length.
 pub fn parse_challenge_line(line: &[u8]) -> Result<[u8; NONCE_LEN], String> {
     let challenge: Challenge =
         serde_json::from_slice(line).map_err(|err| format!("bad challenge: {err}"))?;

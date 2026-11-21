@@ -5,24 +5,33 @@ use thiserror::Error;
 
 use crate::server::default_addr;
 
+/// Why the control-plane gate refused to run.
 #[derive(Debug, Error)]
+#[expect(clippy::exhaustive_enums, reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches")]
 pub enum SecurityError {
+    /// `GPUI_AGENT` unset or not truthy.
     #[error("automation is disabled (set GPUI_AGENT=1 to opt in)")]
     Disabled,
+    /// Release binary without `GPUI_AGENT_ALLOW_RELEASE=1`.
     #[error("refusing to enable automation in a release build without GPUI_AGENT_ALLOW_RELEASE=1")]
     ReleaseBlocked,
+    /// A bind that must be loopback is not.
     #[error("automation must bind a loopback address, got {0}")]
     NonLoopback(SocketAddr),
+    /// Non-loopback endpoint without the remote opt-in flag.
     #[error(
         "refusing non-loopback address {0} without GPUI_AGENT_REMOTE=1 (host) or --allow-remote / GPUI_AGENT_ALLOW_REMOTE=1 (client)"
     )]
     RemoteDisabled(SocketAddr),
+    /// Non-loopback endpoint without a token.
     #[error("non-loopback address {0} requires a non-empty GPUI_AGENT_TOKEN")]
     RemoteRequiresToken(SocketAddr),
+    /// Loopback bind without a token and without the demo opt-out.
     #[error(
         "loopback bind requires a non-empty GPUI_AGENT_TOKEN (set GPUI_AGENT_INSECURE_NO_TOKEN=1 only for local demos)"
     )]
     LoopbackRequiresToken,
+    /// `GPUI_AGENT_ADDR` did not parse.
     #[error("invalid GPUI_AGENT_ADDR: {0}")]
     BadAddr(String),
 }
@@ -46,7 +55,9 @@ pub enum SecurityError {
 ///   (P2) even on loopback.
 #[derive(Clone)]
 pub struct AgentConfig {
+    /// The bind/connect address the gate authorized.
     pub addr: SocketAddr,
+    /// The shared token (`None` only on the insecure-demo loopback path).
     pub token: Option<String>,
 }
 
@@ -59,6 +70,12 @@ impl fmt::Debug for AgentConfig {
     }
 }
 
+/// Read the gate from `GPUI_AGENT*` env vars. `Ok(None)` = disabled.
+///
+/// # Errors
+///
+/// The [`SecurityError`] variant matching the refused configuration.
+#[expect(clippy::print_stderr, reason = "the insecure-demo banner must reach stderr even where the host has no logger")]
 pub fn from_env() -> Result<Option<AgentConfig>, SecurityError> {
     if !truthy_env("GPUI_AGENT") {
         return Ok(None);
@@ -97,6 +114,11 @@ Do not use this on a shared machine or an agent VM. Set GPUI_AGENT_TOKEN instead
 
 /// Host bind policy: loopback requires a token unless `insecure_no_token`;
 /// non-loopback only with token + flag.
+///
+/// # Errors
+///
+/// [`SecurityError::LoopbackRequiresToken`] or the remote-endpoint gates.
+#[expect(clippy::fn_params_excessive_bools, reason = "one flag: the remote opt-in")]
 pub fn authorize_bind(
     addr: SocketAddr,
     token: Option<&str>,
@@ -106,6 +128,11 @@ pub fn authorize_bind(
 }
 
 /// Same as [`authorize_bind`], with the demo opt-out for untokened loopback.
+///
+/// # Errors
+///
+/// [`SecurityError::LoopbackRequiresToken`] or the remote-endpoint gates.
+#[expect(clippy::fn_params_excessive_bools, reason = "two flags of the bind policy")]
 pub fn authorize_bind_with_insecure(
     addr: SocketAddr,
     token: Option<&str>,
@@ -125,6 +152,11 @@ pub fn authorize_bind_with_insecure(
 
 /// Client connect policy (flag is `--allow-remote`). Loopback without a
 /// token remains allowed so a client can talk to an insecure demo host.
+///
+/// # Errors
+///
+/// [`SecurityError::RemoteDisabled`] or [`SecurityError::RemoteRequiresToken`].
+#[expect(clippy::fn_params_excessive_bools, reason = "one flag: the remote opt-in")]
 pub fn authorize_client(
     addr: SocketAddr,
     token: Option<&str>,
@@ -136,6 +168,7 @@ pub fn authorize_client(
     authorize_remote_endpoint(addr, token, allow_remote)
 }
 
+#[expect(clippy::fn_params_excessive_bools, reason = "one flag: the remote opt-in")]
 fn authorize_remote_endpoint(
     addr: SocketAddr,
     token: Option<&str>,
@@ -150,6 +183,8 @@ fn authorize_remote_endpoint(
     }
 }
 
+/// Whether `name` is set to a truthy value (`1`, `true`, `yes`, `on`).
+#[must_use]
 pub fn truthy_env(name: &str) -> bool {
     std::env::var(name)
         .is_ok_and(|v| {
@@ -164,10 +199,16 @@ pub fn truthy_env(name: &str) -> bool {
 ///
 /// IPv4-mapped loopback (`::ffff:127.0.0.1`) is **not** treated as loopback
 /// so bind checks fail closed.
+#[must_use]
 pub fn is_loopback_addr(addr: SocketAddr) -> bool {
     is_loopback_ip(addr.ip())
 }
 
+/// Return `addr` unchanged when it is loopback.
+///
+/// # Errors
+///
+/// [`SecurityError::NonLoopback`] for anything else.
 pub fn ensure_loopback(addr: SocketAddr) -> Result<SocketAddr, SecurityError> {
     if is_loopback_addr(addr) {
         Ok(addr)

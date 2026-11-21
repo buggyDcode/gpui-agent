@@ -9,10 +9,13 @@ use crate::protocol::{KeybindingScope, Op};
 /// Stable error prefix so agents can branch without parsing prose.
 pub const KEYBINDING_UNAVAILABLE: &str = "keybinding_unavailable";
 
+/// Format a `keybinding_unavailable:` error for `detail`.
 pub fn keybinding_unavailable(detail: impl Into<String>) -> String {
     format!("{KEYBINDING_UNAVAILABLE}: {}", detail.into())
 }
 
+/// Whether `error` is a `keybinding_unavailable` failure.
+#[must_use]
 pub fn is_keybinding_unavailable(error: &str) -> bool {
     error == KEYBINDING_UNAVAILABLE
         || error.starts_with(KEYBINDING_UNAVAILABLE)
@@ -22,9 +25,13 @@ pub fn is_keybinding_unavailable(error: &str) -> bool {
 /// One row of `keybindings` / `keybinding.list`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct KeybindingInfo {
+    /// The registered Action id (`todo.focus_input`).
     pub id: String,
+    /// Display chord (`cmd-shift-s`).
     pub chord: String,
+    /// `focused` (needs the OS-focused window) or `global`.
     pub scope: KeybindingScope,
+    /// Host-flagged destructive action; quits are forced true.
     pub dangerous: bool,
 }
 
@@ -33,6 +40,10 @@ impl KeybindingInfo {
     /// (`null`/absent `keybindings` field → empty). Shared by
     /// `AgentClient::keybinding_catalog` and the policy runner so the
     /// envelope is parsed once.
+    ///
+    /// # Errors
+    ///
+    /// A present-but-unparsable `keybindings` field.
     pub fn catalog_from(result: Option<&serde_json::Value>) -> Result<Vec<Self>, String> {
         match result.and_then(|r| r.get("keybindings")).cloned() {
             None | Some(serde_json::Value::Null) => Ok(Vec::new()),
@@ -42,6 +53,8 @@ impl KeybindingInfo {
         }
     }
 
+    /// A catalog row.
+    #[expect(clippy::fn_params_excessive_bools, reason = "one flag: the wire's dangerous field")]
     pub fn new(
         id: impl Into<String>,
         chord: impl Into<String>,
@@ -60,14 +73,24 @@ impl KeybindingInfo {
 /// Fields of [`Op::Keybinding`] used by the shared authorize gate.
 #[derive(Debug, Clone, Copy)]
 pub struct KeybindingRequest<'a> {
+    /// The Action id to fire.
     pub binding: &'a str,
+    /// Optional resolve aid; must match the catalog when present.
     pub chord: Option<&'a str>,
+    /// `focused` or `global`.
     pub scope: KeybindingScope,
+    /// Explicit consent, required for dangerous bindings.
     pub confirm: bool,
+    /// For `focused` scope: bring the app to front first.
     pub activate: bool,
 }
 
 impl<'a> KeybindingRequest<'a> {
+    /// Borrow the fields of an [`Op::Keybinding`].
+    ///
+    /// # Errors
+    ///
+    /// `op` is not `Op::Keybinding`.
     pub fn from_op(op: &'a Op) -> Result<Self, String> {
         match op {
             Op::Keybinding {
@@ -90,11 +113,16 @@ impl<'a> KeybindingRequest<'a> {
 
 /// Process-ending Action ids. Token auth is not enough; `confirm=true` is
 /// required even if the host forgot `dangerous: true` on the list row.
+#[must_use]
 pub fn is_quit_binding(binding: &str) -> bool {
     let n = binding.trim().to_ascii_lowercase();
-    n == "quit" || n == "app.quit" || n.ends_with(".quit")
+    #[expect(clippy::case_sensitive_file_extension_comparisons, reason = "`n` is already lowercased on the line above")]
+    let quit = n.ends_with(".quit");
+    n == "quit" || n == "app.quit" || quit
 }
 
+/// Whether `chord` normalizes to a quit chord (`cmd-q`, `super-q`, ...).
+#[must_use]
 pub fn is_quit_chord(chord: &str) -> bool {
     matches!(
         normalize_chord(chord).as_str(),
@@ -102,10 +130,14 @@ pub fn is_quit_chord(chord: &str) -> bool {
     )
 }
 
+/// The `dangerous` flag, upgraded for quits the host forgot to flag.
+#[must_use]
 pub fn binding_is_dangerous(entry: &KeybindingInfo) -> bool {
     entry.dangerous || is_quit_binding(&entry.id) || is_quit_chord(&entry.chord)
 }
 
+/// Whether `op` is a confirmed quit Action (the server's shutdown signal).
+#[must_use]
 pub fn op_is_confirmed_quit(op: &Op) -> bool {
     matches!(
         op,
@@ -117,6 +149,8 @@ pub fn op_is_confirmed_quit(op: &Op) -> bool {
     )
 }
 
+/// The `{"keybindings": [...]}` result payload, `dangerous` normalized.
+#[must_use]
 pub fn keybinding_list_json(catalog: &[KeybindingInfo]) -> serde_json::Value {
     let keybindings: Vec<KeybindingInfo> = catalog
         .iter()
@@ -134,6 +168,10 @@ pub fn keybinding_list_json(catalog: &[KeybindingInfo]) -> serde_json::Value {
 ///
 /// A no-op Action (wrong context, deferred drop, kit gap) must fail closed.
 /// Do **not** call Action bodies from the intercept to synthesize `Some`.
+///
+/// # Errors
+///
+/// `listener_result` is `None` (the Action did not run) or is itself an error.
 pub fn complete_keybinding_action(
     listener_result: Option<Result<crate::dispatch::DispatchResult, String>>,
 ) -> Result<crate::dispatch::DispatchResult, String> {
@@ -146,6 +184,10 @@ pub fn complete_keybinding_action(
 /// Testable intercept: `dispatch_action` may invoke listeners, which record
 /// `Some(result)` into the slot. The intercept itself must not run Action
 /// bodies when the slot stays `None`.
+///
+/// # Errors
+///
+/// The slot stays `None`, or the recorded result is an error.
 pub fn intercept_keybinding_action(
     dispatch_action: impl FnOnce(&mut Option<Result<crate::dispatch::DispatchResult, String>>),
 ) -> Result<crate::dispatch::DispatchResult, String> {
@@ -158,6 +200,13 @@ pub fn intercept_keybinding_action(
 ///
 /// Lookup is `(binding, scope)`. Optional `chord` is a resolve aid and must
 /// match the catalog when present. `scope=focused` does not auto-activate.
+///
+/// # Errors
+///
+/// Empty binding, unknown binding, scope or chord mismatch, `activate`
+/// on global scope, an unfocused app, or a dangerous binding without
+/// `confirm`.
+#[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether the app currently holds OS focus")]
 pub fn authorize_keybinding<'a>(
     catalog: &'a [KeybindingInfo],
     request: KeybindingRequest<'_>,
@@ -212,6 +261,13 @@ pub fn authorize_keybinding<'a>(
     Ok(entry)
 }
 
+/// [`authorize_keybinding`] on an [`Op`].
+///
+/// # Errors
+///
+/// `op` is not `Op::Keybinding`, or the same gates as
+/// [`authorize_keybinding`].
+#[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether the app currently holds OS focus")]
 pub fn authorize_keybinding_op<'a>(
     op: &'a Op,
     catalog: &'a [KeybindingInfo],
@@ -252,6 +308,7 @@ mod tests {
         ]
     }
 
+    #[expect(clippy::fn_params_excessive_bools, reason = "test helper mirroring the wire flags")]
     fn fire(
         binding: &str,
         scope: KeybindingScope,
