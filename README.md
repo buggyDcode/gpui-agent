@@ -126,7 +126,9 @@ gpui-agent --guard press @e8                  # send @e8's fingerprint saved by 
 
 `--depth` and `--root` cut the tree in the client, so they work with every host.
 `--wait-for-gone <id>` waits for a node to go away, and `--wait-timeout-ms` (default
-5000) bounds either wait. `--guard` is opt-in because a fingerprint covers the node's
+5000) bounds either wait. `--guard` only fingerprints the target of `click`, `type`,
+`set-value`, `key` or `press` when that target is an `@eN` ref; a ref used only by
+`--wait-for` does not trigger it. It is opt-in because a fingerprint covers the node's
 value: after typing into a node, take a new `snapshot --refs` before guarding it again.
 The MCP tools take the same arguments (`depth`, `root`, `wait_for`, `wait_for_gone`,
 `wait_timeout_ms`, `expect_fingerprint`) and answer in compact JSON.
