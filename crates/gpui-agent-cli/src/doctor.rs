@@ -19,7 +19,7 @@ pub fn targets() -> (Value, Option<gpui_agent::ResolveError>) {
         Err(error) => (Vec::new(), Some(error)),
     };
     (
-        json!({ "hosts": hosts, "adb": adb_devices() }),
+        json!({ "hosts": hosts, "adb": adb_devices(), "simulators": simulator_devices() }),
         discovery_error,
     )
 }
@@ -69,6 +69,66 @@ fn parse_adb(devices: &str, forwards: &str) -> Vec<Value> {
             Some(json!({ "serial": serial, "state": state, "forwarded": forwarded }))
         })
         .collect()
+}
+
+/// `None` when `xcrun` is not installed or does not answer.
+///
+/// Booted iOS Simulators and the hosts each publishes. A host inside a
+/// Simulator writes its discovery record under the device's own
+/// `data/tmp`, outside this machine's `runtime_root`, so `hosts` never
+/// lists it.
+fn simulator_devices() -> Option<Vec<Value>> {
+    let out = Command::new("xcrun")
+        .args(["simctl", "list", "devices", "booted", "-j"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let listing: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let mut sims = Vec::new();
+    for devices in listing.get("devices")?.as_object()?.values() {
+        for device in devices.as_array().into_iter().flatten() {
+            sims.push(json!({
+                "udid": device.get("udid").and_then(Value::as_str).unwrap_or_default(),
+                "name": device.get("name").and_then(Value::as_str).unwrap_or_default(),
+                "state": device.get("state").and_then(Value::as_str).unwrap_or_default(),
+                "hosts": device
+                    .get("dataPath")
+                    .and_then(Value::as_str)
+                    .map(simulator_device_hosts)
+                    .unwrap_or_default(),
+            }));
+        }
+    }
+    Some(sims)
+}
+
+/// Host records a Simulator app publishes under its container tmp dir
+/// (`<dataPath>/tmp/gpui-agent-<uid>/hosts`).
+fn simulator_device_hosts(data_path: &str) -> Vec<Value> {
+    let mut hosts = Vec::new();
+    let Ok(roots) = std::fs::read_dir(Path::new(data_path).join("tmp")) else {
+        return hosts;
+    };
+    for entry in roots.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("gpui-agent-")
+        {
+            continue;
+        }
+        let Ok(records) = gpui_agent::live_hosts(&entry.path()) else {
+            continue;
+        };
+        hosts.extend(
+            records
+                .into_iter()
+                .filter_map(|rec| serde_json::to_value(rec).ok()),
+        );
+    }
+    hosts
 }
 
 fn count(nodes: &[UiNode]) -> usize {
