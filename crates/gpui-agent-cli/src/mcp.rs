@@ -604,7 +604,7 @@ fn outline_snapshot(
     } else {
         value["tree"] = serde_json::to_value(&outline).map_err(|err| err.to_string())?;
     }
-    Ok(value)
+    Ok(stringify_fingerprints(value))
 }
 
 /// A failed request as the tool error text: the same JSON envelope the
@@ -2096,6 +2096,7 @@ mod tests {
         assert!(window["children_count"].as_u64().unwrap() > 0, "{window}");
         let fps = one["fingerprints"].as_object().unwrap();
         assert_eq!(fps.len(), 1, "{fps:?}");
+        assert!(fps.values().all(Value::is_string), "{fps:?}");
 
         let page = call_tool(
             &mut client,
