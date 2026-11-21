@@ -96,6 +96,54 @@ macOS **embedded-host** writes the app window. Details:
 
 Omitted fields are absent, not null.
 
+## Error codes, delivery status and read-back
+
+A failed response keeps its human-readable `error` and adds a stable
+`error_code` and a fixed recovery `hint`:
+
+```json
+{"v":2,"id":"7","ok":false,"error":"stale_target: `todo-add` changed between snapshot and dispatch","error_code":"stale_target","hint":"take a new snapshot and retry"}
+```
+
+| `error_code` | Meaning |
+| --- | --- |
+| `unauthorized` | Missing or wrong token |
+| `bad_request` | Malformed request line |
+| `unsupported_version` | Request `v` the host does not speak |
+| `unsupported_op` | Op or feature the host does not list |
+| `stale_target` / `target_gone` | `expect_fingerprint` mismatch / target absent (nothing dispatched) |
+| `not_found` / `duplicate_id` | Target id matches no node / several nodes |
+| `assert_failed` | An `assert` did not hold |
+| `timeout` | A `wait` / `wait_until` bound ran out |
+| `mailbox_full` | The UI-thread mailbox is saturated |
+| `screenshot_unavailable`, `virtual_unavailable`, `scroll_unavailable`, `keybinding_unavailable`, `in_viewport_unavailable` | The host cannot do this here |
+| `host_error` | Anything else, including the app's own refusal |
+| `connect_failed` / `no_reply` | Client side only: no connection / no usable reply |
+
+Both fields are optional and wire protocol stays 2. A host that predates
+them sends only `error`; the client classifies that text with the same
+table (`gpui_agent::error_code_of`), so callers see one code either way.
+
+The client (not the host) adds `delivery_status` to an op that acts:
+
+| `delivery_status` | Meaning |
+| --- | --- |
+| `not_delivered` | Not written, or refused before dispatch (auth, version, unsupported op, stale/gone/missing target) |
+| `delivery_uncertain` | Written, but no usable reply, or the host failed while dispatching |
+| `delivered_unverified` | The host answered `ok` |
+| `delivered_verified` | `ok`, and the read-back saw the target change |
+
+Read-back (`AgentClient::act`) snapshots the target before and after
+`click` / `type` / `set_value` / `key` / `paste` and a targeted `press` /
+`long_press`, and reports it as `after`:
+`{exists, value?, checked?, focused?, enabled?, changed}`. When the host
+reports the same `rev` after the action, the second snapshot is skipped.
+The CLI and MCP read back by default; `--no-read-back` / `no_read_back:
+true` turn it off. A failed CLI command prints
+`{"ok":false,"error":…,"error_code":…,"hint":…,"delivery_status":…}` on
+stdout as well as `error: …` on stderr (exit code 1); an MCP tool error
+carries the same JSON as its text.
+
 ## Revisions (`snapshot since`, `revision`)
 
 Hosts that track state mutations report a monotonically increasing

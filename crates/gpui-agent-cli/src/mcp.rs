@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
+use gpui_agent::CallFailure;
 use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, KeybindingScope, Op};
 use gpui_agent::{MAX_LINE_BYTES, line_is_blank, read_limited_line_into};
@@ -153,22 +154,24 @@ pub(crate) fn tools() -> Vec<Value> {
         tool(
             "click",
             "Activate a widget by stable id. delivery=semantic (default) calls the handler; delivery=virtual synthesizes in-window GPUI pointer events (never OS HID).",
-            input_schema_with_delivery(&["target"]),
+            with_no_read_back(input_schema_with_delivery(&["target"])),
         ),
         tool(
             "type",
             "Append text to an editable widget. Optional delivery=virtual types through GPUI keystrokes after focusing the target.",
-            input_schema_with_delivery(&["target", "text"]),
+            with_no_read_back(input_schema_with_delivery(&["target", "text"])),
         ),
         tool(
             "set_value",
             "Replace the value of an editable widget.",
-            object_schema(&["target", "value"]),
+            with_no_read_back(object_schema(&["target", "value"])),
         ),
         tool(
             "press",
             "Press (tap) a node by id, or a point with x and y, as the platform delivers it. Fails when the target is hidden, disabled or covered. Needs the host feature `press`.",
-            json!({ "type": "object", "properties": { "target": { "type": "string" }, "x": { "type": "number" }, "y": { "type": "number" } }, "required": [] }),
+            with_no_read_back(
+                json!({ "type": "object", "properties": { "target": { "type": "string" }, "x": { "type": "number" }, "y": { "type": "number" } }, "required": [] }),
+            ),
         ),
         tool(
             "scroll",
@@ -193,7 +196,9 @@ pub(crate) fn tools() -> Vec<Value> {
         tool(
             "long_press",
             "Press and hold a node or point.",
-            json!({ "type": "object", "properties": { "target": { "type": "string" }, "x": { "type": "number" }, "y": { "type": "number" }, "duration_ms": { "type": "integer" } }, "required": [] }),
+            with_no_read_back(
+                json!({ "type": "object", "properties": { "target": { "type": "string" }, "x": { "type": "number" }, "y": { "type": "number" }, "duration_ms": { "type": "integer" } }, "required": [] }),
+            ),
         ),
         tool(
             "pinch",
@@ -208,7 +213,9 @@ pub(crate) fn tools() -> Vec<Value> {
         tool(
             "paste",
             "Insert text into an editable node as one paste.",
-            json!({ "type": "object", "properties": { "target": { "type": "string" }, "text": { "type": "string" } }, "required": ["target", "text"] }),
+            with_no_read_back(
+                json!({ "type": "object", "properties": { "target": { "type": "string" }, "text": { "type": "string" } }, "required": ["target", "text"] }),
+            ),
         ),
         tool(
             "system",
@@ -218,7 +225,7 @@ pub(crate) fn tools() -> Vec<Value> {
         tool(
             "key",
             "Send a key (Enter, Backspace, …) to a widget. No modifiers. Optional delivery=virtual uses GPUI dispatch_keystroke. Modifier chords use the keybinding tool.",
-            input_schema_with_delivery(&["target", "key"]),
+            with_no_read_back(input_schema_with_delivery(&["target", "key"])),
         ),
         tool(
             "keybinding",
@@ -413,6 +420,29 @@ fn input_schema_with_delivery(required: &[&str]) -> Value {
     schema
 }
 
+/// Read-back is on by default for target actions; `no_read_back: true`
+/// skips the before/after snapshots.
+fn with_no_read_back(mut schema: Value) -> Value {
+    schema["properties"]["no_read_back"] = json!({
+        "type": "boolean",
+        "description": "Skip the read-back. By default the target is snapshotted before and after; the reply carries `after` and `delivery_status` (delivered_verified when the target changed)."
+    });
+    schema
+}
+
+fn read_back(args: &Value) -> bool {
+    !args
+        .get("no_read_back")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// A failed request as the tool error text: the same JSON envelope the
+/// CLI prints on stdout.
+fn fail(failure: CallFailure) -> String {
+    serde_json::to_string(&failure.envelope()).unwrap_or(failure.error)
+}
+
 fn parse_delivery(args: &Value) -> Result<DeliveryMode, String> {
     match args.get("delivery") {
         None => Ok(DeliveryMode::Semantic),
@@ -469,7 +499,7 @@ fn call_tool(
             client.set_timeout(reply_timeout);
             ready?
         }
-        "hello" => client.expect_ok(Op::Hello)?,
+        "hello" => client.call(&Op::Hello).map_err(fail)?,
         "snapshot" => {
             let since = args.get("since").and_then(Value::as_u64);
             let format = match args.get("format").and_then(Value::as_str) {
@@ -502,18 +532,40 @@ fn call_tool(
             }
             client.screenshot_with(path, mode, target, max_height_px)?
         }
-        "click" => client.click_with_delivery(args.string("target")?, parse_delivery(&args)?)?,
-        "type" => client.type_with_delivery(
-            args.string("target")?,
-            args.string("text")?,
-            parse_delivery(&args)?,
-        )?,
-        "set_value" => client.set_value(args.string("target")?, args.string("value")?)?,
-        "key" => client.key_with_delivery(
-            args.string("target")?,
-            args.string("key")?,
-            parse_delivery(&args)?,
-        )?,
+        "click" => {
+            let op = Op::Click {
+                target: args.string("target")?,
+                delivery: parse_delivery(&args)?,
+                expect_fingerprint: None,
+            };
+            client.act(&op, read_back(&args)).map_err(fail)?
+        }
+        "type" => {
+            let op = Op::Type {
+                target: args.string("target")?,
+                text: args.string("text")?,
+                delivery: parse_delivery(&args)?,
+                expect_fingerprint: None,
+            };
+            client.act(&op, read_back(&args)).map_err(fail)?
+        }
+        "set_value" => {
+            let op = Op::SetValue {
+                target: args.string("target")?,
+                value: args.string("value")?,
+                expect_fingerprint: None,
+            };
+            client.act(&op, read_back(&args)).map_err(fail)?
+        }
+        "key" => {
+            let op = Op::Key {
+                target: args.string("target")?,
+                key: args.string("key")?,
+                delivery: parse_delivery(&args)?,
+                expect_fingerprint: None,
+            };
+            client.act(&op, read_back(&args)).map_err(fail)?
+        }
         "keybinding" => {
             let binding = args
                 .opt_string("id")
@@ -545,26 +597,30 @@ fn call_tool(
         }
         "assert" => {
             let spec = parse_assert_spec(&args)?;
-            client.assert(spec)?
+            client.call(&Op::Assert { spec }).map_err(fail)?
         }
         "invoke" => {
-            let invoke_name = args.string("name")?;
-            let invoke_args = args.get("args").cloned().unwrap_or(json!({}));
-            client.invoke(invoke_name, invoke_args)?
+            let op = Op::Invoke {
+                name: args.string("name")?,
+                args: args.get("args").cloned().unwrap_or(json!({})),
+            };
+            client.call(&op).map_err(fail)?
         }
-        "shutdown" => client.expect_ok(Op::Shutdown)?,
+        "shutdown" => client.call(&Op::Shutdown).map_err(fail)?,
         "press" | "scroll" | "hover" | "drag" | "swipe" | "long_press" | "pinch" | "viewport"
         | "paste" | "system" => {
             // The tool arguments are the op's own wire fields, so the MCP
             // surface cannot drift from the protocol or the CLI.
+            let read_back = read_back(&args);
             let mut wire = match args {
                 Value::Object(map) => map,
                 _ => return Err(format!("{name} takes an object")),
             };
+            wire.remove("no_read_back");
             wire.insert("op".into(), json!(name));
             let op: Op = serde_json::from_value(Value::Object(wire))
                 .map_err(|err| format!("{name}: {err}"))?;
-            client.gated(op)?
+            client.act(&op, read_back).map_err(fail)?
         }
         "recipe_validate" => return recipe_validate(&args, schema_paths),
         "recipe_plan" => return recipe_plan(&args, schema_paths),
@@ -1346,6 +1402,122 @@ mod tests {
             text.contains("\"ok\": true") || text.contains("\"ok\":true"),
             "success payload should carry the receipt: {text}"
         );
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[test]
+    fn target_action_schemas_advertise_no_read_back() {
+        for name in [
+            "click",
+            "type",
+            "set_value",
+            "key",
+            "press",
+            "paste",
+            "long_press",
+        ] {
+            let tool = tools().into_iter().find(|t| t["name"] == name).unwrap();
+            assert_eq!(
+                tool["inputSchema"]["properties"]["no_read_back"]["type"],
+                json!("boolean"),
+                "{name}"
+            );
+        }
+    }
+
+    fn spawn_todo_client() -> (AgentClient, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        use std::sync::{Arc, Mutex};
+
+        use gpui_agent::protocol::PlatformKind;
+        use gpui_agent::server::spawn_host;
+        use todo_core::TodoStore;
+
+        let store = Arc::new(Mutex::new(TodoStore::new(PlatformKind::Headless)));
+        let (addr, shutdown) = spawn_host("127.0.0.1:0".parse().unwrap(), None, store).unwrap();
+        let client = AgentClient::connect(addr).with_timeout(Duration::from_secs(3));
+        (client, shutdown)
+    }
+
+    fn tool_error_envelope(result: &Value) -> Value {
+        assert_eq!(result.get("isError"), Some(&json!(true)), "{result}");
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let envelope: Value = serde_json::from_str(text).expect("envelope is JSON");
+        assert_eq!(envelope["ok"], json!(false), "{envelope}");
+        assert!(envelope["error"].is_string(), "{envelope}");
+        envelope
+    }
+
+    #[test]
+    fn failed_request_carries_the_envelope() {
+        let (mut client, shutdown) = spawn_todo_client();
+        let result = tools_call_result(
+            &mut client,
+            &json!({ "name": "assert", "arguments": { "target": "no-such-node" } }),
+            &[],
+        );
+        let envelope = tool_error_envelope(&result);
+        assert_eq!(envelope["error_code"], json!("not_found"), "{envelope}");
+        assert!(envelope["hint"].is_string(), "{envelope}");
+        assert!(envelope.get("delivery_status").is_none(), "{envelope}");
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[test]
+    fn unreachable_host_action_is_not_delivered() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_millis(500));
+        let result = tools_call_result(
+            &mut client,
+            &json!({ "name": "click", "arguments": { "target": "todo-add" } }),
+            &[],
+        );
+        let envelope = tool_error_envelope(&result);
+        assert_eq!(
+            envelope["error_code"],
+            json!("connect_failed"),
+            "{envelope}"
+        );
+        assert_eq!(
+            envelope["delivery_status"],
+            json!("not_delivered"),
+            "{envelope}"
+        );
+    }
+
+    #[test]
+    fn action_reads_back_by_default_and_no_read_back_skips_it() {
+        let (mut client, shutdown) = spawn_todo_client();
+        let verified = call_tool(
+            &mut client,
+            &json!({ "name": "type", "arguments": { "target": "todo-input", "text": "Milk" } }),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            verified["delivery_status"],
+            json!("delivered_verified"),
+            "{verified}"
+        );
+        assert_eq!(verified["after"]["value"], json!("Milk"), "{verified}");
+        assert_eq!(verified["after"]["changed"], json!(true), "{verified}");
+
+        let unverified = call_tool(
+            &mut client,
+            &json!({
+                "name": "type",
+                "arguments": { "target": "todo-input", "text": "!", "no_read_back": true }
+            }),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            unverified["delivery_status"],
+            json!("delivered_unverified"),
+            "{unverified}"
+        );
+        assert!(unverified.get("after").is_none(), "{unverified}");
         shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
