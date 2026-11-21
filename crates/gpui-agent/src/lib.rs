@@ -26,6 +26,7 @@ pub mod host;
 pub mod keybinding;
 pub mod mailbox;
 pub mod ndjson;
+pub mod outline;
 pub mod prelude;
 pub mod protocol;
 pub mod screenshot;
@@ -36,7 +37,7 @@ pub mod testing;
 pub mod tree;
 pub mod virtual_input;
 
-pub use client::AgentClient;
+pub use client::{AgentClient, WaitFor};
 pub use diff::{AddedNode, ChangedNode, TreeDiff, apply_diff, compact_lines, diff_trees};
 pub use discovery::{
     ClientTarget, HostRecord, ResolveError, live_hosts, resolve_client_addr, resolve_client_target,
@@ -59,6 +60,7 @@ pub use keybinding::{
 };
 pub use mailbox::{AgentMailbox, MAX_MAILBOX_DEPTH, MailboxRequest};
 pub use ndjson::{line_is_blank, read_limited_line, read_limited_line_into, write_json_line};
+pub use outline::{Outline, OutlineNode, OutlineOptions, outline};
 pub use protocol::{
     AssertSpec, DeliveryMode, DeviceInfo, HelloAuth, HelloInfo, KeybindingScope, Op,
     PROTOCOL_VERSION, PlatformKind, ReadBack, Request, Response, ScreenshotMode, SnapshotFormat,

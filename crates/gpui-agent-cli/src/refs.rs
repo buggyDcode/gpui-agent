@@ -11,7 +11,28 @@ use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use gpui_agent::tree::{UiNode, UiTree};
+use gpui_agent::outline::{Outline, OutlineNode};
+use gpui_agent::tree::UiNode;
+use serde::{Deserialize, Serialize};
+
+/// What a ref stands for: the node id and, when the host reported one, the
+/// node's fingerprint at the time of the `snapshot --refs` (for `--guard`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Saved {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fp: Option<u64>,
+}
+
+/// A saved entry: tables written before fingerprints hold the bare id.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Stored {
+    Id(String),
+    Saved(Saved),
+}
+
+pub type Table = BTreeMap<String, Saved>;
 
 fn table_path(root: &Path, addr: SocketAddr) -> PathBuf {
     let name: String = addr
@@ -37,7 +58,15 @@ fn ref_arg(arg: &str) -> Option<(&str, &str)> {
         .then_some((&arg[..option.len() + 1], value))
 }
 
-const NODE_ID_OPTIONS: &[&str] = &["--id", "--target", "--from", "--to"];
+const NODE_ID_OPTIONS: &[&str] = &[
+    "--id",
+    "--target",
+    "--from",
+    "--to",
+    "--root",
+    "--wait-for",
+    "--wait-for-gone",
+];
 
 /// `true` for an exact ref argument or a node-id option with a ref value.
 pub fn has_ref(arg: &str) -> bool {
@@ -46,11 +75,15 @@ pub fn has_ref(arg: &str) -> bool {
 
 /// A node earns a line when it says something or can be acted on; bare
 /// layout containers only pass their children up. Where the host gives
-/// geometry (`sized`), a node without any is not on screen.
-fn listed(node: &UiNode, sized: bool) -> bool {
-    node.visible
-        && (!sized || has_size(node))
-        && (node.role != "generic" || !node.name.is_empty() || node.value.is_some())
+/// geometry (`sized`), a node without any is not on screen. A node whose
+/// children an outline cut is always listed, so its ref can be the next
+/// `--root`.
+fn listed(node: &OutlineNode, sized: bool) -> bool {
+    let shown = &node.node;
+    shown.visible
+        && (node.children_count.is_some()
+            || ((!sized || has_size(shown))
+                && (shown.role != "generic" || !shown.name.is_empty() || shown.value.is_some())))
 }
 
 fn has_size(node: &UiNode) -> bool {
@@ -58,69 +91,99 @@ fn has_size(node: &UiNode) -> bool {
 }
 
 /// Headless hosts publish no bounds at all.
-fn any_sized(nodes: &[UiNode]) -> bool {
+fn any_sized(nodes: &[OutlineNode]) -> bool {
     nodes
         .iter()
-        .any(|node| has_size(node) || any_sized(&node.children))
+        .any(|node| has_size(&node.node) || any_sized(&node.children))
 }
 
-fn outline(
-    nodes: &[UiNode],
+struct Render<'a> {
     sized: bool,
-    depth: usize,
-    out: &mut String,
-    table: &mut BTreeMap<String, String>,
-) {
-    for node in nodes {
-        if !node.visible {
-            continue;
+    fingerprints: &'a BTreeMap<String, u64>,
+    show_fingerprints: bool,
+    out: String,
+    table: Table,
+}
+
+impl Render<'_> {
+    fn nodes(&mut self, nodes: &[OutlineNode], depth: usize) {
+        for node in nodes {
+            if !node.node.visible {
+                continue;
+            }
+            let mut below = depth;
+            if listed(node, self.sized) {
+                self.line(node, depth);
+                below += 1;
+            }
+            self.nodes(&node.children, below);
         }
-        let mut below = depth;
-        if listed(node, sized) {
-            let key = format!("e{}", table.len() + 1);
-            let _ = write!(
-                out,
-                "{:indent$}@{key} {}",
-                "",
-                node.role,
-                indent = depth * 2
-            );
-            if !node.name.is_empty() {
-                let _ = write!(out, " {:?}", node.name);
-            }
-            if let Some(value) = &node.value {
-                let _ = write!(out, " value={value:?}");
-            }
-            if let Some(checked) = node.checked {
-                let _ = write!(out, " checked={checked}");
-            }
-            if !node.enabled {
-                out.push_str(" disabled");
-            }
-            if node.focused {
-                out.push_str(" focused");
-            }
-            out.push('\n');
-            table.insert(key, node.id.clone());
-            below += 1;
+    }
+
+    fn line(&mut self, outline: &OutlineNode, depth: usize) {
+        let node = &outline.node;
+        let out = &mut self.out;
+        let key = format!("e{}", self.table.len() + 1);
+        let _ = write!(
+            out,
+            "{:indent$}@{key} {}",
+            "",
+            node.role,
+            indent = depth * 2
+        );
+        if !node.name.is_empty() {
+            let _ = write!(out, " {:?}", node.name);
         }
-        outline(&node.children, sized, below, out, table);
+        if let Some(value) = &node.value {
+            let _ = write!(out, " value={value:?}");
+        }
+        if let Some(checked) = node.checked {
+            let _ = write!(out, " checked={checked}");
+        }
+        if !node.enabled {
+            out.push_str(" disabled");
+        }
+        if node.focused {
+            out.push_str(" focused");
+        }
+        if let Some(count) = outline.children_count {
+            let _ = write!(out, " children_count={count}");
+        }
+        let fp = self.fingerprints.get(&node.id).copied();
+        if let Some(fp) = fp.filter(|_| self.show_fingerprints) {
+            let _ = write!(out, " fp={fp}");
+        }
+        out.push('\n');
+        self.table.insert(
+            key,
+            Saved {
+                id: node.id.clone(),
+                fp,
+            },
+        );
     }
 }
 
-/// The outline of `tree` and the ref table that goes with it.
-pub fn render(tree: &UiTree) -> (String, BTreeMap<String, String>) {
-    let mut out = String::new();
-    let mut table = BTreeMap::new();
-    outline(&tree.nodes, any_sized(&tree.nodes), 0, &mut out, &mut table);
-    (out, table)
+/// The text of `outline` and the ref table that goes with it. Each ref
+/// keeps its node's entry in `fingerprints`; `show_fingerprints` also
+/// prints it on the line (`fp=…`).
+pub fn render(
+    outline: &Outline,
+    fingerprints: &BTreeMap<String, u64>,
+    show_fingerprints: bool,
+) -> (String, Table) {
+    let mut render = Render {
+        sized: any_sized(&outline.nodes),
+        fingerprints,
+        show_fingerprints,
+        out: String::new(),
+        table: Table::new(),
+    };
+    render.nodes(&outline.nodes, 0);
+    (render.out, render.table)
 }
 
-pub fn save(
-    root: &Path,
-    addr: SocketAddr,
-    table: &BTreeMap<String, String>,
-) -> std::io::Result<()> {
+pub fn save(root: &Path, addr: SocketAddr, table: &Table) -> std::io::Result<()> {
     gpui_agent::discovery::ensure_runtime_dir(root)?;
     let path = table_path(root, addr);
     if let Some(dir) = path.parent() {
@@ -154,35 +217,57 @@ pub fn save(
     result
 }
 
-/// Replaces every ref among `args` with the node id it stands for. The
-/// arguments stay as the OS gave them: a path need not be UTF-8.
-pub fn resolve(root: &Path, addr: SocketAddr, args: &mut [OsString]) -> Result<(), String> {
+/// Replaces every ref among `args` with the node id it stands for, and
+/// returns what each replaced ref stood for. The arguments stay as the OS
+/// gave them: a path need not be UTF-8.
+pub fn resolve(root: &Path, addr: SocketAddr, args: &mut [OsString]) -> Result<Vec<Saved>, String> {
     if !args.iter().any(|arg| arg.to_str().is_some_and(has_ref)) {
-        return Ok(());
+        return Ok(Vec::new());
     }
     gpui_agent::discovery::ensure_runtime_dir(root)
         .map_err(|error| format!("could not use runtime directory: {error}"))?;
-    let table: BTreeMap<String, String> = std::fs::read(table_path(root, addr))
+    let table: BTreeMap<String, Stored> = std::fs::read(table_path(root, addr))
         .ok()
         .and_then(|body| serde_json::from_slice(&body).ok())
         .ok_or_else(|| {
             format!("no refs saved for {addr}: run `gpui-agent snapshot --refs` first")
         })?;
+    let mut used = Vec::new();
     for arg in args.iter_mut() {
         let Some((prefix, name)) = arg.to_str().and_then(ref_arg) else {
             continue;
         };
-        let id = table.get(&name[1..]).ok_or_else(|| {
-            format!("unknown ref {name}: it is not in the last `gpui-agent snapshot --refs`")
-        })?;
-        *arg = OsString::from(format!("{prefix}{id}"));
+        let saved: Saved = match table.get(&name[1..]) {
+            Some(Stored::Id(id)) => Saved {
+                id: id.clone(),
+                fp: None,
+            },
+            Some(Stored::Saved(saved)) => saved.clone(),
+            None => {
+                return Err(format!(
+                    "unknown ref {name}: it is not in the last `gpui-agent snapshot --refs`"
+                ));
+            }
+        };
+        *arg = OsString::from(format!("{prefix}{}", saved.id));
+        used.push(saved);
     }
-    Ok(())
+    Ok(used)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_agent::outline::{OutlineOptions, outline};
+    use gpui_agent::tree::UiTree;
+
+    fn full(tree: &UiTree) -> Outline {
+        outline(tree, &OutlineOptions::new()).unwrap()
+    }
+
+    fn render_tree(tree: &UiTree) -> (String, Table) {
+        render(&full(tree), &BTreeMap::new(), false)
+    }
 
     fn node(id: &str, role: &str, name: &str, children: Vec<UiNode>) -> UiNode {
         let mut node = UiNode::new(id, role, name);
@@ -217,7 +302,7 @@ mod tests {
             )],
             rev: None,
         };
-        let (text, table) = render(&tree);
+        let (text, table) = render_tree(&tree);
         assert_eq!(
             text,
             "@e1 button \"Save\"\n@e2 scroll\n  @e3 note \"Row\"\n"
@@ -233,10 +318,10 @@ mod tests {
         }
         let mut headless = tree.clone();
         unsize(&mut headless.nodes);
-        assert_eq!(render(&headless).0, text);
+        assert_eq!(render_tree(&headless).0, text);
         // With geometry, a node that has none is off screen.
         tree.nodes[0].children[0].bounds.w = 0.0;
-        assert_eq!(render(&tree).0, "@e1 scroll\n  @e2 note \"Row\"\n");
+        assert_eq!(render_tree(&tree).0, "@e1 scroll\n  @e2 note \"Row\"\n");
 
         let root = std::env::temp_dir().join(format!("gpui-agent-refs-{}", std::process::id()));
         let addr: SocketAddr = "127.0.0.1:17421".parse().unwrap();
@@ -253,7 +338,9 @@ mod tests {
             "--text=hi @e1".into(),
             "@everyone".into(),
         ];
-        resolve(&root, addr, &mut args).unwrap();
+        let used = resolve(&root, addr, &mut args).unwrap();
+        assert_eq!(used.len(), 5);
+        assert!(used.iter().all(|saved| saved.fp.is_none()));
         assert_eq!(
             args,
             [
@@ -289,5 +376,95 @@ mod tests {
         std::fs::write(&blocked, b"blocked").unwrap();
         assert!(save(&blocked, addr, &table).is_err());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn todo_tree() -> UiTree {
+        let mut input = node("todo-input", "textbox", "What?", vec![]);
+        input.value = Some("milk".into());
+        UiTree {
+            app: "t".into(),
+            platform: gpui_agent::protocol::PlatformKind::Headless,
+            ready: true,
+            nodes: vec![node(
+                "page",
+                "page",
+                "Todos",
+                vec![
+                    input,
+                    node(
+                        "wrap",
+                        "generic",
+                        "",
+                        vec![node("todo-item-1", "listitem", "Milk", vec![])],
+                    ),
+                ],
+            )],
+            rev: None,
+        }
+    }
+
+    #[test]
+    fn refs_keep_fingerprints_and_can_print_them() {
+        let tree = todo_tree();
+        let fps = tree.fingerprint_map();
+        let (quiet, table) = render(&full(&tree), &fps, false);
+        assert!(!quiet.contains("fp="), "{quiet}");
+        assert_eq!(table["e2"].id, "todo-input");
+        assert_eq!(table["e2"].fp, Some(fps["todo-input"]));
+        let (loud, _) = render(&full(&tree), &fps, true);
+        assert!(
+            loud.contains(&format!(
+                "@e2 textbox \"What?\" value=\"milk\" fp={}\n",
+                fps["todo-input"]
+            )),
+            "{loud}"
+        );
+
+        let root = std::env::temp_dir().join(format!("gpui-agent-refs-fp-{}", std::process::id()));
+        let addr: SocketAddr = "127.0.0.1:17423".parse().unwrap();
+        save(&root, addr, &table).unwrap();
+        let body = std::fs::read_to_string(table_path(&root, addr)).unwrap();
+        assert!(
+            body.contains(&format!(
+                "\"e2\":{{\"id\":\"todo-input\",\"fp\":{}}}",
+                fps["todo-input"]
+            )),
+            "{body}"
+        );
+        let mut args: Vec<OsString> = vec!["key".into(), "@e2".into(), "--root=@e1".into()];
+        let used = resolve(&root, addr, &mut args).unwrap();
+        assert_eq!(args, ["key", "todo-input", "--root=page"]);
+        assert_eq!(used[0].fp, Some(fps["todo-input"]));
+
+        // A table saved before fingerprints holds bare ids.
+        std::fs::write(table_path(&root, addr), br#"{"e1":"page"}"#).unwrap();
+        let mut args: Vec<OsString> = vec!["@e1".into(), "--wait-for=@e1".into()];
+        let used = resolve(&root, addr, &mut args).unwrap();
+        assert_eq!(args, ["page", "--wait-for=page"]);
+        assert_eq!(
+            used[0],
+            Saved {
+                id: "page".into(),
+                fp: None
+            }
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_cut_outline_lists_its_cut_nodes_with_their_counts() {
+        let tree = todo_tree();
+        let cut = outline(&tree, &OutlineOptions::new().depth(2)).unwrap();
+        let (text, table) = render(&cut, &BTreeMap::new(), false);
+        assert_eq!(
+            text,
+            "@e1 page \"Todos\"\n  @e2 textbox \"What?\" value=\"milk\"\n  @e3 generic children_count=1\n"
+        );
+        assert_eq!(table["e3"].id, "wrap");
+        let sub = outline(&tree, &OutlineOptions::new().root("wrap")).unwrap();
+        assert_eq!(
+            render(&sub, &BTreeMap::new(), false).0,
+            "@e1 listitem \"Milk\"\n"
+        );
     }
 }
