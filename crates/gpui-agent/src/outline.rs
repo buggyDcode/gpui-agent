@@ -227,7 +227,7 @@ mod tests {
         assert_eq!(json["nodes"][0]["children"][0]["children_count"], 3);
         assert!(json["nodes"][0]["children"][0].get("children").is_none());
         assert!(json["nodes"][0].get("children_count").is_none());
-        assert_eq!(json["rev"], 7);
+        assert!(json.get("rev").is_none());
 
         let compact = two.compact_lines();
         assert_eq!(
