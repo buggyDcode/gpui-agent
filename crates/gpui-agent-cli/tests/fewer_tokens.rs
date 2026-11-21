@@ -131,12 +131,20 @@ fn guard_does_not_use_a_wait_ref_for_a_plain_action_target() {
         &todo.addr,
         &["type", "todo-input", "before"],
     ));
-    ok_json(&cli(
+    let typed = ok_json(&cli(
         &runtime,
         &todo.addr,
-        &["--guard", "--wait-for", &input, "click", "todo-add"],
+        &[
+            "--guard",
+            "--wait-for",
+            &input,
+            "type",
+            "todo-input",
+            "after",
+        ],
     ));
-    assert_eq!(todo.titles(), ["before"]);
+    assert_eq!(typed["delivery_status"], "delivered_verified", "{typed}");
+    assert_eq!(todo.draft(), "beforeafter");
 }
 
 #[test]
