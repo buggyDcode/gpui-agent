@@ -152,7 +152,7 @@ The parent process is trusted.
 `gpui-agent recipe run` and MCP `recipe_run` compile a local **JSON**
 recipe (`.wants` also accepted) into ordinary protocol ops and send
 them on one reused TCP session (all-Read waves may pipeline). Design:
-[RECIPES.md](RECIPES.md). Laptop verify: [TRY_ON_MAC.md](TRY_ON_MAC.md).
+[RECIPES.md](RECIPES.md).
 
 They do **not** add privilege and do **not** bypass PR #3 caps:
 

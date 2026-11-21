@@ -6,7 +6,7 @@ publish a semantic [`UiTree`](../crates/gpui-agent/src/tree.rs), and
 either:
 
 - **Product / agent-machine:** run a headless daemon that owns the store
-  ([ADR-001](ADR-001-daemon-sot.md)). Agents talk to the daemon.
+  Agents talk to the daemon.
 - **Widget E2E:** keep an in-process `AgentHost` + mailbox on the UI
   thread so virtual delivery can hit painted GPUI widgets.
 
@@ -97,4 +97,4 @@ HID); free-form `key` stays modifier-free.
 `todo-core` is the smallest host: builder tree, nav + settings, CRUD
 `invoke` names. Drive it with `todo-headless serve` and
 `gpui-agent recipe run examples/recipes/todo-crud.json`. CI:
-[INSTALL.md](INSTALL.md) and `.github/workflows/ci.yml`.
+`.github/workflows/ci.yml`.
