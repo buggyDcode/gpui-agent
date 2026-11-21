@@ -411,7 +411,7 @@ pub(crate) fn tools() -> Vec<Value> {
 }
 
 /// Tools whose op carries `expect_fingerprint`.
-const FINGERPRINTED_TOOLS: &[&str] = &["click", "type", "set_value", "key"];
+const FINGERPRINTED_TOOLS: &[&str] = &["click", "type", "set_value", "key", "press"];
 
 /// Tools that act on the app, and so take `wait_for` / `wait_for_gone`.
 const ACTION_TOOLS: &[&str] = &[
@@ -1901,7 +1901,10 @@ mod tests {
             assert_eq!(props["wait_timeout_ms"]["type"], "integer", "{name}");
         }
         assert!(props("snapshot").get("wait_for").is_none());
-        assert!(props("press").get("expect_fingerprint").is_none());
+        assert_eq!(
+            props("press")["expect_fingerprint"]["type"],
+            json!(["integer", "string"])
+        );
         assert_eq!(props("snapshot")["depth"]["type"], "integer");
         assert_eq!(props("snapshot")["root"]["type"], "string");
     }
