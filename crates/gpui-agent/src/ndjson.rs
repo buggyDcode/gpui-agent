@@ -6,6 +6,9 @@ use serde::Serialize;
 ///
 /// Reuses `buf` so a long-lived connection does not allocate a fresh
 /// `String` on every request or response.
+/// # Errors
+///
+/// An `io::Error` on serialize or write.
 pub fn write_json_line<W: Write, T: Serialize>(
     writer: &mut W,
     buf: &mut Vec<u8>,
@@ -27,6 +30,10 @@ pub fn line_is_blank(buf: &[u8]) -> bool {
 ///
 /// Returns `Ok(false)` on EOF. Oversized / non-UTF-8 lines are
 /// `ErrorKind::InvalidData`. On success `buf` holds the line without `\n`/`\r`.
+/// # Errors
+///
+/// `ErrorKind::InvalidData` for oversized or non-UTF-8 lines; an
+/// `io::Error` from the reader.
 pub fn read_limited_line_into<R: BufRead>(
     reader: &mut R,
     buf: &mut Vec<u8>,
@@ -35,7 +42,7 @@ pub fn read_limited_line_into<R: BufRead>(
     buf.clear();
     let n = reader
         .by_ref()
-        .take(max_bytes as u64 + 1)
+        .take(u64::try_from(max_bytes).unwrap_or(u64::MAX) + 1)
         .read_until(b'\n', buf)?;
     if n == 0 {
         return Ok(false);
@@ -66,6 +73,14 @@ pub fn read_limited_line_into<R: BufRead>(
 /// Returns `Ok(None)` on EOF. Oversized lines are `ErrorKind::InvalidData`
 /// and consume at most `max_bytes + 1` from the reader so the caller can
 /// close rather than resync.
+///
+/// # Errors
+///
+/// The [`read_limited_line_into`] errors.
+///
+/// # Panics
+///
+/// Never: UTF-8 is already checked.
 pub fn read_limited_line<R: BufRead>(
     reader: &mut R,
     max_bytes: usize,
@@ -105,7 +120,7 @@ mod tests {
 
     #[test]
     fn limited_line_rejects_oversize() {
-        let mut cursor = Cursor::new("x".repeat(8) + "\n");
+        let mut cursor = Cursor::new(format!("{}\n", "x".repeat(8)));
         let err = read_limited_line(&mut cursor, 4).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }

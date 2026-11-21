@@ -235,7 +235,10 @@ impl UiNode {
 
     /// Set the node's `focused` flag.
     #[must_use]
-    #[expect(clippy::fn_params_excessive_bools, reason = "a builder for a bool field")]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "a builder for a bool field"
+    )]
     pub fn with_focused(mut self, focused: bool) -> Self {
         self.focused = focused;
         self
@@ -243,7 +246,10 @@ impl UiNode {
 
     /// Set the node's `enabled` flag.
     #[must_use]
-    #[expect(clippy::fn_params_excessive_bools, reason = "a builder for a bool field")]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "a builder for a bool field"
+    )]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
@@ -251,7 +257,10 @@ impl UiNode {
 
     /// Set the node's `visible` flag.
     #[must_use]
-    #[expect(clippy::fn_params_excessive_bools, reason = "a builder for a bool field")]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "a builder for a bool field"
+    )]
     pub fn with_visible(mut self, visible: bool) -> Self {
         self.visible = visible;
         self
@@ -262,7 +271,10 @@ impl UiNode {
     /// Prefer keeping a closed sidebar/modal in the tree with
     /// `visible=false` so agents can assert “known but not showing”.
     #[must_use]
-    #[expect(clippy::fn_params_excessive_bools, reason = "a builder for a bool field")]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "a builder for a bool field"
+    )]
     pub fn with_visible_deep(mut self, visible: bool) -> Self {
         self.visible = visible;
         if !visible {
@@ -284,7 +296,10 @@ impl UiNode {
 
     /// Set `checked` and add the matching `checked`/`unchecked` state string.
     #[must_use]
-    #[expect(clippy::fn_params_excessive_bools, reason = "a builder for a bool field")]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "a builder for a bool field"
+    )]
     pub fn with_checked(mut self, checked: bool) -> Self {
         self.checked = Some(checked);
         self.states.push(if checked {

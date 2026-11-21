@@ -8,8 +8,16 @@ use crate::tree::UiTree;
 /// Desktop GPUI Kit apps, the headless test binary, and (later) a WASM or
 /// mobile shell all implement this trait and speak the same protocol.
 pub trait AgentHost: Send {
+    /// The `hello` metadata (`app`, `os`, `features`, …).
     fn hello(&self) -> HelloInfo;
+    /// The current semantic tree.
     fn snapshot(&self) -> UiTree;
+    /// Run one op against the app.
+    ///
+    /// # Errors
+    ///
+    /// The host's refusal (`not_found`, `stale_target`, an unavailable
+    /// feature, …) as a stable-prefixed string.
     fn dispatch(&mut self, op: &Op) -> Result<DispatchResult, String>;
 
     /// Observe-only PNG of the **app surface** (not the desktop).
@@ -23,6 +31,11 @@ pub trait AgentHost: Send {
     /// tile → stitch → restore). Linux / Windows desktop stays
     /// unavailable: `Window::render_to_image` is `test-support` only
     /// on this gpui-kit pin. Offscreen render is out of MVP.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::screenshot_unavailable`] when the host has no pixel
+    /// surface; the default implementation always returns it.
     fn screenshot(
         &self,
         spec: crate::scroll_capture::ScreenshotSpec<'_>,

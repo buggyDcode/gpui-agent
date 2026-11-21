@@ -23,8 +23,10 @@ const NODE_FIELDS: &[&str] = &[
 /// holding the old tree can graft it without a fresh snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddedNode {
+    /// The new node and its subtree.
     #[serde(flatten)]
     pub node: UiNode,
+    /// Id it attaches under (`None` = top level).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
 }
@@ -33,15 +35,20 @@ pub struct AddedNode {
 /// `fields` carries only the new values (e.g. `{"checked":true}`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChangedNode {
+    /// The node id.
     pub id: String,
+    /// Only the fields that differ, with their new values.
     pub fields: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Id-keyed diff between two snapshots of the same host.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TreeDiff {
+    /// Nodes present now that were not before.
     pub added: Vec<AddedNode>,
+    /// Ids that left the tree.
     pub removed: Vec<String>,
+    /// Ids present in both revisions with differing fields.
     pub changed: Vec<ChangedNode>,
 }
 

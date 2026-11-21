@@ -185,7 +185,10 @@ pub fn refused_before_dispatch(code: &str) -> bool {
 /// What the client knows about whether an action reached the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[expect(clippy::exhaustive_enums, reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum DeliveryStatus {
     /// Nothing was written, or the host refused before dispatch. Retry is
     /// safe.
@@ -262,7 +265,10 @@ impl CallFailure {
 
     /// A host reply with `ok: false`. `acts` marks an op that changes the
     /// app, which gets a `delivery_status`.
-    #[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether the op changes the app")]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "one flag: whether the op changes the app"
+    )]
     pub fn from_response(resp: &crate::protocol::Response, acts: bool) -> Self {
         let code = resp.code().unwrap_or(HOST_ERROR).to_string();
         let hint = resp

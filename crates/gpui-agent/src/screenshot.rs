@@ -38,11 +38,11 @@ pub fn is_screenshot_unavailable(error: &str) -> bool {
 
 /// Client-supplied destination. Empty is a request error, not
 /// [`screenshot_unavailable`] (the host never invents a path).
-pub fn require_screenshot_path
 ///
 /// # Errors
 ///
-/// """screenshot requires path" for a missing or blank name.(path: Option<&str>) -> Result<&str, String> {
+/// `screenshot requires path` for a missing or blank name.
+pub fn require_screenshot_path(path: Option<&str>) -> Result<&str, String> {
     match path.map(str::trim).filter(|p| !p.is_empty()) {
         Some(path) => Ok(path),
         None => Err("screenshot requires path".into()),
@@ -57,25 +57,29 @@ pub fn screenshot_base_dir() -> PathBuf {
     std::env::var("GPUI_AGENT_SCREENSHOT_DIR")
         .ok()
         .map(|raw| raw.trim().to_string())
-        .filter(|s| !s.is_empty()).map_or_else(|| std::env::temp_dir().join("gpui-agent-screenshots"), PathBuf::from)
+        .filter(|s| !s.is_empty())
+        .map_or_else(
+            || std::env::temp_dir().join("gpui-agent-screenshots"),
+            PathBuf::from,
+        )
 }
 
 /// Resolve a client screenshot name against [`screenshot_base_dir`].
-pub fn confine_screenshot_path
 ///
 /// # Errors
 ///
-/// The confinement checks of [`confine_screenshot_path_in`].(client: &str) -> Result<PathBuf, String> {
+/// The confinement checks of [`confine_screenshot_path_in`]
+pub fn confine_screenshot_path(client: &str) -> Result<PathBuf, String> {
     confine_screenshot_path_in(client, &screenshot_base_dir())
 }
 
 /// Resolve `client` against `base`. Relative `.png` names only; no `..`.
-pub fn confine_screenshot_path_in
 ///
 /// # Errors
 ///
-/// [`SCREENSHOT_PATH_CONFINE_ERR`] or `"screenshot requires path"` /
-`"screenshot path must end with .png"` / a leading `-` or `.`.(client: &str, base: &Path) -> Result<PathBuf, String> {
+/// [`SCREENSHOT_PATH_CONFINE_ERR`] or `screenshot requires path` /
+/// `screenshot path must end with .png` / a leading `-` or `.`.
+pub fn confine_screenshot_path_in(client: &str, base: &Path) -> Result<PathBuf, String> {
     let client = require_screenshot_path(Some(client))?;
     let raw = Path::new(client);
     if raw.is_absolute() {
@@ -106,7 +110,10 @@ pub fn confine_screenshot_path_in
         .file_name()
         .and_then(|s| s.to_str())
         .ok_or_else(|| SCREENSHOT_PATH_CONFINE_ERR.to_string())?;
-    #[expect(clippy::case_sensitive_file_extension_comparisons, reason = "on purpose: the confined name must end in lowercase .png")]
+    #[expect(
+        clippy::case_sensitive_file_extension_comparisons,
+        reason = "on purpose: the confined name must end in lowercase .png"
+    )]
     if !file.ends_with(".png") || file.len() < 5 {
         return Err("screenshot path must end with .png".into());
     }
@@ -125,20 +132,20 @@ const SCREENSHOT_PATH_CONFINE_ERR: &str =
 
 /// Write `png` bytes to a confined `path`. Production hosts pass a real
 /// frame; tests may pass [`TEST_PNG`]. Never invent pixels for a missing surface.
-pub fn write_png(
 ///
 /// # Errors
 ///
-/// The confinement or write failure.path: &str, png: &[u8]) -> Result<serde_json::Value, String> {
+/// The confinement or write failure.
+pub fn write_png(path: &str, png: &[u8]) -> Result<serde_json::Value, String> {
     write_png_in(path, png, &screenshot_base_dir())
 }
 
 /// [`write_png`] against an explicit base directory (tests).
-pub fn write_png_in
 ///
 /// # Errors
 ///
-/// The confinement or write failure.(path: &str, png: &[u8], base: &Path) -> Result<serde_json::Value, String> {
+/// The confinement or write failure
+pub fn write_png_in(path: &str, png: &[u8], base: &Path) -> Result<serde_json::Value, String> {
     let dest = confine_screenshot_path_in(path, base)?;
     atomic_write_png(&dest, png)?;
     Ok(serde_json::json!({ "path": dest.to_string_lossy() }))
@@ -160,6 +167,10 @@ pub fn png_write_temp_path(dest: &Path, n: u32) -> PathBuf {
 
 /// Write `png` onto `dest` via an adjacent temp file then `rename`.
 /// Unix rename replaces atomically; that is not a pre-delete.
+///
+/// # Errors
+///
+/// Parent-dir creation, the temp write, or the rename.
 pub fn atomic_write_png(dest: &Path, png: &[u8]) -> Result<(), String> {
     if let Some(parent) = dest.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|err| format!("{}: {err}", parent.display()))?;
@@ -212,12 +223,12 @@ pub const TEST_PNG: &[u8] = &[
 /// a host-chosen `CGWindowID` (not a client string). `path` is the only
 /// client-influenced argument and is passed as a single argv slot (no
 /// shell).
-pub fn screencapture_window_argv
 ///
 /// # Errors
 ///
 /// `"screenshot requires path"`, a `-`-leading path, or
-/// [`screenshot_unavailable`] for `window_id == 0`.(window_id: u32, path: &str) -> Result<Vec<String>, String> {
+/// [`screenshot_unavailable`] for `window_id == 0`
+pub fn screencapture_window_argv(window_id: u32, path: &str) -> Result<Vec<String>, String> {
     let path = require_screenshot_path(Some(path))?;
     if path.starts_with('-') {
         return Err(
@@ -239,12 +250,12 @@ pub fn screencapture_window_argv
 
 /// Capture **this** window and return PNG bytes. Writes only a temp file
 /// (never the client path). Linux/Windows return unavailable with no file.
-pub fn capture_window_png_bytes
 ///
 /// # Errors
 ///
 /// [`screenshot_unavailable`] on non-macOS, a missing Screen Recording
-/// grant, or a non-PNG tile.(window_id: u32) -> Result<Vec<u8>, String> {
+/// grant, or a non-PNG tile
+pub fn capture_window_png_bytes(window_id: u32) -> Result<Vec<u8>, String> {
     let dest = screenshot_base_dir().join("tile.png");
     let tmp = png_write_temp_path(&dest, 0);
     let tmp_str = tmp
@@ -286,12 +297,12 @@ pub fn capture_window_png_bytes
 /// Linux/Windows return [`screenshot_unavailable`] without running a
 /// command and without creating a file. On macOS, a missing Screen
 /// Recording grant also maps to unavailable (no fake PNG).
-pub fn capture_window_via_screencapture
 ///
 /// # Errors
 ///
 /// [`screenshot_unavailable`] on non-macOS or a failed capture; the
-/// confinement checks of [`confine_screenshot_path`].(
+/// confinement checks of [`confine_screenshot_path`]
+pub fn capture_window_via_screencapture(
     window_id: u32,
     path: Option<&str>,
 ) -> Result<DispatchResult, String> {
@@ -326,11 +337,11 @@ pub fn capture_window_via_screencapture
 
 /// Create parent dirs for `path`. Must **not** unlink an existing dest
 /// (that would be arbitrary client-influenced deletion).
-pub fn prepare_screencapture_dest
 ///
 /// # Errors
 ///
-/// `create <dir>: <err>` when a parent dir cannot be created.(path: &str) -> Result<(), String> {
+/// `create <dir>: <err>` when a parent dir cannot be created
+pub fn prepare_screencapture_dest(path: &str) -> Result<(), String> {
     let dest_path = Path::new(path);
     if let Some(parent) = dest_path.parent()
         && !parent.as_os_str().is_empty()
@@ -375,11 +386,11 @@ fn run_screencapture(args: &[String], dest: &str) -> Result<DispatchResult, Stri
 
 /// Keep `path` only if it is a real PNG. Otherwise delete it and fail
 /// closed — never leave a non-image as a "success".
-pub fn accept_written_png
 ///
 /// # Errors
 ///
-/// [`screenshot_unavailable`] when the file is missing or not PNG.(path: &str) -> Result<DispatchResult, String> {
+/// [`screenshot_unavailable`] when the file is missing or not PNG
+pub fn accept_written_png(path: &str) -> Result<DispatchResult, String> {
     let dest = Path::new(path);
     let bytes = match std::fs::read(dest) {
         Ok(bytes) => bytes,
