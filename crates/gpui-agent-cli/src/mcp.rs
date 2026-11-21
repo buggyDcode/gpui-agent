@@ -824,10 +824,18 @@ fn call_tool(
             // The tool arguments are the op's own wire fields, so the MCP
             // surface cannot drift from the protocol or the CLI.
             let read_back = read_back(&args);
+            let press_fingerprint = if name == "press" {
+                expect_fingerprint(&args)?
+            } else {
+                None
+            };
             let mut wire = match args {
                 Value::Object(map) => map,
                 _ => return Err(format!("{name} takes an object")),
             };
+            if let Some(fingerprint) = press_fingerprint {
+                wire.insert("expect_fingerprint".into(), json!(fingerprint));
+            }
             for key in [
                 "no_read_back",
                 "wait_for",
@@ -1939,6 +1947,52 @@ mod tests {
         )
         .unwrap_err();
         assert!(bad.contains("expect_fingerprint"), "{bad}");
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[test]
+    fn press_accepts_decimal_string_fingerprints() {
+        let (mut client, shutdown) = spawn_todo_client();
+        let snap = call_tool(
+            &mut client,
+            &json!({ "name": "snapshot", "arguments": { "fingerprints": true } }),
+            &[],
+        )
+        .unwrap();
+        let fingerprint = snap["fingerprints"]["todo-input"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let fingerprint_text = fingerprint.to_string();
+
+        call_tool(
+            &mut client,
+            &json!({
+                "name": "press",
+                "arguments": {
+                    "target": "todo-input",
+                    "expect_fingerprint": fingerprint_text
+                }
+            }),
+            &[],
+        )
+        .unwrap();
+
+        let stale = tools_call_result(
+            &mut client,
+            &json!({
+                "name": "press",
+                "arguments": {
+                    "target": "todo-input",
+                    "expect_fingerprint": (fingerprint ^ 1).to_string()
+                }
+            }),
+            &[],
+        );
+        let envelope = tool_error_envelope(&stale);
+        assert_eq!(envelope["error_code"], "stale_target", "{envelope}");
+        assert_eq!(envelope["delivery_status"], "not_delivered", "{envelope}");
         shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
