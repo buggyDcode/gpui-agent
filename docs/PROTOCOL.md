@@ -288,7 +288,10 @@ guesses. `assert` / `wait_until` compare the real value; a mismatch says
 `expected another value (secret values are not shown)` without echoing
 either value. A host marks such a field with role `password` or adds the
 `secret` state (an API key in a plain text field). The client masks trees
-from hosts that predate this rule as they arrive.
+from hosts that predate this rule as they arrive. When `hello.features` lacks
+`secret_redaction`, the client also drops secret-node fingerprints; if a
+partial reply has no tree to classify, it drops the entire fingerprint map.
+This prevents older hosts' raw-value hashes from being exposed.
 
 `run --goal` verifies a `TYPE` / `SET_VALUE` into a secret field by the
 masked value's length, and counts the text it typed there as entered

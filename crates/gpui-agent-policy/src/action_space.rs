@@ -712,8 +712,12 @@ mod tests {
             })
             .unwrap();
         let tree = response.tree.unwrap();
-        let host_fingerprint = response.fingerprints.unwrap()["password-field"];
-        assert_eq!(host_fingerprint, raw_fingerprint);
+        assert!(
+            !response
+                .fingerprints
+                .unwrap_or_default()
+                .contains_key("password-field")
+        );
         assert_ne!(
             tree.find("password-field").unwrap().fingerprint(None),
             raw_fingerprint

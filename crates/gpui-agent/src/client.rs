@@ -984,6 +984,23 @@ impl AgentClient {
         match sent {
             Ok(mut resp) => {
                 resp.fill_error_code();
+                if resp.fingerprints.is_some() {
+                    let supports_secret_redaction = if matches!(op, Op::Hello) {
+                        resp.hello.as_ref().is_some_and(|hello| {
+                            hello
+                                .features
+                                .iter()
+                                .any(|feature| feature == "secret_redaction")
+                        })
+                    } else {
+                        self.features().is_ok_and(|features| {
+                            features.iter().any(|feature| feature == "secret_redaction")
+                        })
+                    };
+                    if !supports_secret_redaction {
+                        drop_legacy_secret_fingerprints(&mut resp);
+                    }
+                }
                 if acts && resp.delivery_status.is_none() {
                     resp.delivery_status = Some(match resp.code() {
                         None => DeliveryStatus::DeliveredUnverified,
@@ -1388,6 +1405,17 @@ fn parse_response_line(line: &[u8]) -> Result<Response, String> {
     Ok(resp)
 }
 
+fn drop_legacy_secret_fingerprints(resp: &mut Response) {
+    if resp.tree.is_none() {
+        resp.fingerprints = None;
+        return;
+    }
+    let tree = resp.tree.as_ref().expect("tree checked above");
+    if let Some(fingerprints) = resp.fingerprints.as_mut() {
+        fingerprints.retain(|id, _| !tree.find_all(id).iter().any(|node| node.is_secret()));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1581,6 +1609,95 @@ mod tests {
 
     fn client_for(addr: SocketAddr) -> AgentClient {
         AgentClient::connect(addr).with_timeout(Duration::from_millis(600))
+    }
+
+    #[test]
+    fn legacy_secret_fingerprints_are_dropped_from_snapshots_and_diffs() {
+        let tree = serde_json::json!({
+            "app": "fake",
+            "platform": "headless",
+            "ready": true,
+            "nodes": [
+                {
+                    "id": "secret",
+                    "role": "textbox",
+                    "name": "Password",
+                    "value": "hunter2",
+                    "states": ["secret"],
+                    "enabled": true
+                },
+                {
+                    "id": "plain",
+                    "role": "button",
+                    "name": "Submit",
+                    "enabled": true
+                }
+            ]
+        });
+        let fingerprints = serde_json::json!({"secret": 123, "plain": 456});
+        let (addr, server) = fake_host(vec![
+            Some(serde_json::json!({
+                "ok": true,
+                "tree": tree.clone(),
+                "fingerprints": fingerprints.clone()
+            })),
+            Some(serde_json::json!({
+                "ok": true,
+                "hello": {
+                    "protocol": PROTOCOL_VERSION,
+                    "app": "fake",
+                    "platform": "headless",
+                    "ready": true,
+                    "features": []
+                }
+            })),
+            Some(serde_json::json!({
+                "ok": true,
+                "result": { "diff": { "added": [], "removed": [], "changed": [] } },
+                "fingerprints": fingerprints.clone()
+            })),
+            Some(serde_json::json!({
+                "ok": true,
+                "tree": tree,
+                "result": { "full": true },
+                "fingerprints": fingerprints
+            })),
+        ]);
+        let mut client = client_for(addr);
+        let full = client
+            .call(&Op::Snapshot {
+                since: None,
+                format: None,
+                fingerprints: Some(true),
+            })
+            .unwrap();
+        let full_fingerprints = full.fingerprints.unwrap();
+        assert!(!full_fingerprints.contains_key("secret"));
+        assert_eq!(full_fingerprints.get("plain"), Some(&456));
+
+        let diff = client
+            .call(&Op::Snapshot {
+                since: Some(1),
+                format: None,
+                fingerprints: Some(true),
+            })
+            .unwrap();
+        assert!(diff.fingerprints.is_none());
+
+        let resync = client
+            .call(&Op::Snapshot {
+                since: Some(2),
+                format: None,
+                fingerprints: Some(true),
+            })
+            .unwrap();
+        let resync_fingerprints = resync.fingerprints.unwrap();
+        assert!(!resync_fingerprints.contains_key("secret"));
+        assert_eq!(resync_fingerprints.get("plain"), Some(&456));
+        assert_eq!(
+            server.join().unwrap(),
+            ["snapshot", "hello", "snapshot", "snapshot"]
+        );
     }
 
     #[test]

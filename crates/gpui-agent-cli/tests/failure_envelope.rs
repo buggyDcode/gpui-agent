@@ -299,6 +299,28 @@ fn legacy_host_rejects_stale_secret_fingerprint_before_dispatch() {
 }
 
 #[test]
+fn legacy_snapshot_refs_do_not_print_or_save_secret_fingerprints() {
+    let (addr, raw_fingerprint, server) = legacy_secret_host();
+    let snapshot = cli_without_token(&addr, &["snapshot", "--refs", "--fingerprints"]);
+    assert_eq!(snapshot.status.code(), Some(0), "{snapshot:?}");
+    let stdout = String::from_utf8_lossy(&snapshot.stdout);
+    assert!(
+        !stdout.contains(&format!("fp={raw_fingerprint}")),
+        "{stdout}"
+    );
+    assert!(!server.join().unwrap());
+
+    let guarded = cli_without_token(
+        &addr,
+        &["--guard", "--no-read-back", "type", "@e1", "replacement"],
+    );
+    assert_eq!(guarded.status.code(), Some(1), "{guarded:?}");
+    let stderr = String::from_utf8_lossy(&guarded.stderr);
+    assert!(stderr.contains("no fingerprint saved"), "{stderr}");
+    assert!(!stderr.contains("connect"), "{stderr}");
+}
+
+#[test]
 fn unreachable_host_reports_connect_failed() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
