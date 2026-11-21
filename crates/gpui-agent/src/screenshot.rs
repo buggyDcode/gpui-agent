@@ -120,7 +120,9 @@ pub fn write_png_in(path: &str, png: &[u8], base: &Path) -> Result<serde_json::V
     Ok(serde_json::json!({ "path": dest.to_string_lossy() }))
 }
 
-/// Adjacent temp path: `{parent}/.{stem}.{pid}-{n}.tmp`.
+/// Adjacent temp path: `{parent}/{stem}.{pid}-{n}.tmp.png`. No leading
+/// dot — `screencapture` refuses dot-prefixed destinations — and a `.png`
+/// suffix because it picks the output format from the file name.
 pub fn png_write_temp_path(dest: &Path, n: u32) -> PathBuf {
     let parent = dest
         .parent()
@@ -131,7 +133,7 @@ pub fn png_write_temp_path(dest: &Path, n: u32) -> PathBuf {
         .and_then(|s| s.to_str())
         .filter(|s| !s.is_empty())
         .unwrap_or("shot");
-    parent.join(format!(".{stem}.{}-{n}.tmp", std::process::id()))
+    parent.join(format!("{stem}.{}-{n}.tmp.png", std::process::id()))
 }
 
 /// Write `png` onto `dest` via an adjacent temp file then `rename`.
@@ -572,6 +574,23 @@ mod tests {
         assert_eq!(value["path"], dest.to_str().unwrap());
         assert_eq!(std::fs::read(&dest).unwrap(), TEST_PNG);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// `screencapture` infers the format from the destination's extension
+    /// and writes nothing for `.tmp`: the temp path must end in `.png`
+    /// (platforms-0.3.0.md §1, macOS).
+    #[test]
+    fn temp_path_keeps_png_extension_for_screencapture() {
+        let tmp = png_write_temp_path(Path::new("/tmp/shot.png"), 0);
+        let name = tmp.file_name().unwrap().to_string_lossy();
+        assert!(
+            !name.starts_with('.'),
+            "screencapture cannot write a dot-prefixed name: {name}"
+        );
+        assert!(
+            name.ends_with(".png"),
+            "screencapture writes nothing for a .tmp name: {name}"
+        );
     }
 
     #[test]

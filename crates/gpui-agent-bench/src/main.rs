@@ -357,10 +357,19 @@ fn find_todo_headless() -> Option<PathBuf> {
     } else {
         "todo-headless"
     };
-    for dir in ["target/debug", "target/release"] {
-        let p = Path::new(dir).join(name);
-        if p.is_file() {
-            return Some(p);
+    // Cargo puts target/{debug,release} under CARGO_TARGET_DIR when set;
+    // fall back to the default target/ for a plain workspace.
+    let bases = std::env::var_os("CARGO_TARGET_DIR")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .into_iter()
+        .chain([PathBuf::from("target")]);
+    for base in bases {
+        for profile in ["debug", "release"] {
+            let p = base.join(profile).join(name);
+            if p.is_file() {
+                return Some(p);
+            }
         }
     }
     None
