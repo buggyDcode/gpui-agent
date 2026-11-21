@@ -10,7 +10,8 @@ pub struct Receipt {
     pub recipe: String,
     /// Plan fingerprint for cache correlation.
     pub fingerprint: String,
-    /// One TCP session served all steps.
+    /// True when the client held a live session at run end — not proof
+    /// one connection served every step (it may have reconnected).
     pub session_reused: bool,
     /// Per-step results in plan order.
     pub steps: Vec<StepReceipt>,

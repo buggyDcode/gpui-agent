@@ -27,7 +27,8 @@ pub enum RunError {
         id: String,
         /// Host-returned or transport error text.
         error: String,
-        /// Partial receipt up to and including the failing step.
+        /// Receipt so far; a failed pipelined read wave keeps every
+        /// reply of that wave, including steps after the failing one.
         receipt: Box<Receipt>,
     },
 }
@@ -82,7 +83,12 @@ pub fn run_plan(client: &mut AgentClient, plan: &Plan, yes: bool) -> Result<Rece
 /// [`RunError`] as in [`run_plan`].
 ///
 /// # Panics
-/// `screenshots.dir` must exist — a missing dir panics on write.
+/// On a wave/id mismatch between the plan and its schedule (a bug,
+/// not reachable via host failures).
+///
+/// The client best-effort creates `screenshots.dir`; each capture
+/// sends only a filename, so the host writes under its own screenshot
+/// directory and the receipt records the client-side path.
 #[expect(
     clippy::fn_params_excessive_bools,
     reason = "the --yes flag mirrors the CLI"

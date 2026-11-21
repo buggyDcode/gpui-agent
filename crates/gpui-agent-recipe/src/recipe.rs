@@ -44,7 +44,8 @@ fn recipe_v1() -> u32 {
 pub struct RecipeStep {
     /// Step id — the wave-schedule node name.
     pub id: String,
-    /// Step ids this step must wait for (empty = linear chain).
+    /// Step ids this step must wait for (`[]` = no prerequisites;
+    /// file order applies only when *every* step has empty `needs`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub needs: Vec<String>,
     /// After this step, write a PNG when `recipe run --screenshot-dir` is set.

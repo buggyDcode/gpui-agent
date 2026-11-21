@@ -14,7 +14,8 @@ pub struct OpSchema {
     pub kind: SchemaKind,
     /// Human/agent-facing description used in intent matching.
     pub description: String,
-    /// Declared side effects; empty means Read-capable only.
+    /// Declared side effects; empty is treated as Write (fail closed
+    /// — it cannot join a pipelined read wave).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<Effect>,
     /// True when replaying the op is safe.
@@ -81,7 +82,10 @@ pub struct ArgSchema {
 }
 
 impl OpSchema {
-    /// Reject empty/duplicated names and undeclared required args.
+    /// Reject empty/invalid names and `required` entries with no
+    /// `args` spec. Duplicate names are the registry's job:
+    /// [`Registry::insert`](crate::registry::Registry::insert) replaces,
+    /// [`Registry::merge`](crate::registry::Registry::merge) rejects.
     ///
     /// # Errors
     /// A message naming the broken invariant.

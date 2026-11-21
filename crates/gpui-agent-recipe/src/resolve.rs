@@ -46,8 +46,8 @@ pub struct ResolveResult {
 /// original keyword scorer runs unchanged.
 ///
 /// # Errors
-/// A message on empty/ambiguous intent, a required arg that cannot be
-/// filled, or a missing schema.
+/// A message on empty/ambiguous intent, a missing schema, or a `title`/
+/// `id` token an invoke needs that cannot be extracted.
 pub fn resolve_intent(intent: &str, registry: &Registry) -> Result<ResolveResult, String> {
     #[cfg(feature = "instinct")]
     {
@@ -253,8 +253,8 @@ fn invoke_args_from_intent(
 /// `intent`.
 ///
 /// # Errors
-/// A message when a `required` arg cannot be filled or the schema is
-/// not an invoke.
+/// A message when the schema is not an invoke or a `title`/`id` token
+/// it needs cannot be extracted from `intent`.
 pub fn invoke_args(schema: &crate::schema::OpSchema, intent: &str) -> Result<Value, String> {
     if schema.kind != SchemaKind::Invoke {
         return Err(format!("{} is not an invoke schema", schema.name));
