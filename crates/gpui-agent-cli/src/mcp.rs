@@ -385,8 +385,9 @@ pub(crate) fn tools() -> Vec<Value> {
         let name = name.as_str();
         if FINGERPRINTED_TOOLS.contains(&name) {
             tool["inputSchema"]["properties"]["expect_fingerprint"] = json!({
-                "type": "integer",
+                "type": ["integer", "string"],
                 "minimum": 0,
+                "pattern": "^[0-9]+$",
                 "description": "The target's fingerprint from snapshot fingerprints=true. The host refuses with stale_target, before acting, when the target changed since."
             });
         }
@@ -497,11 +498,29 @@ fn read_back(args: &Value) -> bool {
 fn expect_fingerprint(args: &Value) -> Result<Option<u64>, String> {
     match args.get("expect_fingerprint") {
         None | Some(Value::Null) => Ok(None),
-        Some(value) => value
-            .as_u64()
-            .map(Some)
-            .ok_or_else(|| "`expect_fingerprint` must be a non-negative integer".to_string()),
+        Some(Value::String(value))
+            if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            value
+                .parse()
+                .map(Some)
+                .map_err(|_| "`expect_fingerprint` is outside the u64 range".to_string())
+        }
+        Some(value) => value.as_u64().map(Some).ok_or_else(|| {
+            "`expect_fingerprint` must be a non-negative integer or decimal string".to_string()
+        }),
     }
+}
+
+fn stringify_fingerprints(mut value: Value) -> Value {
+    if let Some(fingerprints) = value.get_mut("fingerprints").and_then(Value::as_object_mut) {
+        for fingerprint in fingerprints.values_mut() {
+            if let Some(number) = fingerprint.as_u64() {
+                *fingerprint = Value::String(number.to_string());
+            }
+        }
+    }
+    value
 }
 
 /// The optional `wait_for` / `wait_for_gone` of an action tool, with its
@@ -683,13 +702,16 @@ fn call_tool(
             if args.get("depth").is_some() || args.get("root").is_some() {
                 return outline_snapshot(client, &args, since, format, fingerprints == Some(true));
             }
-            client
+            let resp = client
                 .call(&Op::Snapshot {
                     since,
                     format,
                     fingerprints,
                 })
-                .map_err(fail)?
+                .map_err(fail)?;
+            return serde_json::to_value(resp)
+                .map(stringify_fingerprints)
+                .map_err(|err| err.to_string());
         }
         "screenshot" => {
             let path = args.string("path")?;
@@ -844,7 +866,7 @@ fn call_tool(
     })?;
     let mut value = serde_json::to_value(resp).map_err(|err| err.to_string())?;
     value["compact"] = json!(compact);
-    Ok(value)
+    Ok(stringify_fingerprints(value))
 }
 
 fn recipe_text(args: &Value) -> Result<String, String> {
@@ -1837,7 +1859,7 @@ mod tests {
         for name in FINGERPRINTED_TOOLS {
             assert_eq!(
                 props(name)["expect_fingerprint"]["type"],
-                "integer",
+                json!(["integer", "string"]),
                 "{name}"
             );
         }
@@ -1862,8 +1884,17 @@ mod tests {
             &[],
         )
         .unwrap();
-        let input = snap["fingerprints"]["todo-input"].as_u64().unwrap();
-        let add = snap["fingerprints"]["todo-add"].as_u64().unwrap();
+        assert!(snap["fingerprints"]["todo-input"].is_string(), "{snap}");
+        let input = snap["fingerprints"]["todo-input"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let add = snap["fingerprints"]["todo-add"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
         for (name, args) in [
             ("type", json!({ "target": "todo-input", "text": "x" })),
             ("set_value", json!({ "target": "todo-input", "value": "x" })),
@@ -1885,7 +1916,7 @@ mod tests {
             &mut client,
             &json!({
                 "name": "type",
-                "arguments": { "target": "todo-input", "text": "Milk", "expect_fingerprint": input }
+                "arguments": { "target": "todo-input", "text": "Milk", "expect_fingerprint": input.to_string() }
             }),
             &[],
         )
@@ -1900,7 +1931,7 @@ mod tests {
         .unwrap();
         let bad = call_tool(
             &mut client,
-            &json!({ "name": "click", "arguments": { "target": "todo-add", "expect_fingerprint": "1" } }),
+            &json!({ "name": "click", "arguments": { "target": "todo-add", "expect_fingerprint": "not-a-number" } }),
             &[],
         )
         .unwrap_err();

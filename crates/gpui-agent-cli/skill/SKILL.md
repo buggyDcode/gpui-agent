@@ -79,7 +79,8 @@ Run `gpui-agent <command> --help` for the options of each.
   guarding it again.
 - Over MCP the same arguments are `depth`, `root`, `wait_for`,
   `wait_for_gone`, `wait_timeout_ms` and `expect_fingerprint`, and results are
-  compact JSON.
+  compact JSON. MCP accepts `expect_fingerprint` as a number or decimal
+  string; snapshot fingerprint values are decimal strings.
 
 ## What a host supports
 

@@ -131,7 +131,9 @@ gpui-agent --guard press @e8                  # send @e8's fingerprint saved by 
 `--wait-for` does not trigger it. It is opt-in because a fingerprint covers the node's
 value: after typing into a node, take a new `snapshot --refs` before guarding it again.
 The MCP tools take the same arguments (`depth`, `root`, `wait_for`, `wait_for_gone`,
-`wait_timeout_ms`, `expect_fingerprint`) and answer in compact JSON.
+`wait_timeout_ms`, `expect_fingerprint`) and answer in compact JSON. MCP accepts
+`expect_fingerprint` as a number or decimal string; snapshot fingerprint values are
+decimal strings.
 
 `scripts/conformance.py` runs the required protocol and host checks against the host at
 `--addr`: `python3 scripts/conformance.py --addr 127.0.0.1:17421`. Protocol versions
