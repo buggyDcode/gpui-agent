@@ -1243,10 +1243,6 @@ impl AgentClient {
     }
 }
 
-/// Classify a transport failure. Nothing written means `connect_failed`
-/// and `not_delivered`; a written request with no usable reply means
-/// `no_reply` and `delivery_uncertain`, unless the text names a refusal
-/// (an unauthenticated challenge, a client-side `unsupported_op`).
 /// The node state [`AgentClient::wait_after`] waits for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -1258,6 +1254,7 @@ pub enum WaitFor {
 }
 
 impl WaitFor {
+    /// The node id waited on.
     pub fn id(&self) -> &str {
         match self {
             Self::Present(id) | Self::Gone(id) => id,
@@ -1274,6 +1271,10 @@ impl WaitFor {
     }
 }
 
+/// Classify a transport failure. Nothing written means `connect_failed`
+/// and `not_delivered`; a written request with no usable reply means
+/// `no_reply` and `delivery_uncertain`, unless the text names a refusal
+/// (an unauthenticated challenge, a client-side `unsupported_op`).
 fn transport_failure(err: SendError, acts: bool) -> CallFailure {
     let mut code = error_code_of(&err.message);
     if code == error_code::HOST_ERROR || (!err.sent && code == error_code::NO_REPLY) {
