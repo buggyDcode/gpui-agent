@@ -992,7 +992,9 @@ impl AgentClient {
     /// `delivery_status` becomes `delivered_verified` when the target
     /// changed. On hosts that track revisions an unchanged `rev` skips the
     /// second snapshot. A read-back that cannot be taken leaves the action's
-    /// own result as it was (`delivered_unverified`).
+    /// own result as it was (`delivered_unverified`). A target absent from
+    /// the first read fails with `not_found` and `not_delivered`, and the
+    /// action is not sent.
     pub fn act(&mut self, op: &Op, read_back: bool) -> Result<Response, CallFailure> {
         let Some(target) = op.read_back_target().filter(|_| read_back) else {
             return self.call(op);
@@ -1009,6 +1011,15 @@ impl AgentClient {
                 });
             }
         };
+        // The read just taken has no such node: the action could only
+        // fail, so it is not sent and the caller learns why.
+        if before.as_ref().is_some_and(|(_, state)| !state.exists) {
+            return Err(CallFailure::with_code(
+                format!("node `{target}` not found"),
+                crate::error_code::NOT_FOUND,
+                op.acts().then_some(DeliveryStatus::NotDelivered),
+            ));
+        }
         let mut resp = self.call(op)?;
         let Some((before_rev, before_state)) = before else {
             return Ok(resp);
@@ -1604,6 +1615,17 @@ mod tests {
         );
         let after = resp.after.unwrap();
         assert!(after.exists && !after.changed);
+    }
+
+    #[test]
+    fn read_back_does_not_send_an_action_on_a_missing_target() {
+        let (addr, server) = fake_host(vec![Some(tree_with("x", 3))]);
+        let failure = client_for(addr).act(&Op::click("b"), true).unwrap_err();
+        assert_eq!(server.join().unwrap(), ["snapshot"]);
+        assert_eq!(failure.error_code, error_code::NOT_FOUND, "{failure:?}");
+        assert_eq!(failure.error, "node `b` not found");
+        assert_eq!(failure.delivery_status, Some(DeliveryStatus::NotDelivered));
+        assert!(failure.hint.is_some());
     }
 
     #[test]

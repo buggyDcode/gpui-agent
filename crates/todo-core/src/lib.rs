@@ -664,6 +664,11 @@ impl AgentHost for TodoStore {
                  dispatch only — use delivery=semantic, or run apps/todo with GPUI_AGENT=1.",
             ));
         }
+        // An id that is not in the tree gets the shared `not_found` text,
+        // so the client can tell it was refused before anything ran.
+        if let Some(target) = op.read_back_target() {
+            self.tree().require_id(target)?;
+        }
         match op {
             Op::Click { target, .. } => self.click(target),
             Op::Type { target, text, .. } => self.type_into(target, text),
@@ -1683,5 +1688,41 @@ mod gated_op_tests {
         assert!(gpui_agent::is_unsupported_op(
             response.error.as_deref().unwrap()
         ));
+    }
+
+    #[test]
+    fn an_action_on_an_id_outside_the_tree_is_not_found() {
+        let mut store = TodoStore::default();
+        let rev = store.revision();
+        for op in [
+            Op::click("no-such-node"),
+            Op::type_text("no-such-node", "x"),
+            Op::Press {
+                target: Some("no-such-node".into()),
+                x: None,
+                y: None,
+                expect_fingerprint: None,
+            },
+        ] {
+            let resp = handle_request(&mut store, Request::new("1", op), None, None);
+            assert!(!resp.ok);
+            let error = resp.error.unwrap();
+            assert_eq!(error, "node `no-such-node` not found");
+            assert_eq!(gpui_agent::error_code_of(&error), "not_found");
+        }
+        assert_eq!(store.revision(), rev);
+
+        // An id that is in the tree but cannot be clicked keeps its own
+        // refusal.
+        let resp = handle_request(
+            &mut store,
+            Request::new("2", Op::click(ids::STATUS)),
+            None,
+            None,
+        );
+        assert_eq!(
+            resp.error.as_deref(),
+            Some(format!("cannot click `{}`", ids::STATUS).as_str())
+        );
     }
 }

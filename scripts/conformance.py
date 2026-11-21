@@ -20,7 +20,9 @@ or --addr / --token passed through) and checks that:
   a failure with --require-screenshot.
 
 - a failed command prints a JSON envelope on stdout with a stable
-  `error_code`: `not_found` for an `assert` on a missing node and, when the
+  `error_code`: `not_found` for an `assert` on a missing node, `not_found`
+  and `not_delivered` for a `click` on one (with and without read-back, so
+  the host must refuse an id that is not in its tree) and, when the
   host lists `expect_fingerprint`, `stale_target` (with `delivery_status`
   `not_delivered`) for a `click` whose fingerprint does not match. The
   host refuses that click before dispatching, so nothing acts.
@@ -48,7 +50,8 @@ GATED = {
     "long_press": ["long-press", "--x", "1", "--y", "1"],
     "pinch": ["pinch", "--scale", "1.1"],
     "viewport": ["viewport", "--width", "800", "--height", "600"],
-    "paste": ["paste", "conformance-no-such-node", "x"],
+    # Read-back would find no such node and stop before the host is asked.
+    "paste": ["paste", "conformance-no-such-node", "x", "--no-read-back"],
     "system.back": ["system", "back"],
     "system.home": ["system", "home"],
     "system.rotate": ["system", "rotate", "landscape"],
@@ -257,6 +260,22 @@ def error_code_checks(run, features, ids):
         code == "not_found",
         err if envelope is None else str(code),
     )
+    # With read-back (the default) the client finds no such node and sends
+    # nothing; with --no-read-back the host itself must refuse the id.
+    for extra, how in (((), "after read-back"), (("--no-read-back",), "from the host")):
+        envelope, err = run.failure("click", "conformance-no-such-node", *extra)
+        code = (envelope or {}).get("error_code")
+        delivery = (envelope or {}).get("delivery_status")
+        run.check(
+            f"a click on a missing target fails with not_found {how}",
+            code == "not_found",
+            err if envelope is None else str(code),
+        )
+        run.check(
+            f"a click on a missing target is not_delivered {how}",
+            delivery == "not_delivered",
+            str(delivery),
+        )
     if "expect_fingerprint" not in features:
         run.skip("stale fingerprint", "hello.features does not list expect_fingerprint")
         return

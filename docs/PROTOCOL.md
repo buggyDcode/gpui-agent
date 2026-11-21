@@ -123,6 +123,10 @@ A failed response keeps its human-readable `error` and adds a stable
 Both fields are optional and wire protocol stays 2. A host that predates
 them sends only `error`; the client classifies that text with the same
 table (`gpui_agent::error_code_of`), so callers see one code either way.
+A host that refuses an action because its target id is not in the tree
+should say so before acting, as ``node `<id>` not found`` (the text
+`UiTree::require_id` returns) or a `not_found: …` prefix; any other
+refusal text is `host_error` with `delivery_uncertain`.
 
 The client (not the host) adds `delivery_status` to an op that acts:
 
@@ -138,6 +142,8 @@ Read-back (`AgentClient::act`) snapshots the target before and after
 `long_press`, and reports it as `after`:
 `{exists, value?, checked?, focused?, enabled?, changed}`. When the host
 reports the same `rev` after the action, the second snapshot is skipped.
+When the first snapshot has no node with the target id, the action is
+not sent: it fails with `not_found` and `not_delivered`.
 The CLI and MCP read back by default; `--no-read-back` / `no_read_back:
 true` turn it off. A failed CLI command prints
 `{"ok":false,"error":…,"error_code":…,"hint":…,"delivery_status":…}` on

@@ -45,6 +45,21 @@ fn missing_target_reports_not_found() {
 }
 
 #[test]
+fn click_on_a_missing_target_reports_not_found_and_not_delivered() {
+    let todo = Todo::spawn(TOKEN);
+    // Read-back finds no such node and does not send the click; without
+    // it the host refuses the id before dispatch.
+    for extra in [&[][..], &["--no-read-back"][..]] {
+        let mut args = vec!["click", "no-such-node"];
+        args.extend_from_slice(extra);
+        let envelope = failed_envelope(&cli(&todo.addr, &args));
+        assert_eq!(envelope["error_code"], "not_found", "{envelope}");
+        assert_eq!(envelope["delivery_status"], "not_delivered", "{envelope}");
+        assert!(envelope["hint"].is_string(), "{envelope}");
+    }
+}
+
+#[test]
 fn stale_fingerprint_reports_stale_target_and_not_delivered() {
     let todo = Todo::spawn(TOKEN);
     let envelope = failed_envelope(&cli(
