@@ -89,14 +89,14 @@ impl AbstainReport {
 pub struct EscalatingPolicy<L, H> {
     /// The local policy; decides first on every observation.
     pub local: L,
-    /// The endpoint consulted once per run, on local abstain only.
+    /// The endpoint consulted on each local abstain.
     pub fallback: Option<H>,
     calls: u32,
 }
 
 impl<L, H> EscalatingPolicy<L, H> {
-    /// Wrap `local`; `fallback` (when present) receives the abstain
-    /// report and gets at most one call per run.
+    /// Wrap `local`; `fallback` (when present) is consulted once per
+    /// abstaining `decide` — never on a choice, never to re-score.
     pub fn new(local: L, fallback: Option<H>) -> Self {
         Self {
             local,
@@ -436,8 +436,9 @@ impl CommandEscalation {
     /// the caller abstains as the local tier would.
     ///
     /// # Errors
-    /// [`TextError::Invalid`] on malformed JSON, an oversized or
-    /// multi-line payload, or a stale fingerprint.
+    /// [`TextError::Invalid`] on malformed JSON or an oversized /
+    /// multi-line payload; `context_fingerprint` is echoed back into
+    /// the resolution unchecked.
     pub fn parse_text_reply(
         reply: &str,
         context_fingerprint: u64,

@@ -123,7 +123,7 @@ impl std::error::Error for PolicyError {}
 /// repetition dampening and done-detection).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryEntry {
-    /// Runner step index (0-based).
+    /// Runner step index (1-based, matching [`StepRecord`]).
     pub step: u32,
     /// Action id dispatched at this step.
     pub action_id: ActionId,
