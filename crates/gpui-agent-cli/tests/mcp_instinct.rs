@@ -1,6 +1,6 @@
 //! M4.6: `gpui-agent mcp` (feature `instinct`) driven end-to-end
-//! against a headless `TodoStore` — `locate`/`act`/`snapshot
-//! since+format over the real MCP stdio surface.
+//! against a headless `TodoStore` — `locate`/`act`/`snapshot`
+//! `since` + `format` over the real MCP stdio surface.
 #![cfg(feature = "instinct")]
 
 mod common;
@@ -48,6 +48,10 @@ impl Mcp {
         mcp
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "json arguments are consumed into the request"
+    )]
     fn rpc(&mut self, method: &str, params: Value) -> Value {
         let id = self.next_id;
         self.next_id += 1;
@@ -71,6 +75,10 @@ impl Mcp {
     }
 
     /// `tools/call` → the tool payload (`content[0].text` parsed).
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "json arguments are consumed into the request"
+    )]
     fn call(&mut self, name: &str, arguments: Value) -> Value {
         let resp = self.rpc(
             "tools/call",
@@ -156,7 +164,7 @@ fn act_abstains_without_dispatch() {
         !out["abstain"]["reason"].as_str().unwrap_or("").is_empty(),
         "{out}"
     );
-    assert!(todo.titles().is_empty());
+    assert_eq!(todo.titles(), Vec::<String>::new());
 
     // Destructive keybinding is offered but never auto-chosen.
     let quit = mcp.call("act", json!({ "instruction": "app quit keybinding" }));
@@ -207,7 +215,7 @@ fn events_tool_polls_the_ring() {
     // Cursor advance: nothing new after latest.
     let next = mcp.call(
         "events",
-        json!({ "since": poll["latest"].as_u64().unwrap() }),
+        json!({ "since": poll["latest"].as_u64().expect("test fixture") }),
     );
     assert_eq!(next["events"].as_array().expect("events").len(), 0);
 }

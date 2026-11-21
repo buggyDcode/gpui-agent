@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 /// Hosts that published themselves on this machine, and the devices `adb`
 /// sees with the ports forwarded to them.
-pub fn targets() -> (Value, Option<gpui_agent::ResolveError>) {
+pub(crate) fn targets() -> (Value, Option<gpui_agent::ResolveError>) {
     let (hosts, discovery_error) = match gpui_agent::live_hosts(&gpui_agent::runtime_root()) {
         Ok(hosts) => (hosts, None),
         Err(error) => (Vec::new(), Some(error)),
@@ -24,7 +24,7 @@ pub fn targets() -> (Value, Option<gpui_agent::ResolveError>) {
     )
 }
 
-pub fn check_discovery(root: &Path) -> bool {
+pub(crate) fn check_discovery(root: &Path) -> bool {
     match gpui_agent::live_hosts(root) {
         Ok(_) => true,
         Err(error) => {
@@ -77,7 +77,16 @@ fn count(nodes: &[UiNode]) -> usize {
 
 /// Runs the checks in order and prints one line each; `false` when the host
 /// cannot be driven as it stands.
-pub fn doctor(addr: SocketAddr, mut client: AgentClient, has_token: bool, root: &Path) -> bool {
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "has_token mirrors whether a token was provided"
+)]
+pub(crate) fn doctor(
+    addr: SocketAddr,
+    mut client: AgentClient,
+    has_token: bool,
+    root: &Path,
+) -> bool {
     let discovery_ok = check_discovery(root);
     let connect = Duration::from_secs(2);
     if let Err(err) = TcpStream::connect_timeout(&addr, connect) {

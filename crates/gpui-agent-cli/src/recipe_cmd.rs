@@ -10,7 +10,7 @@ use gpui_agent_recipe::{
 };
 
 #[derive(Debug, Subcommand)]
-pub enum RecipeCommand {
+pub(crate) enum RecipeCommand {
     /// \[experimental\] Lint a JSON recipe (`.wants` also accepted). No host required.
     Validate {
         /// Recipe path (`.json` canonical; `.wants` also accepted). `-` reads stdin.
@@ -51,7 +51,7 @@ pub enum RecipeCommand {
     Resolve { intent: String },
 }
 
-pub fn run(
+pub(crate) fn run(
     client: Option<AgentClient>,
     command: RecipeCommand,
     schema_paths: &[PathBuf],

@@ -97,7 +97,11 @@ fn named_sessions_attach_reuse_list_detach_and_do_not_save_failed_attach() {
         stderr(&listed)
     );
     let sessions: Value = serde_json::from_slice(&listed.stdout).expect("sessions JSON");
-    assert_eq!(sessions.as_array().unwrap().len(), 1, "{sessions}");
+    assert_eq!(
+        sessions.as_array().expect("test fixture").len(),
+        1,
+        "{sessions}"
+    );
     assert_eq!(sessions[0]["name"], "s");
     assert_eq!(sessions[0]["addr"], todo.addr);
     assert_eq!(sessions[0]["token"], "yes");
@@ -125,7 +129,7 @@ fn named_sessions_attach_reuse_list_detach_and_do_not_save_failed_attach() {
     );
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("reserve dead port");
-    let dead_addr = listener.local_addr().unwrap().to_string();
+    let dead_addr = listener.local_addr().expect("test fixture").to_string();
     drop(listener);
     let failed_attach = cli(
         &runtime,
@@ -232,7 +236,11 @@ fn named_session_conflicts_with_command_line_selectors_but_ignores_env_addr() {
     );
     let listed = cli(&runtime, &["sessions"]);
     let sessions: Value = serde_json::from_slice(&listed.stdout).expect("sessions JSON");
-    assert_eq!(sessions.as_array().unwrap().len(), 1, "{sessions}");
+    assert_eq!(
+        sessions.as_array().expect("test fixture").len(),
+        1,
+        "{sessions}"
+    );
     assert_eq!(sessions[0]["name"], "s");
 }
 

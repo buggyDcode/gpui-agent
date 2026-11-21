@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 /// What a ref stands for: the node id and, when the host reported one, the
 /// node's fingerprint at the time of the `snapshot --refs` (for `--guard`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Saved {
+pub(crate) struct Saved {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fp: Option<u64>,
@@ -32,7 +32,7 @@ enum Stored {
     Saved(Saved),
 }
 
-pub type Table = BTreeMap<String, Saved>;
+pub(crate) type Table = BTreeMap<String, Saved>;
 
 fn table_path(root: &Path, addr: SocketAddr) -> PathBuf {
     let name: String = addr
@@ -44,7 +44,7 @@ fn table_path(root: &Path, addr: SocketAddr) -> PathBuf {
 }
 
 /// `true` for an argument spelled as a ref.
-pub fn is_ref(arg: &str) -> bool {
+pub(crate) fn is_ref(arg: &str) -> bool {
     arg.strip_prefix("@e")
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
@@ -54,8 +54,7 @@ fn ref_arg(arg: &str) -> Option<(&str, &str)> {
         return Some(("", arg));
     }
     let (option, value) = arg.split_once('=')?;
-    (NODE_ID_OPTIONS.contains(&option) && is_ref(value))
-        .then_some((&arg[..option.len() + 1], value))
+    (NODE_ID_OPTIONS.contains(&option) && is_ref(value)).then_some((&arg[..=option.len()], value))
 }
 
 const NODE_ID_OPTIONS: &[&str] = &[
@@ -69,7 +68,7 @@ const NODE_ID_OPTIONS: &[&str] = &[
 ];
 
 /// `true` for an exact ref argument or a node-id option with a ref value.
-pub fn has_ref(arg: &str) -> bool {
+pub(crate) fn has_ref(arg: &str) -> bool {
     ref_arg(arg).is_some()
 }
 
@@ -78,6 +77,10 @@ pub fn has_ref(arg: &str) -> bool {
 /// geometry (`sized`), a node without any is not on screen. A node whose
 /// children an outline cut is always listed, so its ref can be the next
 /// `--root`.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "sized is the headless-bounds flag"
+)]
 fn listed(node: &OutlineNode, sized: bool) -> bool {
     let shown = &node.node;
     shown.visible
@@ -167,7 +170,11 @@ impl Render<'_> {
 /// The text of `outline` and the ref table that goes with it. Each ref
 /// keeps its node's entry in `fingerprints`; `show_fingerprints` also
 /// prints it on the line (`fp=…`).
-pub fn render(
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "show_fingerprints mirrors --fingerprints"
+)]
+pub(crate) fn render(
     outline: &Outline,
     fingerprints: &BTreeMap<String, u64>,
     show_fingerprints: bool,
@@ -183,7 +190,7 @@ pub fn render(
     (render.out, render.table)
 }
 
-pub fn save(root: &Path, addr: SocketAddr, table: &Table) -> std::io::Result<()> {
+pub(crate) fn save(root: &Path, addr: SocketAddr, table: &Table) -> std::io::Result<()> {
     gpui_agent::discovery::ensure_runtime_dir(root)?;
     let path = table_path(root, addr);
     if let Some(dir) = path.parent() {
@@ -220,7 +227,11 @@ pub fn save(root: &Path, addr: SocketAddr, table: &Table) -> std::io::Result<()>
 /// Replaces every ref among `args` with the node id it stands for, and
 /// returns what each replaced ref stood for. The arguments stay as the OS
 /// gave them: a path need not be UTF-8.
-pub fn resolve(root: &Path, addr: SocketAddr, args: &mut [OsString]) -> Result<Vec<Saved>, String> {
+pub(crate) fn resolve(
+    root: &Path,
+    addr: SocketAddr,
+    args: &mut [OsString],
+) -> Result<Vec<Saved>, String> {
     if !args.iter().any(|arg| arg.to_str().is_some_and(has_ref)) {
         return Ok(Vec::new());
     }
@@ -309,6 +320,10 @@ mod tests {
         );
 
         // A headless host gives no bounds: its nodes are listed all the same.
+        #[expect(
+            clippy::items_after_statements,
+            reason = "kept beside the only assertion that uses it for readability"
+        )]
         fn unsize(nodes: &mut [UiNode]) {
             for node in nodes {
                 node.bounds.w = 0.0;

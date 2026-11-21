@@ -46,7 +46,6 @@ impl Drop for Scratch {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run_goal(
     todo: &Todo,
     goal: &str,

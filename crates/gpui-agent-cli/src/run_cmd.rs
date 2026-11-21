@@ -16,7 +16,7 @@ use gpui_agent_recipe::{invoke_args, registry_from_schema_paths};
 use serde_json::Value;
 
 /// Options for `gpui-agent run` (M6 + M7/M8 escalation knobs).
-pub struct RunOpts<'a> {
+pub(crate) struct RunOpts<'a> {
     pub goal: &'a str,
     pub profile: &'a str,
     pub json_out: bool,
@@ -26,7 +26,11 @@ pub struct RunOpts<'a> {
     pub schema: &'a [PathBuf],
 }
 
-pub fn run(mut client: AgentClient, opts: RunOpts<'_>) -> Result<()> {
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "opts bundles the run's flags by design"
+)]
+pub(crate) fn run(mut client: AgentClient, opts: RunOpts<'_>) -> Result<()> {
     let RunOpts {
         goal,
         profile,
@@ -99,7 +103,7 @@ pub fn run(mut client: AgentClient, opts: RunOpts<'_>) -> Result<()> {
 }
 
 /// `--escalate <engine>` → the named fallback. `jev` needs feature
-/// `jev` and TYPESAFE_API_KEY — a missing key is a config error,
+/// `jev` and `TYPESAFE_API_KEY` — a missing key is a config error,
 /// never a silent disable.
 #[cfg(feature = "jev")]
 fn jev_policy(profile: Profile, engine: &str) -> Result<Box<dyn UiPolicy>> {
@@ -119,6 +123,7 @@ fn jev_policy(_profile: Profile, engine: &str) -> Result<Box<dyn UiPolicy>> {
     ))
 }
 
+#[expect(clippy::fn_params_excessive_bools, reason = "--json is one flag")]
 fn print_receipt(receipt: &RunReceipt, json_out: bool) -> Result<()> {
     if json_out {
         println!("{}", serde_json::to_string_pretty(receipt)?);

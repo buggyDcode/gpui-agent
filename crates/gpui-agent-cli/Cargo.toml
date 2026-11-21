@@ -44,3 +44,5 @@ todo-core.workspace = true
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }-v{ version }{ archive-suffix }"
 bin-dir = "{ name }/{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
+[lints]
+workspace = true

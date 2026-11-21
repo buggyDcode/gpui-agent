@@ -39,7 +39,7 @@ fn add_then_done_exits_zero_and_mutates_state() {
     assert_eq!(code, 0, "{receipt}");
     assert_eq!(receipt["outcome"], "done", "{receipt}");
     assert_eq!(todo.titles(), ["Buy milk"]);
-    assert!(!receipt["steps"].as_array().unwrap().is_empty());
+    assert_ne!(receipt["steps"].as_array().expect("test fixture").len(), 0);
     assert_eq!(
         receipt["engine"]["policy"],
         env!("CARGO_PKG_VERSION"),
@@ -59,7 +59,7 @@ fn multi_clause_goal_advances_clauses() {
     assert_eq!(todo.done_titles(), ["Groceries"]);
     let clauses: Vec<&str> = receipt["steps"]
         .as_array()
-        .unwrap()
+        .expect("test fixture")
         .iter()
         .filter_map(|s| s["clause"].as_str())
         .collect();
@@ -118,7 +118,8 @@ fn call_budget_stays_flat() {
     let todo = Todo::spawn(TOKEN);
     let (_, receipt) = run_goal(&todo, r#"Add a todo "Buy milk""#);
     let calls = receipt["calls"].as_u64().expect("calls in receipt");
-    let steps = receipt["steps"].as_array().unwrap().len() as u64;
+    let steps = receipt["steps"].as_array().expect("test fixture").len();
+    let steps = u64::try_from(steps).unwrap_or(u64::MAX);
     assert!(
         calls <= 2 + steps * 2 + 2,
         "calls {calls} vs steps {steps} — re-observe loop crept in"

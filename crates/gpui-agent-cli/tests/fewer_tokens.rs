@@ -32,7 +32,7 @@ fn failed_json(out: &Output) -> Value {
 
 fn text(out: &Output) -> String {
     assert!(out.status.success(), "{out:?}");
-    String::from_utf8(out.stdout.clone()).unwrap()
+    String::from_utf8(out.stdout.clone()).expect("test fixture")
 }
 
 /// The ref the `--refs` outline gave the line containing `needle`.
@@ -41,7 +41,10 @@ fn ref_of(outline: &str, needle: &str) -> String {
         .lines()
         .find(|line| line.contains(needle))
         .unwrap_or_else(|| panic!("no line with {needle} in {outline}"));
-    line.split_whitespace().next().unwrap().to_string()
+    line.split_whitespace()
+        .next()
+        .expect("test fixture")
+        .to_string()
 }
 
 #[test]
@@ -49,7 +52,9 @@ fn an_expected_fingerprint_refuses_a_changed_target() {
     let todo = Todo::spawn(TOKEN);
     let runtime = RuntimeRoot::new();
     let snap = ok_json(&cli(&runtime, &todo.addr, &["snapshot", "--fingerprints"]));
-    let fp = snap["fingerprints"]["todo-input"].as_u64().unwrap();
+    let fp = snap["fingerprints"]["todo-input"]
+        .as_u64()
+        .expect("test fixture");
 
     let stale = failed_json(&cli(
         &runtime,
@@ -98,7 +103,7 @@ fn guard_sends_the_saved_fingerprint_of_a_ref() {
         &["--guard", "key", &input, "Enter"],
     ));
     assert_eq!(stale["error_code"], "stale_target", "{stale}");
-    assert!(todo.titles().is_empty());
+    assert_eq!(todo.titles(), Vec::<String>::new());
 
     let outline = text(&cli(
         &runtime,
@@ -163,7 +168,7 @@ fn wait_for_returns_the_new_tree_in_compact_form() {
             "todo-item-1",
         ],
     ));
-    let compact = added["compact"].as_str().unwrap();
+    let compact = added["compact"].as_str().expect("test fixture");
     assert!(
         compact.contains("todo-item-1 listitem \"Milk\""),
         "{compact}"
@@ -181,7 +186,12 @@ fn wait_for_returns_the_new_tree_in_compact_form() {
             "todo-item-1",
         ],
     ));
-    assert!(!gone["compact"].as_str().unwrap().contains("todo-item-1"));
+    assert!(
+        !gone["compact"]
+            .as_str()
+            .expect("test fixture")
+            .contains("todo-item-1")
+    );
 
     let timed_out = failed_json(&cli(
         &runtime,
@@ -241,12 +251,12 @@ fn outline_snapshots_cut_depth_and_root() {
         one.len(),
         full.len()
     );
-    let one: Value = serde_json::from_str(&one).unwrap();
+    let one: Value = serde_json::from_str(&one).expect("test fixture");
     assert!(one.get("rev").is_none(), "{one}");
     assert!(one["tree"].get("rev").is_none(), "{one}");
     let window = &one["tree"]["nodes"][0];
     assert!(window.get("children").is_none(), "{window}");
-    assert!(window["children_count"].as_u64().unwrap() > 0);
+    assert!(window["children_count"].as_u64().expect("test fixture") > 0);
 
     let item = ok_json(&cli(
         &runtime,
@@ -255,7 +265,13 @@ fn outline_snapshots_cut_depth_and_root() {
     ));
     assert!(item.get("rev").is_none(), "{item}");
     assert!(item["tree"].get("rev").is_none(), "{item}");
-    assert_eq!(item["tree"]["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        item["tree"]["nodes"]
+            .as_array()
+            .expect("test fixture")
+            .len(),
+        1
+    );
     assert_eq!(item["tree"]["nodes"][0]["id"], "todo-item-2");
 
     let missing = failed_json(&cli(&runtime, &todo.addr, &["snapshot", "--root", "nope"]));

@@ -1,3 +1,12 @@
+//! The `gpui-agent` command-line binary: agent ops, recipes, MCP server.
+#![expect(
+    clippy::print_stdout,
+    reason = "this is the CLI binary; stdout is the product"
+)]
+#![expect(
+    clippy::print_stderr,
+    reason = "this is the CLI binary; stderr progress is the product"
+)]
 mod doctor;
 #[cfg(feature = "instinct")]
 mod instinct_wiring;
@@ -21,7 +30,7 @@ use gpui_agent::discovery::NamedSession;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, KeybindingScope, Op};
 use recipe_cmd::RecipeCommand;
 
-/// Talk to an embedded AgentHost over the opt-in agent protocol (not CDP).
+/// Talk to an embedded `AgentHost` over the opt-in agent protocol (not CDP).
 ///
 /// The host must implement `AgentHost`, publish stable ids, and start the
 /// server under `GPUI_AGENT=1`. This CLI does not attach to an arbitrary
@@ -32,6 +41,10 @@ use recipe_cmd::RecipeCommand;
 /// prompts — not as CLI subcommands.
 #[derive(Parser)]
 #[command(name = "gpui-agent", after_help = AFTER_HELP)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "clap flag struct — flags are the interface"
+)]
 struct Cli {
     /// Host:port of the automation server. When omitted, `--connect` is used,
     /// then the loopback default. Non-loopback needs `--allow-remote` and a
@@ -39,7 +52,7 @@ struct Cli {
     #[arg(long, env = "GPUI_AGENT_ADDR", global = true)]
     addr: Option<SocketAddr>,
     /// Bundle id or executable name of the app to drive. The CLI finds that
-    /// app's AgentHost and remembers it; `--connect last` reuses that choice.
+    /// app's `AgentHost` and remembers it; `--connect last` reuses that choice.
     /// A command with neither `--addr` nor `--connect` does not: another agent
     /// on this Mac may have picked a different app.
     #[arg(long, env = "GPUI_AGENT_CONNECT", global = true)]
@@ -455,7 +468,7 @@ enum Command {
         json: bool,
         /// Escalate local-policy abstains to a named engine (M8).
         /// `jev` uses System One via typesafe-sdk (requires
-        /// TYPESAFE_API_KEY; feature `jev`).
+        /// `TYPESAFE_API_KEY`; feature `jev`).
         #[arg(long = "escalate", value_name = "ENGINE", value_parser = ["jev"], conflicts_with = "escalate_cmd")]
         escalate: Option<String>,
         /// Escalate local-policy abstains to `<program> [args…]` over the
@@ -517,7 +530,7 @@ fn main() -> ExitCode {
             if let Some(failure) = err.downcast_ref::<CallFailure>() {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&failure.envelope()).unwrap()
+                    serde_json::to_string_pretty(&failure.envelope()).expect("envelope serializes")
                 );
             }
             eprintln!("error: {err}");
@@ -664,6 +677,10 @@ fn require_recipe_mcp_token(token: Option<&str>) -> Result<&str> {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one dispatch arm per subcommand; splitting scatters the CLI map"
+)]
 fn run() -> Result<()> {
     let (mut cli, mut sources) = parse_cli_from(std::env::args_os());
     requested_wait(&cli)?;
@@ -724,8 +741,8 @@ fn run() -> Result<()> {
         Command::Click { target, .. }
         | Command::Type { target, .. }
         | Command::SetValue { target, .. }
-        | Command::Key { target, .. } => refs::is_ref(target),
-        Command::Press {
+        | Command::Key { target, .. }
+        | Command::Press {
             target: Some(target),
             ..
         } => refs::is_ref(target),
@@ -773,7 +790,7 @@ fn run() -> Result<()> {
     }
     if let Command::Mcp { schema } = cli.command {
         let token = require_recipe_mcp_token(token.as_deref())?;
-        return mcp::run(addr, token.to_string(), request_timeout, schema);
+        return mcp::run(addr, token.to_string(), request_timeout, &schema);
     }
     if let Command::Recipe { schema, action } = cli.command {
         let client = if matches!(action, RecipeCommand::Run { .. }) {
@@ -841,7 +858,7 @@ fn run() -> Result<()> {
     };
     let finish = |client: &mut AgentClient, resp: gpui_agent::Response| -> Result<()> {
         match &wait {
-            None => print_resp(resp),
+            None => print_resp(&resp),
             Some((wait, timeout_ms)) => {
                 let reply_timeout = request_timeout.unwrap_or_else(|| client.timeout());
                 client.set_timeout(wait_reply_timeout(reply_timeout, Some(*timeout_ms)));
@@ -864,7 +881,7 @@ fn run() -> Result<()> {
         Command::Wait { timeout_ms } => {
             let reply_timeout = request_timeout.unwrap_or_else(|| client.timeout());
             client.set_timeout(wait_reply_timeout(reply_timeout, timeout_ms));
-            print_resp(call(client.call(&Op::Wait { timeout_ms }))?)
+            print_resp(&call(client.call(&Op::Wait { timeout_ms }))?);
         }
         Command::WaitUntil {
             timeout_ms,
@@ -890,9 +907,9 @@ fn run() -> Result<()> {
                 visible,
                 in_viewport,
             };
-            print_resp(call(client.call(&Op::WaitUntil { timeout_ms, spec }))?)
+            print_resp(&call(client.call(&Op::WaitUntil { timeout_ms, spec }))?);
         }
-        Command::Hello => print_resp(call(client.call(&Op::Hello))?),
+        Command::Hello => print_resp(&call(client.call(&Op::Hello))?),
         Command::Snapshot {
             pretty,
             refs,
@@ -929,18 +946,18 @@ fn run() -> Result<()> {
                 );
                 return Ok(());
             }
-            if mode.is_scrolled() && target.as_deref().map(str::trim).unwrap_or("").is_empty() {
+            if mode.is_scrolled() && target.as_deref().map_or("", str::trim).is_empty() {
                 return Err(anyhow!(
                     "screenshot --mode scrolled requires --target <scroll-view-id>"
                 ));
             }
-            print_resp(call(client.call(&Op::Screenshot {
+            print_resp(&call(client.call(&Op::Screenshot {
                 path: Some(out.to_string_lossy().into_owned()),
                 mode,
                 target,
                 max_height_px,
                 inline: false,
-            }))?)
+            }))?);
         }
         Command::Press {
             target,
@@ -958,7 +975,7 @@ fn run() -> Result<()> {
                 },
                 read_back,
             ))?;
-            finish(&mut client, resp)?
+            finish(&mut client, resp)?;
         }
         Command::Scroll {
             target,
@@ -974,11 +991,11 @@ fn run() -> Result<()> {
                 dx,
                 dy,
             }))?;
-            finish(&mut client, resp)?
+            finish(&mut client, resp)?;
         }
         Command::Hover { target, x, y } => {
             let resp = call(client.call(&Op::Hover { target, x, y }))?;
-            finish(&mut client, resp)?
+            finish(&mut client, resp)?;
         }
         Command::Drag {
             target,
@@ -998,7 +1015,7 @@ fn run() -> Result<()> {
                 dx,
                 dy,
             }))?;
-            finish(&mut client, resp)?
+            finish(&mut client, resp)?;
         }
         Command::Swipe {
             direction,
@@ -1010,7 +1027,7 @@ fn run() -> Result<()> {
                 direction,
                 distance,
             }))?;
-            finish(&mut client, resp)?
+            finish(&mut client, resp)?;
         }
         Command::LongPress {
             target,
@@ -1027,11 +1044,11 @@ fn run() -> Result<()> {
                 },
                 read_back,
             ))?;
-            finish(&mut client, resp)?
+            finish(&mut client, resp)?;
         }
         Command::Pinch { target, scale } => {
             let resp = call(client.call(&Op::Pinch { target, scale }))?;
-            finish(&mut client, resp)?
+            finish(&mut client, resp)?;
         }
         Command::Viewport {
             width,
@@ -1043,7 +1060,7 @@ fn run() -> Result<()> {
                 height,
                 preset,
             }))?;
-            finish(&mut client, resp)?
+            finish(&mut client, resp)?;
         }
         Command::Paste {
             target,
@@ -1052,11 +1069,11 @@ fn run() -> Result<()> {
         } => {
             let text = text_arg(text, stdin)?;
             let resp = call(client.act(&Op::Paste { target, text }, read_back))?;
-            finish(&mut client, resp)?
+            finish(&mut client, resp)?;
         }
         Command::System { action, value } => {
             let resp = call(client.call(&Op::System { action, value }))?;
-            finish(&mut client, resp)?
+            finish(&mut client, resp)?;
         }
         Command::Events { since, limit } => {
             let poll = rpc(client.events(since, limit))?;
@@ -1076,7 +1093,7 @@ fn run() -> Result<()> {
                 },
                 read_back,
             ))?;
-            finish(&mut client, resp)?
+            finish(&mut client, resp)?;
         }
         Command::Type {
             target,
@@ -1096,7 +1113,7 @@ fn run() -> Result<()> {
                 },
                 read_back,
             ))?;
-            finish(&mut client, resp)?
+            finish(&mut client, resp)?;
         }
         Command::SetValue {
             target,
@@ -1114,7 +1131,7 @@ fn run() -> Result<()> {
                 },
                 read_back,
             ))?;
-            finish(&mut client, resp)?
+            finish(&mut client, resp)?;
         }
         Command::Key {
             target,
@@ -1132,7 +1149,7 @@ fn run() -> Result<()> {
                 },
                 read_back,
             ))?;
-            finish(&mut client, resp)?
+            finish(&mut client, resp)?;
         }
         Command::Keybinding {
             id,
@@ -1148,9 +1165,9 @@ fn run() -> Result<()> {
                 confirm,
                 activate,
             }))?;
-            finish(&mut client, resp)?
+            finish(&mut client, resp)?;
         }
-        Command::Keybindings => print_resp(rpc(client.keybindings())?),
+        Command::Keybindings => print_resp(&rpc(client.keybindings())?),
         Command::Assert {
             id,
             name,
@@ -1172,16 +1189,16 @@ fn run() -> Result<()> {
                 visible,
                 in_viewport,
             };
-            print_resp(call(client.call(&Op::Assert { spec }))?);
+            print_resp(&call(client.call(&Op::Assert { spec }))?);
         }
         Command::Invoke { name, args } => {
             let resp = call(client.call(&Op::Invoke {
                 name,
                 args: parse_args(&args)?,
             }))?;
-            finish(&mut client, resp)?
+            finish(&mut client, resp)?;
         }
-        Command::Shutdown => print_resp(call(client.call(&Op::Shutdown))?),
+        Command::Shutdown => print_resp(&call(client.call(&Op::Shutdown))?),
         Command::Targets
         | Command::Skill
         | Command::Attach { .. }
@@ -1239,6 +1256,10 @@ fn requested_wait(cli: &Cli) -> Result<Option<(gpui_agent::WaitFor, u64)>> {
 
 /// The text of `type` / `set-value` / `paste`: the argument, or with
 /// `--stdin` all of stdin (clap requires exactly one).
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "clap pair: --text vs --stdin is one flag"
+)]
 fn text_arg(text: Option<String>, stdin: bool) -> Result<String> {
     match text {
         Some(text) if !stdin => Ok(text),
@@ -1289,6 +1310,10 @@ impl Command {
 
 /// `snapshot`: the reply cut to `options`, printed as JSON, the bare tree
 /// (`pretty`) or a ref outline (`refs`, whose table is saved for `addr`).
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "clap flags --refs/--pretty/--fingerprints are the interface"
+)]
 fn print_snapshot(
     mut resp: gpui_agent::Response,
     options: &gpui_agent::OutlineOptions,
@@ -1298,7 +1323,7 @@ fn print_snapshot(
     addr: SocketAddr,
 ) -> Result<()> {
     if options.is_full() && !refs && !pretty {
-        print_resp(resp);
+        print_resp(&resp);
         return Ok(());
     }
     if !options.is_full() {
@@ -1361,8 +1386,11 @@ pub(crate) struct WithCompact<'a> {
     pub compact: &'a str,
 }
 
-fn print_resp(resp: gpui_agent::Response) {
-    println!("{}", serde_json::to_string_pretty(&resp).unwrap());
+fn print_resp(resp: &gpui_agent::Response) {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(resp).expect("response serializes")
+    );
 }
 
 #[cfg(test)]
@@ -1400,7 +1428,7 @@ mod tests {
                 .any(|line| line == concat!("version: ", env!("CARGO_PKG_VERSION")))
         );
         let cmd = Cli::command();
-        let known: Vec<&str> = cmd.get_subcommands().map(|c| c.get_name()).collect();
+        let known: Vec<&str> = cmd.get_subcommands().map(clap::Command::get_name).collect();
         // The first word of each command cell in the actions table.
         let named = text
             .lines()
@@ -1581,7 +1609,7 @@ mod tests {
             .clone();
         let about = recipe
             .get_about()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .unwrap_or_default();
         assert!(
             about.to_ascii_lowercase().contains("experimental"),
@@ -1599,7 +1627,7 @@ mod tests {
         let validate = recipe.find_subcommand("validate").expect("validate");
         let about = validate
             .get_about()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .unwrap_or_default();
         assert!(
             about.to_ascii_lowercase().contains("experimental"),
@@ -1915,7 +1943,7 @@ mod tests {
         assert!(
             parsed.is_ok(),
             "mcp --schema must parse like recipe --schema: {:?}",
-            parsed.as_ref().err().map(|e| e.to_string())
+            parsed.as_ref().err().map(std::string::ToString::to_string)
         );
         let help = parsed.unwrap();
         match help.command {
@@ -2019,7 +2047,7 @@ mod tests {
         match cli.command {
             Command::Invoke { name, args } => {
                 assert_eq!(name, "demo.ping");
-                assert!(args.is_empty());
+                assert_eq!(args, Vec::<String>::new());
             }
             other => panic!("unexpected {other:?}"),
         }

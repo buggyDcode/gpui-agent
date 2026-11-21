@@ -1,4 +1,4 @@
-//! Claim tests for P4: receipt gate requires ok + session_reused; token stays
+//! Claim tests for P4: receipt gate requires ok + `session_reused`; token stays
 //! off the cargo-test workflow step so unset-token unit tests do not flake.
 
 use std::fs;
@@ -23,18 +23,18 @@ fn run_assert(json: &str) -> std::process::Output {
         "gpui-agent-ci-assert-{}-{:x}",
         std::process::id(),
         {
-            let mut h: u64 = 0xcbf29ce484222325;
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
             for b in json.as_bytes() {
                 h ^= u64::from(*b);
-                h = h.wrapping_mul(0x100000001b3);
+                h = h.wrapping_mul(0x0100_0000_01b3);
             }
             h
         }
     ));
     let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
+    fs::create_dir_all(&dir).expect("test fixture");
     let path = dir.join("receipt.json");
-    fs::write(&path, json).unwrap();
+    fs::write(&path, json).expect("test fixture");
     let output = Command::new(if cfg!(windows) { "python" } else { "python3" })
         .arg(assert_py())
         .arg(&path)

@@ -40,8 +40,8 @@ impl MockJev {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let handle = {
-            let requests = requests.clone();
-            let stop = stop.clone();
+            let requests = std::sync::Arc::clone(&requests);
+            let stop = std::sync::Arc::clone(&stop);
             std::thread::spawn(move || {
                 while !stop.load(Ordering::SeqCst) {
                     match listener.accept() {
@@ -50,7 +50,7 @@ impl MockJev {
                             let body = read_http_body(&mut sock);
                             let req: Value =
                                 serde_json::from_str(&body).unwrap_or(json!({"_bad": true}));
-                            requests.lock().unwrap().push(req.clone());
+                            requests.lock().expect("test fixture").push(req.clone());
                             let body = serde_json::to_string(&respond(&req))
                                 .unwrap_or_else(|_| "{}".into());
                             let resp = format!(
@@ -97,8 +97,7 @@ impl MockJev {
                     let pick = picks
                         .iter()
                         .find(|(h, _)| h == head)
-                        .map(|(_, p)| p.clone())
-                        .unwrap_or_else(|| keys[0].clone());
+                        .map_or_else(|| keys[0].clone(), |(_, p)| p.clone());
                     let mut probs = serde_json::Map::new();
                     for k in &keys {
                         probs.insert(
@@ -106,7 +105,9 @@ impl MockJev {
                             json!(if *k == pick {
                                 0.9
                             } else {
-                                0.1 / (keys.len() - 1).max(1) as f64
+                                0.1 / f64::from(
+                                    u32::try_from((keys.len() - 1).max(1)).unwrap_or(u32::MAX),
+                                )
                             }),
                         );
                     }
@@ -139,7 +140,14 @@ impl MockJev {
                         if i + 1 == keys.len() && keys.len() > 1 {
                             continue; // drop the last key — coverage violation
                         }
-                        probs.insert(k.clone(), json!(1.0 / (keys.len() - 1).max(1) as f64));
+                        probs.insert(
+                            k.clone(),
+                            json!(
+                                1.0 / f64::from(
+                                    u32::try_from((keys.len() - 1).max(1)).unwrap_or(u32::MAX)
+                                )
+                            ),
+                        );
                     }
                     answers.insert(
                         head.clone(),
@@ -166,7 +174,10 @@ impl MockJev {
                     }
                     let mut probs = serde_json::Map::new();
                     for k in &keys {
-                        probs.insert(k.clone(), json!(0.5 / keys.len() as f64));
+                        probs.insert(
+                            k.clone(),
+                            json!(0.5 / f64::from(u32::try_from(keys.len()).unwrap_or(u32::MAX))),
+                        );
                     }
                     answers.insert(
                         head.clone(),
@@ -216,7 +227,7 @@ impl MockJev {
     }
 
     fn requests(&self) -> Vec<Value> {
-        self.requests.lock().unwrap().clone()
+        self.requests.lock().expect("test fixture").clone()
     }
 }
 
@@ -257,6 +268,10 @@ fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "test helper mirrors flag combos"
+)]
 fn run_goal_jev(
     todo: &Todo,
     goal: &str,
