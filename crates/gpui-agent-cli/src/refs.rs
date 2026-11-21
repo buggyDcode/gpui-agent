@@ -101,7 +101,6 @@ struct Render<'a> {
     sized: bool,
     fingerprints: &'a BTreeMap<String, u64>,
     show_fingerprints: bool,
-    secret_redaction: bool,
     out: String,
     table: Table,
 }
@@ -150,11 +149,7 @@ impl Render<'_> {
         if let Some(count) = outline.children_count {
             let _ = write!(out, " children_count={count}");
         }
-        let fp = self
-            .fingerprints
-            .get(&node.id)
-            .copied()
-            .filter(|_| self.secret_redaction || !node.is_secret());
+        let fp = self.fingerprints.get(&node.id).copied();
         if let Some(fp) = fp.filter(|_| self.show_fingerprints) {
             let _ = write!(out, " fp={fp}");
         }
@@ -172,26 +167,15 @@ impl Render<'_> {
 /// The text of `outline` and the ref table that goes with it. Each ref
 /// keeps its node's entry in `fingerprints`; `show_fingerprints` also
 /// prints it on the line (`fp=…`).
-#[cfg(test)]
 pub fn render(
     outline: &Outline,
     fingerprints: &BTreeMap<String, u64>,
     show_fingerprints: bool,
 ) -> (String, Table) {
-    render_with_secret_redaction(outline, fingerprints, show_fingerprints, true)
-}
-
-pub fn render_with_secret_redaction(
-    outline: &Outline,
-    fingerprints: &BTreeMap<String, u64>,
-    show_fingerprints: bool,
-    secret_redaction: bool,
-) -> (String, Table) {
     let mut render = Render {
         sized: any_sized(&outline.nodes),
         fingerprints,
         show_fingerprints,
-        secret_redaction,
         out: String::new(),
         table: Table::new(),
     };
@@ -481,28 +465,6 @@ mod tests {
         assert_eq!(
             render(&sub, &BTreeMap::new(), false).0,
             "@e1 listitem \"Milk\"\n"
-        );
-    }
-
-    #[test]
-    fn legacy_host_secret_refs_do_not_keep_fingerprints() {
-        let mut tree = todo_tree();
-        let input = &mut tree.nodes[0].children[0];
-        input.states.push("secret".into());
-        input.value = Some("hunter2".into());
-        let raw_fingerprint = input.fingerprint(Some("page"));
-        let mut fingerprints = tree.fingerprint_map();
-        fingerprints.insert("todo-input".into(), raw_fingerprint);
-        tree.redact_secrets();
-        let outline = outline(&tree, &OutlineOptions::new()).unwrap();
-
-        let (text, table) = render_with_secret_redaction(&outline, &fingerprints, true, false);
-        assert!(!text.contains(&format!("fp={raw_fingerprint}")), "{text}");
-        assert!(
-            table
-                .values()
-                .any(|saved| { saved.id == "todo-input" && saved.fp.is_none() }),
-            "{table:?}"
         );
     }
 }

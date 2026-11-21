@@ -8,10 +8,13 @@ use std::net::TcpListener;
 use std::process::{Command, Output};
 use std::thread::{self, JoinHandle};
 
+use gpui_agent::DeliveryStatus;
 use gpui_agent::protocol::{
     HelloAuth, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request, Response,
 };
+use gpui_agent::tree::{UiNode, UiTree, role};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 mod common;
 use common::Todo;
@@ -83,6 +86,135 @@ fn coded_error_host() -> (String, JoinHandle<()>) {
     (addr, server)
 }
 
+fn legacy_fingerprint(node: &UiNode, parent_id: Option<&str>) -> u64 {
+    const OFFSET: u64 = 0xcbf29ce484222325;
+    fn feed(mut hash: u64, bytes: &[u8]) -> u64 {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash
+    }
+
+    let mut hash = OFFSET;
+    for field in [&node.id, &node.role, &node.name] {
+        hash = feed(hash, field.as_bytes());
+        hash = feed(hash, &[0xff]);
+    }
+    hash = feed(hash, &[u8::from(node.enabled), u8::from(node.visible)]);
+    hash = feed(
+        hash,
+        &[match node.checked {
+            None => 0,
+            Some(false) => 1,
+            Some(true) => 2,
+        }],
+    );
+    let value_hash = node
+        .value
+        .as_deref()
+        .map_or(0u64, |value| feed(OFFSET, value.as_bytes()));
+    hash = feed(hash, &value_hash.to_le_bytes());
+    for state in &node.states {
+        hash = feed(hash, state.as_bytes());
+        hash = feed(hash, &[0xff]);
+    }
+    if let Some(parent) = parent_id {
+        hash = feed(hash, parent.as_bytes());
+    }
+    feed(hash, &[u8::from(parent_id.is_some())])
+}
+
+fn legacy_secret_host() -> (String, u64, JoinHandle<bool>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let mut raw_secret =
+        UiNode::new("password-field", role::TEXTBOX, "Password").with_value("hunter2");
+    raw_secret.states.push("secret".into());
+    let raw_fingerprint = legacy_fingerprint(&raw_secret, None);
+    let mut masked_secret = raw_secret.clone();
+    masked_secret.redact_secrets();
+    let tree = UiTree {
+        app: "legacy-secret-host".into(),
+        platform: PlatformKind::Headless,
+        ready: true,
+        nodes: vec![masked_secret],
+        rev: None,
+    };
+    let server_tree = tree.clone();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut type_dispatched = false;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap() == 0 {
+                break;
+            }
+            let request: Request = serde_json::from_str(&line).unwrap();
+            let id = request.id;
+            let response = match request.op {
+                Op::Hello => {
+                    let mut response = Response::ok(id);
+                    response.hello = Some(HelloInfo {
+                        protocol: PROTOCOL_VERSION,
+                        app: "legacy-secret-host".into(),
+                        platform: PlatformKind::Headless,
+                        os: gpui_agent::protocol::host_os(),
+                        ready: true,
+                        deliveries: Vec::new(),
+                        auth: HelloAuth::None,
+                        bundle_id: None,
+                        executable: None,
+                        features: Vec::new(),
+                        framework: None,
+                        device: None,
+                    });
+                    response
+                }
+                Op::Snapshot { .. } => {
+                    let mut response = Response::ok(id);
+                    response.tree = Some(server_tree.clone());
+                    response.fingerprints =
+                        Some(BTreeMap::from([("password-field".into(), raw_fingerprint)]));
+                    response
+                }
+                Op::Type {
+                    target,
+                    expect_fingerprint,
+                    ..
+                } => {
+                    if target != "password-field" {
+                        Response::err(id, "node `password-field` not found")
+                    } else if expect_fingerprint
+                        .is_some_and(|fingerprint| fingerprint != raw_fingerprint)
+                    {
+                        let mut response = Response::err(
+                            id,
+                            "stale_target: `password-field` changed before dispatch",
+                        );
+                        response.error_code = Some("stale_target".into());
+                        response.hint = Some("take a new snapshot and retry".into());
+                        response.delivery_status = Some(DeliveryStatus::NotDelivered);
+                        response
+                    } else {
+                        type_dispatched = true;
+                        let mut response = Response::ok(id);
+                        response.delivery_status = Some(DeliveryStatus::DeliveredUnverified);
+                        response
+                    }
+                }
+                _ => Response::err(id, "unexpected operation"),
+            };
+            let response = serde_json::to_string(&response).unwrap();
+            writeln!(stream, "{response}").unwrap();
+            stream.flush().unwrap();
+        }
+        type_dispatched
+    });
+    (addr, raw_fingerprint, server)
+}
+
 fn failed_envelope(out: &Output) -> Value {
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -144,6 +276,26 @@ fn stale_fingerprint_reports_stale_target_and_not_delivered() {
         "{envelope}"
     );
     assert_eq!(envelope["delivery_status"], "not_delivered", "{envelope}");
+}
+
+#[test]
+fn legacy_host_rejects_stale_secret_fingerprint_before_dispatch() {
+    let (addr, raw_fingerprint, server) = legacy_secret_host();
+    let stale_fingerprint = (raw_fingerprint ^ 1).to_string();
+    let envelope = failed_envelope(&cli_without_token(
+        &addr,
+        &[
+            "--no-read-back",
+            "type",
+            "password-field",
+            "replacement",
+            "--expect-fingerprint",
+            &stale_fingerprint,
+        ],
+    ));
+    assert_eq!(envelope["error_code"], "stale_target", "{envelope}");
+    assert_eq!(envelope["delivery_status"], "not_delivered", "{envelope}");
+    assert!(!server.join().unwrap());
 }
 
 #[test]
