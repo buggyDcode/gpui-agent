@@ -1,0 +1,137 @@
+# Conformance on a phone host: the nsh gallery (hexuria/nsh, branch buwiz)
+# on an Android emulator, driven through `adb forward` by this repository's
+# CLI. No GPUI phone platform exists; the phone host is an nsh app.
+# Nightly and on demand only: the build and the emulator take too long for
+# every pull request.
+name: Android conformance
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      nsh_ref:
+        description: "hexuria/nsh branch, tag or commit"
+        required: false
+        default: buwiz
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  NDK_VERSION: "27.2.12479018"
+  API_LEVEL: "35"
+
+jobs:
+  android:
+    name: conformance (nsh gallery, Android emulator)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift
+          df -h /
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: hexuria/nsh
+          ref: ${{ inputs.nsh_ref || 'buwiz' }}
+          path: nsh
+          persist-credentials: false
+      - name: nsh commit
+        run: git -C nsh log -1 --format='%H %s'
+      - name: Install build packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libclang-dev
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$sdkmanager" --licenses > /dev/null || true
+          "$sdkmanager" --install \
+            "ndk;$NDK_VERSION" \
+            "platforms;android-$API_LEVEL" \
+            "build-tools;35.0.0" \
+            "platform-tools" \
+            "emulator" \
+            "system-images;android-$API_LEVEL;google_apis;x86_64" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+      - name: Install nsh's toolchain
+        working-directory: nsh
+        run: |
+          rustup toolchain install
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-x86_64
+          cache-on-failure: true
+          workspaces: |
+            . -> target
+            nsh -> target
+      - name: Build the gpui-agent CLI
+        run: cargo build -p gpui-agent-cli
+      - name: Build the nsh CLI
+        working-directory: nsh
+        run: cargo build -p nsh-cli
+      - name: Build the x86_64 Android development runtime
+        working-directory: nsh
+        run: cargo xtask android --dev --abi x86_64
+      # A debug libnsh.so with its debug info makes an APK of gigabytes;
+      # without it the host installs in seconds. `NSH_RUNTIME` also keeps
+      # `nsh run` from building the other ABIs.
+      - name: Stage the runtime without debug info
+        run: |
+          runtime="$RUNNER_TEMP/nsh-runtime/android/dev"
+          mkdir -p "$runtime/lib/x86_64"
+          cp nsh/target/android/debug-dev/classes.* "$runtime/"
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-debug \
+            -o "$runtime/lib/x86_64/libnsh.so" nsh/target/android/debug-dev/lib/x86_64/libnsh.so
+          ls -l "$runtime" "$runtime/lib/x86_64"
+          echo "NSH_RUNTIME=$RUNNER_TEMP/nsh-runtime" >> "$GITHUB_ENV"
+          df -h /
+      - name: Conformance on the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          NSH_DIR: ${{ github.workspace }}/nsh
+          GPUI_AGENT_CLI: ${{ github.workspace }}/target/debug/gpui-agent
+          GPUI_AGENT_ADDR: "127.0.0.1:17421"
+          GPUI_AGENT_REPLY_TIMEOUT_MS: "60000"
+          ARTIFACTS: ${{ runner.temp }}/android-conformance
+        with:
+          api-level: ${{ env.API_LEVEL }}
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disk-size: 16G
+          ram-size: 4096M
+          cores: 4
+          emulator-boot-timeout: 900
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          disable-animations: true
+          script: bash scripts/android-conformance.sh
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-conformance
+          path: ${{ runner.temp }}/android-conformance/
+          if-no-files-found: ignore

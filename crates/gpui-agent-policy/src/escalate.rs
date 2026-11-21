@@ -82,8 +82,8 @@ impl AbstainReport {
 }
 
 /// Try `local` first; on [`PolicyOutcome::Abstain`] call `fallback`
-/// exactly once (never on a local choice, never to re-score a winner).
-/// Port of `aui-policy/src/escalate.rs` (PRD M7.1).
+/// exactly once (never on a local choice, never to re-score a winner;
+/// PRD M7.1).
 pub struct EscalatingPolicy<L, H> {
     pub local: L,
     pub fallback: Option<H>,

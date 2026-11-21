@@ -1,7 +1,6 @@
 //! UI goal: consumer-owned natural-language intent.
 //!
-//! Port of `aui-policy/src/goal.rs` (AgentGoal + sequential clause
-//! split). Multi-step goals may use a minimal sequential form
+//! The goal type plus the sequential clause split. Multi-step goals may use a minimal sequential form
 //! ("type X then click Go"); only plain `then` / `and then`
 //! conjunctions outside quotes are split — no planner.
 

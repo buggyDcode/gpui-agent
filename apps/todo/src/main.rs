@@ -15,6 +15,9 @@ mod keybindings;
 #[cfg(feature = "embedded-host")]
 mod scrolled_shot;
 
+#[cfg(feature = "embedded-host")]
+mod tracked;
+
 #[cfg(not(feature = "embedded-host"))]
 mod daemon_bridge;
 

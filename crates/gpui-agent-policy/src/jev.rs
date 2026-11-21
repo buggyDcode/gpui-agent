@@ -5,8 +5,8 @@
 //! [`ActionSpace`]. The abstain is translated into System One's
 //! multi-question shape — one `operation` choice plus one
 //! `<kind>_target` choice per element-bearing operation, in a single
-//! `POST /v1/systemone` — the speculative fan-out port of
-//! `aui-cli/src/typesafe.rs`. Validated answers (offered key only,
+//! `POST /v1/systemone`, so every target head is answered speculatively
+//! alongside the operation head. Validated answers (offered key only,
 //! probabilities cover the offered set and sum ≈ 1, choice is argmax)
 //! are composed into the wire reply `{"choice":{"id","op"}}` and parsed
 //! by the same validator as the command endpoint.
@@ -43,7 +43,7 @@ chooses only a target for that operation; another question decides which operati
 Do not choose a field that already contains the requested value. Choose only an offered target id.";
 
 /// Kinds that bind an element or entity and therefore get a
-/// `<kind>_target` head (port of aui's ELEMENT_HEADS to our op set).
+/// `<kind>_target` head.
 const ELEMENT_KINDS: [ActionKind; 6] = [
     ActionKind::Click,
     ActionKind::Type,
@@ -78,11 +78,11 @@ fn head_name(kind: ActionKind) -> String {
     format!("{}_target", kind.as_str().to_lowercase())
 }
 
-/// `(state, questions)` for one System One call, plus the criteria key
-/// sets per head for answer validation (port of aui `BuiltQuestions`).
 /// One criterion key plus its optional payload for a choice head.
 type Criteria = Vec<(String, Option<JsonContent>)>;
 
+/// `(state, questions)` for one System One call, plus the criteria key
+/// sets per head for answer validation.
 struct BuiltQuestions {
     state: Value,
     questions: Vec<(String, Question)>,

@@ -1,5 +1,7 @@
 # Devin goal prompt: Instinct-backed gpui-agent
 
+> Historical note: the `aui-*` names in this dated plan are crates of hexuria/ultra-instinct used as a reference at the time; gpui-agent keeps its own policy and does not depend on them.
+
 Paste everything inside the fence below as the Devin session goal. It's written
 to run unattended from M0 through M8 and to survive session restarts.
 

@@ -1,6 +1,5 @@
-//! Integer evidence for gpui candidates — a port of
-//! `aui-policy/src/evidence.rs` onto `UiNode`-shaped targets. No floats,
-//! same thresholds: milli scores 0..=1000, exact-label saturation only,
+//! Integer evidence for gpui candidates, scored on `UiNode`-shaped
+//! targets. No floats: milli scores 0..=1000, exact-label saturation only,
 //! `NON_EXACT_CAP = 849`, `UNNAMED_OPERATION_CAP = 500`.
 //!
 //! A target's evidence text is its own `name` plus `role` — ancestor
@@ -826,7 +825,7 @@ pub(crate) fn fold(s: &str) -> String {
         .collect()
 }
 
-/// Lowercase alphanumeric tokens — port of `aui_core::tokenize`.
+/// Lowercase alphanumeric tokens, split on every non-alphanumeric char.
 pub(crate) fn tokenize(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut buf = String::new();
