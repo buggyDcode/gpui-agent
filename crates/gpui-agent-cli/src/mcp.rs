@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::Result;
 use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, KeybindingScope, Op};
-use gpui_agent::{CallFailure, error_code};
+use gpui_agent::{CallFailure, OutlineOptions, WaitFor, error_code};
 use gpui_agent::{MAX_LINE_BYTES, line_is_blank, read_limited_line_into};
 use gpui_agent_recipe::{
     RunError, ScreenshotCapture, compile_plan, parse_recipe_source, registry_from_schema_paths,
@@ -89,7 +89,7 @@ fn write_msg(stdout: &mut std::io::Stdout, value: Value) -> Result<()> {
 // Attach, detach and session listing are CLI-only: an MCP process already
 // holds one address and token for its lifetime.
 pub(crate) fn tools() -> Vec<Value> {
-    vec![
+    let mut tools = vec![
         tool(
             "wait",
             "Block until the host answers hello/ready.",
@@ -127,13 +127,15 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "snapshot",
-            "Read the semantic UI tree (stable ids, roles, names, state). Pass since=<rev> for a diff against a revision you already hold, format=compact for one line per visible node.",
+            "Read the semantic UI tree (stable ids, roles, names, state). Pass since=<rev> for a diff against a revision you already hold, format=compact for one line per visible node, depth and root for an outline of part of the tree.",
             json!({
                 "type": "object",
                 "properties": {
                     "since": { "type": "integer", "description": "Return only what changed since this snapshot revision." },
                     "format": { "type": "string", "enum": ["json", "compact"], "description": "json (default) is the full UiTree; compact is one line per visible node." },
-                    "fingerprints": { "type": "boolean", "description": "true adds an id→fingerprint map so callers can gate mutating ops with expect_fingerprint." }
+                    "fingerprints": { "type": "boolean", "description": "true adds an id→fingerprint map so callers can gate mutating ops with expect_fingerprint." },
+                    "depth": { "type": "integer", "minimum": 1, "description": "Keep this many levels (1 = the roots alone). A node whose children were cut reports children_count." },
+                    "root": { "type": "string", "description": "Keep only the subtree of this node id." }
                 }
             }),
         ),
@@ -377,8 +379,62 @@ pub(crate) fn tools() -> Vec<Value> {
                 "required": ["instruction"]
             }),
         ),
-    ]
+    ];
+    for tool in &mut tools {
+        let name = tool["name"].as_str().unwrap_or_default().to_owned();
+        let name = name.as_str();
+        if FINGERPRINTED_TOOLS.contains(&name) {
+            tool["inputSchema"]["properties"]["expect_fingerprint"] = json!({
+                "type": "integer",
+                "minimum": 0,
+                "description": "The target's fingerprint from snapshot fingerprints=true. The host refuses with stale_target, before acting, when the target changed since."
+            });
+        }
+        if ACTION_TOOLS.contains(&name) {
+            let properties = &mut tool["inputSchema"]["properties"];
+            properties["wait_for"] = json!({
+                "type": "string",
+                "description": "After the action, wait until this node id exists, then return the new tree in compact form as `compact`."
+            });
+            properties["wait_for_gone"] = json!({
+                "type": "string",
+                "description": "After the action, wait until this node id is gone, then return the new tree in compact form as `compact`."
+            });
+            properties["wait_timeout_ms"] = json!({
+                "type": "integer",
+                "description": "Bound for wait_for / wait_for_gone in milliseconds (default 5000)."
+            });
+        }
+    }
+    tools
 }
+
+/// Tools whose op carries `expect_fingerprint`.
+const FINGERPRINTED_TOOLS: &[&str] = &["click", "type", "set_value", "key"];
+
+/// Tools that act on the app, and so take `wait_for` / `wait_for_gone`.
+const ACTION_TOOLS: &[&str] = &[
+    "click",
+    "type",
+    "set_value",
+    "key",
+    "press",
+    "scroll",
+    "hover",
+    "drag",
+    "swipe",
+    "long_press",
+    "pinch",
+    "viewport",
+    "paste",
+    "system",
+    "keybinding",
+    "invoke",
+];
+
+/// The default bound of `wait_for` / `wait_for_gone`, as the CLI's
+/// `--wait-timeout-ms`.
+const DEFAULT_WAIT_TIMEOUT_MS: u64 = 5000;
 
 fn schema_arg() -> Value {
     json!({
@@ -435,6 +491,98 @@ fn read_back(args: &Value) -> bool {
         .get("no_read_back")
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+/// The optional `expect_fingerprint` of a guarded action.
+fn expect_fingerprint(args: &Value) -> Result<Option<u64>, String> {
+    match args.get("expect_fingerprint") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| "`expect_fingerprint` must be a non-negative integer".to_string()),
+    }
+}
+
+/// The optional `wait_for` / `wait_for_gone` of an action tool, with its
+/// bound.
+fn requested_wait(name: &str, args: &Value) -> Result<Option<(WaitFor, u64)>, String> {
+    let wait = match (
+        args.opt_string("wait_for"),
+        args.opt_string("wait_for_gone"),
+    ) {
+        (Some(_), Some(_)) => return Err("give wait_for or wait_for_gone, not both".into()),
+        (Some(id), None) => WaitFor::Present(id),
+        (None, Some(id)) => WaitFor::Gone(id),
+        (None, None) => {
+            if args.get("wait_timeout_ms").is_some() {
+                return Err("wait_timeout_ms needs wait_for or wait_for_gone".into());
+            }
+            return Ok(None);
+        }
+    };
+    if !ACTION_TOOLS.contains(&name) {
+        return Err(format!(
+            "wait_for and wait_for_gone follow an action tool ({}), not {name}",
+            ACTION_TOOLS.join(", ")
+        ));
+    }
+    let timeout_ms = match args.get("wait_timeout_ms") {
+        None => DEFAULT_WAIT_TIMEOUT_MS,
+        Some(value) => value
+            .as_u64()
+            .ok_or_else(|| "`wait_timeout_ms` must be a non-negative integer".to_string())?,
+    };
+    Ok(Some((wait, timeout_ms)))
+}
+
+/// `snapshot` with `depth` and/or `root`: the host's full tree cut in the
+/// client, as JSON (`tree` is the outline) or compact text.
+fn outline_snapshot(
+    client: &mut AgentClient,
+    args: &Value,
+    since: Option<u64>,
+    format: Option<gpui_agent::protocol::SnapshotFormat>,
+    fingerprints: bool,
+) -> Result<Value, String> {
+    if since.is_some() {
+        return Err(fail(CallFailure::with_code(
+            "depth and root cut a full snapshot; they do not apply to since",
+            error_code::BAD_REQUEST,
+            None,
+        )));
+    }
+    let mut options = OutlineOptions::new();
+    options.root = args.opt_string("root");
+    options.depth = match args.get("depth") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
+                .ok_or_else(|| "`depth` must be a positive integer".to_string())?,
+        ),
+    };
+    let mut resp = client
+        .expect_ok(Op::Snapshot {
+            since: None,
+            format: None,
+            fingerprints: fingerprints.then_some(true),
+        })
+        .map_err(fail_text)?;
+    let tree = resp.tree.take().ok_or("the reply carried no tree")?;
+    let outline = gpui_agent::outline(&tree, &options)
+        .map_err(|err| fail(CallFailure::with_code(err, error_code::BAD_REQUEST, None)))?;
+    if let Some(fps) = resp.fingerprints.as_mut() {
+        outline.retain_fingerprints(fps);
+    }
+    let mut value = serde_json::to_value(&resp).map_err(|err| err.to_string())?;
+    if matches!(format, Some(gpui_agent::protocol::SnapshotFormat::Compact)) {
+        value["result"] = json!({ "compact": outline.compact_lines() });
+    } else {
+        value["tree"] = serde_json::to_value(&outline).map_err(|err| err.to_string())?;
+    }
+    Ok(value)
 }
 
 /// A failed request as the tool error text: the same JSON envelope the
@@ -498,6 +646,7 @@ fn call_tool(
         .and_then(Value::as_str)
         .ok_or("missing tool name")?;
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
+    let wait = requested_wait(name, &args)?;
     let resp = match name {
         "wait" => {
             // The wait's bound holds for this call only: the tools after it
@@ -531,6 +680,9 @@ fn call_tool(
                 Some(other) => return Err(format!("unknown snapshot format {other}")),
             };
             let fingerprints = args.get("fingerprints").and_then(Value::as_bool);
+            if args.get("depth").is_some() || args.get("root").is_some() {
+                return outline_snapshot(client, &args, since, format, fingerprints == Some(true));
+            }
             if fingerprints == Some(true) {
                 client
                     .expect_ok(Op::Snapshot {
@@ -562,7 +714,7 @@ fn call_tool(
             let op = Op::Click {
                 target: args.string("target")?,
                 delivery: parse_delivery(&args)?,
-                expect_fingerprint: None,
+                expect_fingerprint: expect_fingerprint(&args)?,
             };
             client.act(&op, read_back(&args)).map_err(fail)?
         }
@@ -571,7 +723,7 @@ fn call_tool(
                 target: args.string("target")?,
                 text: args.string("text")?,
                 delivery: parse_delivery(&args)?,
-                expect_fingerprint: None,
+                expect_fingerprint: expect_fingerprint(&args)?,
             };
             client.act(&op, read_back(&args)).map_err(fail)?
         }
@@ -579,7 +731,7 @@ fn call_tool(
             let op = Op::SetValue {
                 target: args.string("target")?,
                 value: args.string("value")?,
-                expect_fingerprint: None,
+                expect_fingerprint: expect_fingerprint(&args)?,
             };
             client.act(&op, read_back(&args)).map_err(fail)?
         }
@@ -588,7 +740,7 @@ fn call_tool(
                 target: args.string("target")?,
                 key: args.string("key")?,
                 delivery: parse_delivery(&args)?,
-                expect_fingerprint: None,
+                expect_fingerprint: expect_fingerprint(&args)?,
             };
             client.act(&op, read_back(&args)).map_err(fail)?
         }
@@ -643,7 +795,14 @@ fn call_tool(
                 Value::Object(map) => map,
                 _ => return Err(format!("{name} takes an object")),
             };
-            wire.remove("no_read_back");
+            for key in [
+                "no_read_back",
+                "wait_for",
+                "wait_for_gone",
+                "wait_timeout_ms",
+            ] {
+                wire.remove(key);
+            }
             wire.insert("op".into(), json!(name));
             let op: Op = serde_json::from_value(Value::Object(wire))
                 .map_err(|err| format!("{name}: {err}"))?;
@@ -659,7 +818,25 @@ fn call_tool(
         "act" => return instinct::act_tool(client, &args, schema_paths),
         other => return Err(format!("unknown tool {other}")),
     };
-    serde_json::to_value(resp).map_err(|err| err.to_string())
+    let Some((wait, timeout_ms)) = wait else {
+        return serde_json::to_value(resp).map_err(|err| err.to_string());
+    };
+    // One call: the action, the wait for the state it should produce, and
+    // the tree that state shows, compact. A wait that fails reports the
+    // action's delivery status, since the action itself went through.
+    let reply_timeout = client.timeout();
+    client.set_timeout(wait_reply_timeout(reply_timeout, Some(timeout_ms)));
+    let waited = client.wait_after(&wait, timeout_ms);
+    client.set_timeout(reply_timeout);
+    let compact = waited.map_err(|failure| {
+        fail(CallFailure {
+            delivery_status: resp.delivery_status,
+            ..failure
+        })
+    })?;
+    let mut value = serde_json::to_value(resp).map_err(|err| err.to_string())?;
+    value["compact"] = json!(compact);
+    Ok(value)
 }
 
 fn recipe_text(args: &Value) -> Result<String, String> {
@@ -1568,6 +1745,215 @@ mod tests {
         assert!(!text.contains('\n'), "{text}");
         let value: Value = serde_json::from_str(text).unwrap();
         assert_eq!(serde_json::to_string(&value).unwrap(), text);
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[test]
+    fn guarded_and_waiting_tools_advertise_their_arguments() {
+        let tools = tools();
+        let props = |name: &str| {
+            tools
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap_or_else(|| panic!("no tool {name}"))["inputSchema"]["properties"]
+                .clone()
+        };
+        for name in FINGERPRINTED_TOOLS {
+            assert_eq!(
+                props(name)["expect_fingerprint"]["type"],
+                "integer",
+                "{name}"
+            );
+        }
+        for name in ACTION_TOOLS {
+            let props = props(name);
+            assert_eq!(props["wait_for"]["type"], "string", "{name}");
+            assert_eq!(props["wait_for_gone"]["type"], "string", "{name}");
+            assert_eq!(props["wait_timeout_ms"]["type"], "integer", "{name}");
+        }
+        assert!(props("snapshot").get("wait_for").is_none());
+        assert!(props("press").get("expect_fingerprint").is_none());
+        assert_eq!(props("snapshot")["depth"]["type"], "integer");
+        assert_eq!(props("snapshot")["root"]["type"], "string");
+    }
+
+    #[test]
+    fn expect_fingerprint_guards_each_target_tool() {
+        let (mut client, shutdown) = spawn_todo_client();
+        let snap = call_tool(
+            &mut client,
+            &json!({ "name": "snapshot", "arguments": { "fingerprints": true } }),
+            &[],
+        )
+        .unwrap();
+        let input = snap["fingerprints"]["todo-input"].as_u64().unwrap();
+        let add = snap["fingerprints"]["todo-add"].as_u64().unwrap();
+        for (name, args) in [
+            ("type", json!({ "target": "todo-input", "text": "x" })),
+            ("set_value", json!({ "target": "todo-input", "value": "x" })),
+            ("key", json!({ "target": "todo-input", "key": "Enter" })),
+            ("click", json!({ "target": "todo-add" })),
+        ] {
+            let mut stale = args.clone();
+            stale["expect_fingerprint"] = json!(u64::MAX);
+            let result = tools_call_result(
+                &mut client,
+                &json!({ "name": name, "arguments": stale }),
+                &[],
+            );
+            let envelope = tool_error_envelope(&result);
+            assert_eq!(envelope["error_code"], "stale_target", "{name}: {envelope}");
+            assert_eq!(envelope["delivery_status"], "not_delivered", "{name}");
+        }
+        let typed = call_tool(
+            &mut client,
+            &json!({
+                "name": "type",
+                "arguments": { "target": "todo-input", "text": "Milk", "expect_fingerprint": input }
+            }),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(typed["delivery_status"], "delivered_verified", "{typed}");
+        // The add button did not change, so its fingerprint still holds.
+        call_tool(
+            &mut client,
+            &json!({ "name": "click", "arguments": { "target": "todo-add", "expect_fingerprint": add } }),
+            &[],
+        )
+        .unwrap();
+        let bad = call_tool(
+            &mut client,
+            &json!({ "name": "click", "arguments": { "target": "todo-add", "expect_fingerprint": "1" } }),
+            &[],
+        )
+        .unwrap_err();
+        assert!(bad.contains("expect_fingerprint"), "{bad}");
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[test]
+    fn wait_for_returns_the_new_tree_in_one_call() {
+        let (mut client, shutdown) = spawn_todo_client();
+        let added = call_tool(
+            &mut client,
+            &json!({
+                "name": "invoke",
+                "arguments": { "name": "todo.add", "args": { "title": "Milk" }, "wait_for": "todo-item-1" }
+            }),
+            &[],
+        )
+        .unwrap();
+        let compact = added["compact"].as_str().unwrap();
+        assert!(
+            compact.contains("todo-item-1 listitem \"Milk\""),
+            "{compact}"
+        );
+
+        let gone = call_tool(
+            &mut client,
+            &json!({
+                "name": "invoke",
+                "arguments": { "name": "todo.delete", "args": { "id": 1 }, "wait_for_gone": "todo-item-1" }
+            }),
+            &[],
+        )
+        .unwrap();
+        assert!(!gone["compact"].as_str().unwrap().contains("todo-item-1"));
+
+        // The generic wire path drops the wait fields before decoding the op.
+        let scrolled = call_tool(
+            &mut client,
+            &json!({
+                "name": "set_value",
+                "arguments": { "target": "todo-input", "value": "x", "wait_for": "todo-input", "wait_timeout_ms": 500 }
+            }),
+            &[],
+        )
+        .unwrap();
+        assert!(
+            scrolled["compact"]
+                .as_str()
+                .unwrap()
+                .contains("value=\"x\""),
+            "{scrolled}"
+        );
+
+        let result = tools_call_result(
+            &mut client,
+            &json!({
+                "name": "paste",
+                "arguments": { "target": "todo-input", "text": "y", "wait_for": "todo-item-9", "wait_timeout_ms": 100 }
+            }),
+            &[],
+        );
+        let envelope = tool_error_envelope(&result);
+        assert_eq!(envelope["error_code"], "timeout", "{envelope}");
+        assert_eq!(
+            envelope["delivery_status"], "delivered_verified",
+            "{envelope}"
+        );
+
+        for (name, args) in [
+            ("snapshot", json!({ "wait_for": "a" })),
+            (
+                "click",
+                json!({ "target": "todo-add", "wait_for": "a", "wait_for_gone": "b" }),
+            ),
+            (
+                "click",
+                json!({ "target": "todo-add", "wait_timeout_ms": 5 }),
+            ),
+        ] {
+            let err = call_tool(
+                &mut client,
+                &json!({ "name": name, "arguments": args }),
+                &[],
+            )
+            .unwrap_err();
+            assert!(err.contains("wait"), "{name}: {err}");
+        }
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[test]
+    fn snapshot_depth_and_root_outline_the_tree() {
+        let (mut client, shutdown) = spawn_todo_client();
+        let one = call_tool(
+            &mut client,
+            &json!({ "name": "snapshot", "arguments": { "depth": 1, "fingerprints": true } }),
+            &[],
+        )
+        .unwrap();
+        let window = &one["tree"]["nodes"][0];
+        assert!(window.get("children").is_none(), "{window}");
+        assert!(window["children_count"].as_u64().unwrap() > 0, "{window}");
+        let fps = one["fingerprints"].as_object().unwrap();
+        assert_eq!(fps.len(), 1, "{fps:?}");
+
+        let page = call_tool(
+            &mut client,
+            &json!({ "name": "snapshot", "arguments": { "root": "todo-input", "format": "compact" } }),
+            &[],
+        )
+        .unwrap();
+        let compact = page["result"]["compact"].as_str().unwrap();
+        assert!(compact.starts_with("todo-input textbox"), "{compact}");
+        assert_eq!(compact.lines().count(), 1, "{compact}");
+
+        for args in [
+            json!({ "root": "nope" }),
+            json!({ "depth": 0 }),
+            json!({ "depth": 1, "since": 1 }),
+        ] {
+            let result = tools_call_result(
+                &mut client,
+                &json!({ "name": "snapshot", "arguments": args }),
+                &[],
+            );
+            let envelope = tool_error_envelope(&result);
+            assert_eq!(envelope["error_code"], "bad_request", "{args}: {envelope}");
+        }
         shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
