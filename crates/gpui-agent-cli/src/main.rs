@@ -1345,6 +1345,50 @@ mod tests {
     }
 
     #[test]
+    fn the_skill_documents_the_token_saving_options() {
+        let text = skill();
+        let cmd = Cli::command();
+        let snapshot = cmd.find_subcommand("snapshot").unwrap();
+        let flag = |cmd: &clap::Command, long: &str| {
+            cmd.get_arguments().any(|a| a.get_long() == Some(long))
+        };
+        for long in ["depth", "root", "fingerprints"] {
+            assert!(flag(snapshot, long), "snapshot --{long}");
+            assert!(
+                text.contains(&format!("--{long}")),
+                "the skill omits --{long}"
+            );
+        }
+        for long in ["guard", "wait-for", "wait-for-gone", "wait-timeout-ms"] {
+            assert!(flag(&cmd, long), "--{long}");
+            assert!(
+                text.contains(&format!("`--{long}")),
+                "the skill omits --{long}"
+            );
+        }
+        for action in ["click", "type", "set-value", "key", "press"] {
+            assert!(
+                flag(cmd.find_subcommand(action).unwrap(), "expect-fingerprint"),
+                "{action}"
+            );
+        }
+        assert!(text.contains("--expect-fingerprint"));
+        for arg in [
+            "depth",
+            "root",
+            "wait_for",
+            "wait_for_gone",
+            "wait_timeout_ms",
+            "expect_fingerprint",
+        ] {
+            assert!(
+                text.contains(&format!("`{arg}`")),
+                "the skill omits MCP {arg}"
+            );
+        }
+    }
+
+    #[test]
     fn skill_version_stamp_accepts_lf_and_crlf() {
         for text in [
             "---\nname: demo\n---\nbody\n",

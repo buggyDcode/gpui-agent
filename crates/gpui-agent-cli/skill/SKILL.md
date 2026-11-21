@@ -61,6 +61,25 @@ check a condition without reading the tree.
 
 Run `gpui-agent <command> --help` for the options of each.
 
+## Fewer calls and tokens
+
+- Read part of the tree: `snapshot --depth 2` keeps two levels, and a node
+  whose children were cut shows `children_count=N`. `snapshot --root <id|@ref>`
+  keeps one subtree. Both work with `--refs` and the JSON output.
+- Act and wait in one call: add `--wait-for <id>` (or `--wait-for-gone <id>`)
+  to any action. The reply carries the new tree in compact form as `compact`;
+  `--wait-timeout-ms` bounds the wait (default 5000).
+- Refuse a stale target: `snapshot --fingerprints` lists each node's
+  fingerprint; `click`, `type`, `set-value`, `key` and `press` take
+  `--expect-fingerprint <n>` and fail with `stale_target`, before acting, when
+  the node changed since. `snapshot --refs` saves each ref's fingerprint, and
+  `--guard` sends it whenever a command names an `@eN` ref. A fingerprint
+  covers the node's value, so take a new snapshot after changing a node before
+  guarding it again.
+- Over MCP the same arguments are `depth`, `root`, `wait_for`,
+  `wait_for_gone`, `wait_timeout_ms` and `expect_fingerprint`, and results are
+  compact JSON.
+
 ## What a host supports
 
 A host lists what it implements in `hello.features` (`gpui-agent hello`). An
