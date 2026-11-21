@@ -56,9 +56,9 @@ fn sensitive_field(role: &str, label: &str) -> bool {
     role.eq_ignore_ascii_case("password") || label.to_lowercase().contains("password")
 }
 
-/// How one clause runs (`Act` is the default; port of aui
-/// `clause_mode`'s act/wait subset — no `while`/`if present` modes:
-/// those exist for browser ad markers gpui has no concept of).
+/// How one clause runs (`Act` is the default). Only act and wait
+/// exist — no `while`/`if present` modes: gpui has no browser ad
+/// markers for them to wait out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ClauseMode {
     Act,
