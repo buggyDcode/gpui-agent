@@ -116,6 +116,36 @@ fn guard_sends_the_saved_fingerprint_of_a_ref() {
 }
 
 #[test]
+fn guard_does_not_use_a_wait_ref_for_a_plain_action_target() {
+    let todo = Todo::spawn(TOKEN);
+    let runtime = RuntimeRoot::new();
+    let outline = text(&cli(
+        &runtime,
+        &todo.addr,
+        &["snapshot", "--refs", "--fingerprints"],
+    ));
+    let input = ref_of(&outline, "textbox");
+
+    ok_json(&cli(
+        &runtime,
+        &todo.addr,
+        &["type", "todo-input", "before"],
+    ));
+    let result = ok_json(&cli(
+        &runtime,
+        &todo.addr,
+        &[
+            "--guard",
+            "--wait-for",
+            &input,
+            "click",
+            "todo-input",
+        ],
+    ));
+    assert_eq!(result["delivery_status"], "delivered_verified", "{result}");
+}
+
+#[test]
 fn wait_for_returns_the_new_tree_in_compact_form() {
     let todo = Todo::spawn(TOKEN);
     let runtime = RuntimeRoot::new();
