@@ -28,6 +28,7 @@ pub struct AgentClient {
     next_id: u64,
     session: Option<LiveSession>,
     features: Option<Vec<String>>,
+    refresh_features_on_reconnect: bool,
     as_written: bool,
 }
 
@@ -374,6 +375,7 @@ impl AgentClient {
             next_id: 1,
             session: None,
             features: None,
+            refresh_features_on_reconnect: false,
             as_written: false,
         }
     }
@@ -387,10 +389,9 @@ impl AgentClient {
         self
     }
 
-    /// Send capability-gated ops as written, without reading
-    /// `hello.features` first: no local refusal and no `invoke` spelling.
-    /// What comes back is the host's own answer, which is what a
-    /// conformance test of the host needs to see.
+    /// Send capability-gated ops as written, without local refusal or
+    /// `invoke` rewriting. After reconnecting, the client still refreshes
+    /// `hello.features` before parsing a reply.
     pub fn as_written(mut self) -> Self {
         self.as_written = true;
         self
@@ -638,9 +639,6 @@ impl AgentClient {
             if peer_closed {
                 self.drop_session();
             }
-            if self.session.is_none() {
-                self.features = None;
-            }
             let request = self
                 .negotiated(op, deadline)
                 .map_err(SendError::unsent)?
@@ -687,7 +685,6 @@ impl AgentClient {
             return Err(WireError::Unsent("operation deadline elapsed".into()));
         }
         if self.session.is_none() {
-            self.features = None;
             match LiveSession::open_until(self.addr, deadline, self.token.as_deref()) {
                 Ok(session) => self.session = Some(session),
                 Err(error) if Instant::now() >= deadline => {
@@ -710,6 +707,9 @@ impl AgentClient {
                     return Err(WireError::Retryable(error.to_string()));
                 }
             }
+        }
+        if self.refresh_features_on_reconnect && !matches!(op, Op::Hello) {
+            self.features().map_err(WireError::Unsent)?;
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -759,11 +759,13 @@ impl AgentClient {
             self.drop_session();
         }
         if self.session.is_none() {
-            self.features = None;
             match LiveSession::open_until(self.addr, connect_deadline, self.token.as_deref()) {
                 Ok(session) => self.session = Some(session),
                 Err(error) => return Err(WireError::Retryable(error)),
             }
+        }
+        if self.refresh_features_on_reconnect && !matches!(op, Op::Hello) {
+            self.features().map_err(WireError::Unsent)?;
         }
         let legacy_secret_redaction = self.legacy_secret_redaction();
         let result = self
@@ -832,7 +834,6 @@ impl AgentClient {
         reply_timeout: Duration,
     ) -> Result<Vec<Response>, WireError> {
         if self.session.is_none() {
-            self.features = None;
             match LiveSession::open_until(self.addr, connect_deadline, self.token.as_deref()) {
                 Ok(session) => self.session = Some(session),
                 Err(err) => return Err(WireError::Retryable(err)),
@@ -852,6 +853,9 @@ impl AgentClient {
                     return Err(WireError::Retryable(error.to_string()));
                 }
             }
+        }
+        if self.refresh_features_on_reconnect {
+            self.features().map_err(WireError::Unsent)?;
         }
         let legacy_secret_redaction = self.legacy_secret_redaction();
         let result = self.session.as_mut().expect("session").exchange_pipeline(
@@ -996,9 +1000,11 @@ impl AgentClient {
         Ok(bytes)
     }
 
-    /// A new connection may reach a different build of the host, so what
-    /// the last one advertised is forgotten with it.
+    /// Capabilities are re-read before parsing a response on a new connection.
     fn drop_session(&mut self) {
+        if self.session.is_some() {
+            self.refresh_features_on_reconnect = true;
+        }
         self.session = None;
         self.features = None;
     }
@@ -1019,6 +1025,7 @@ impl AgentClient {
                 .hello
                 .ok_or("hello has no info")?;
             self.features = Some(hello.features);
+            self.refresh_features_on_reconnect = false;
         }
         Ok(self.features.as_deref().unwrap_or_default())
     }
@@ -1205,6 +1212,7 @@ impl AgentClient {
                 return Err(hello.error.unwrap_or_else(|| "request failed".into()));
             }
             self.features = Some(hello.hello.ok_or("hello has no info")?.features);
+            self.refresh_features_on_reconnect = false;
         }
         let features = self.features.as_deref().unwrap_or_default();
         if features.iter().any(|f| f == feature) {
@@ -1894,6 +1902,176 @@ mod tests {
                 .map(|request| request["op"].as_str().unwrap())
                 .collect::<Vec<_>>(),
             ["hello", "snapshot", "snapshot", "snapshot"]
+        );
+    }
+
+    #[test]
+    fn pipeline_relearns_features_after_reconnect() {
+        fn read_request(reader: &mut BufReader<std::net::TcpStream>) -> serde_json::Value {
+            let mut line = String::new();
+            assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+            serde_json::from_str(&line).unwrap()
+        }
+
+        fn send_reply(
+            stream: &mut std::net::TcpStream,
+            request: &serde_json::Value,
+            mut reply: serde_json::Value,
+        ) {
+            reply["v"] = serde_json::json!(PROTOCOL_VERSION);
+            reply["id"] = request["id"].clone();
+            serde_json::to_writer(&mut *stream, &reply).unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut secret =
+            crate::tree::UiNode::new("secret", "textbox", "Password").with_value("•••••••");
+        secret.states.push("secret".into());
+        let secret_fingerprint = secret.fingerprint(None);
+        let plain = crate::tree::UiNode::new("plain", "button", "Submit");
+        let plain_fingerprint = plain.fingerprint(None);
+        let snapshot = serde_json::json!({
+            "ok": true,
+            "rev": 2,
+            "tree": {
+                "app": "modern",
+                "platform": "headless",
+                "ready": true,
+                "rev": 2,
+                "nodes": [
+                    {
+                        "id": "secret",
+                        "role": "textbox",
+                        "name": "Password",
+                        "value": "•••••••",
+                        "states": ["secret"],
+                        "enabled": true
+                    },
+                    {
+                        "id": "plain",
+                        "role": "button",
+                        "name": "Submit",
+                        "enabled": true
+                    }
+                ]
+            },
+            "fingerprints": {
+                "secret": secret_fingerprint,
+                "plain": plain_fingerprint
+            }
+        });
+        let server = thread::spawn(move || {
+            let mut ops = Vec::new();
+            {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let request = read_request(&mut reader);
+                assert_eq!(request["op"], "hello");
+                ops.push("hello".to_owned());
+                send_reply(
+                    &mut stream,
+                    &request,
+                    serde_json::json!({
+                        "ok": true,
+                        "hello": {
+                            "protocol": PROTOCOL_VERSION,
+                            "app": "modern",
+                            "platform": "headless",
+                            "ready": true,
+                            "features": ["secret_redaction"]
+                        }
+                    }),
+                );
+            }
+            {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let first = read_request(&mut reader);
+                ops.push(first["op"].as_str().unwrap().to_owned());
+                let mut snapshots_left = 2;
+                if first["op"] == "hello" {
+                    send_reply(
+                        &mut stream,
+                        &first,
+                        serde_json::json!({
+                            "ok": true,
+                            "hello": {
+                                "protocol": PROTOCOL_VERSION,
+                                "app": "modern",
+                                "platform": "headless",
+                                "ready": true,
+                                "features": ["secret_redaction"]
+                            }
+                        }),
+                    );
+                } else {
+                    assert_eq!(first["op"], "snapshot");
+                    send_reply(&mut stream, &first, snapshot.clone());
+                    snapshots_left -= 1;
+                }
+                while snapshots_left > 0 {
+                    let request = read_request(&mut reader);
+                    assert_eq!(request["op"], "snapshot");
+                    ops.push("snapshot".to_owned());
+                    send_reply(&mut stream, &request, snapshot.clone());
+                    snapshots_left -= 1;
+                }
+            }
+            ops
+        });
+
+        let mut client = client_for(addr).with_timeout(Duration::from_secs(2));
+        assert!(
+            client
+                .features()
+                .unwrap()
+                .iter()
+                .any(|feature| feature == "secret_redaction")
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let closed = client
+                .session
+                .as_ref()
+                .expect("hello opened a session")
+                .peer_closed();
+            if !matches!(closed, Ok(false)) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fake host did not close connection"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let op = Op::Snapshot {
+            since: None,
+            format: None,
+            fingerprints: Some(true),
+        };
+        let responses = client.rpc_pipeline(&[&op, &op]).unwrap();
+        assert_eq!(responses.len(), 2);
+        for response in responses {
+            let fingerprints = response.fingerprints.expect("fingerprints");
+            assert!(fingerprints.contains_key("secret"));
+            assert!(fingerprints.contains_key("plain"));
+        }
+        assert_eq!(
+            server.join().unwrap(),
+            vec!["hello", "hello", "snapshot", "snapshot"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
         );
     }
 

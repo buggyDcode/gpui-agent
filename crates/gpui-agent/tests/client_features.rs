@@ -292,6 +292,14 @@ fn zero_timeout_wait_reconnects_after_cached_session_closes() {
         let mut second_writer = accept_with_timeout(&listener);
         let mut second_reader = BufReader::new(second_writer.try_clone().unwrap());
         let request = read_request(&mut second_reader);
+        assert_eq!(request["op"], "hello");
+        respond(
+            &mut second_writer,
+            &request,
+            Some(hello(&["secret_redaction"])),
+        );
+
+        let request = read_request(&mut second_reader);
         assert_eq!(request["op"], "wait");
         assert_eq!(request["timeout_ms"], 0);
         respond(&mut second_writer, &request, None);
