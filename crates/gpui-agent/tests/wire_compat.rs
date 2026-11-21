@@ -149,6 +149,21 @@ fn response_bytes_are_pinned() {
     );
 }
 
+/// `error_code`, `hint`, `delivery_status` and `after` are additive: a
+/// reply without them parses, and a coded reply adds only the two fields.
+#[test]
+fn error_code_fields_are_additive() {
+    let old: Response =
+        serde_json::from_str(r#"{"v":2,"id":"1","ok":false,"error":"node `a` not found"}"#)
+            .unwrap();
+    assert!(old.error_code.is_none() && old.hint.is_none());
+    assert_eq!(old.code(), Some("not_found"));
+    assert_eq!(
+        serde_json::to_string(&Response::err_coded("1", "stale_target: `a` changed")).unwrap(),
+        r#"{"v":2,"id":"1","ok":false,"error":"stale_target: `a` changed","error_code":"stale_target","hint":"take a new snapshot and retry"}"#
+    );
+}
+
 #[test]
 fn legacy_clients_still_parse() {
     // v1 click: no delivery field, no `v` version bump required on read.

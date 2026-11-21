@@ -234,7 +234,15 @@ fn prepare_stream(stream: &TcpStream, idle: Duration) -> bool {
     stream.set_read_timeout(Some(idle)).is_ok() && stream.set_write_timeout(Some(idle)).is_ok()
 }
 
+/// Every reply leaves through here, so every failure the server sends
+/// carries its stable `error_code` and `hint`.
 fn write_resp(writer: &mut TcpStream, encode_buf: &mut Vec<u8>, resp: &Response) {
+    if !resp.ok && resp.error_code.is_none() {
+        let mut coded = resp.clone();
+        coded.fill_error_code();
+        let _ = write_json_line(writer, encode_buf, &coded);
+        return;
+    }
     let _ = write_json_line(writer, encode_buf, resp);
 }
 
@@ -1047,6 +1055,10 @@ mod tests {
             err_line.contains("bad json"),
             "HTTP line must be bad json, got {err_line}"
         );
+        assert!(
+            err_line.contains(r#""error_code":"bad_request""#),
+            "the server codes its own refusals: {err_line}"
+        );
         let auth = crate::hmac_auth::hmac_hex("secret", &nonce).unwrap();
         let hello = format!(r#"{{"v":{PROTOCOL_VERSION},"id":"1","auth":"{auth}","op":"hello"}}"#);
         let write_hello = writeln!(stream, "{hello}");
@@ -1056,6 +1068,32 @@ mod tests {
         assert!(
             closed && !second.contains("\"ok\":true"),
             "non-JSON after challenge must close; later HMAC must not be served: write={write_hello:?} read={n:?} {second:?}"
+        );
+        shutdown.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn dispatcher_errors_carry_error_code_and_hint() {
+        let (addr, shutdown) = spawn_test_host(None, ServerLimits::default());
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        writeln!(
+            stream,
+            r#"{{"v":{PROTOCOL_VERSION},"id":"1","op":"assert","target":"no-such-node"}}"#
+        )
+        .unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let resp: Response = serde_json::from_str(&line).unwrap();
+        assert!(!resp.ok, "{line}");
+        assert_eq!(resp.error_code.as_deref(), Some("not_found"), "{line}");
+        assert!(resp.hint.is_some(), "{line}");
+        assert!(
+            resp.delivery_status.is_none(),
+            "hosts never send it: {line}"
         );
         shutdown.store(true, Ordering::SeqCst);
     }

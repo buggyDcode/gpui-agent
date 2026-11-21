@@ -2,11 +2,13 @@ use std::io::{BufReader, ErrorKind, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
+use crate::error_code::{self, CallFailure, DeliveryStatus, error_code_of};
 use crate::hmac_auth::{hmac_hex, parse_challenge_line};
 use crate::mailbox::MAX_MAILBOX_DEPTH;
 use crate::ndjson::{read_limited_line_into, write_json_line};
 use crate::protocol::{
-    AssertSpec, DeliveryMode, Op, PROTOCOL_VERSION, Response, ScreenshotMode, SnapshotFormat,
+    AssertSpec, DeliveryMode, Op, PROTOCOL_VERSION, ReadBack, Response, ScreenshotMode,
+    SnapshotFormat,
 };
 use crate::server::{CLIENT_SESSION_IDLE_RECONNECT_AFTER, MAX_LINE_BYTES, default_addr};
 
@@ -233,6 +235,39 @@ enum WireError {
     Retryable(String),
     Fatal(String),
     NoReply(String),
+    /// Ran out of time before the request line was written: stop, but
+    /// nothing was sent.
+    Unsent(String),
+}
+
+/// A transport failure, and whether the request line may have reached the
+/// host. `sent: false` means nothing of the op was written, so it cannot
+/// have run.
+struct SendError {
+    message: String,
+    sent: bool,
+}
+
+impl SendError {
+    fn unsent(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            sent: false,
+        }
+    }
+
+    fn sent(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            sent: true,
+        }
+    }
+}
+
+impl From<SendError> for String {
+    fn from(err: SendError) -> Self {
+        err.message
+    }
 }
 
 fn pipeline_eof(partial: &[Response]) -> WireError {
@@ -399,7 +434,7 @@ impl AgentClient {
 
     /// Like [`rpc`](Self::rpc) but does not take ownership of `op`.
     pub fn rpc_op(&mut self, op: &Op) -> Result<Response, String> {
-        self.roundtrip_retry(op)
+        Ok(self.roundtrip_retry(op)?)
     }
 
     /// Write `ops` on the live session, then read one response each.
@@ -446,7 +481,7 @@ impl AgentClient {
         Ok(resp)
     }
 
-    fn roundtrip_retry(&mut self, op: &Op) -> Result<Response, String> {
+    fn roundtrip_retry(&mut self, op: &Op) -> Result<Response, SendError> {
         self.drop_idle_session();
         let timeout = self.timeout_for(op);
         let connect_deadline = Instant::now() + self.timeout;
@@ -459,7 +494,7 @@ impl AgentClient {
         connect_deadline: Instant,
         timeout: Duration,
         shared_deadline: Option<Instant>,
-    ) -> Result<Response, String> {
+    ) -> Result<Response, SendError> {
         let id_num = self.next_id;
         self.next_id += 1;
         let mut id_buf = [0u8; 20];
@@ -498,9 +533,12 @@ impl AgentClient {
                     self.drop_session();
                     sleep_before_retry(connect_deadline);
                 }
-                Err(WireError::Fatal(err)) => return Err(err),
+                Err(WireError::Fatal(err)) => return Err(SendError::sent(err)),
                 Err(WireError::NoReply(err)) => {
-                    return Err(no_answer(self.addr, timeout, &err));
+                    return Err(SendError::sent(no_answer(self.addr, timeout, &err)));
+                }
+                Err(WireError::Unsent(err)) => {
+                    return Err(SendError::unsent(no_answer(self.addr, timeout, &err)));
                 }
             }
         }
@@ -509,10 +547,14 @@ impl AgentClient {
         } else {
             self.timeout
         };
-        Err(no_answer(self.addr, retry_timeout, &last_err))
+        Err(SendError::unsent(no_answer(
+            self.addr,
+            retry_timeout,
+            &last_err,
+        )))
     }
 
-    fn roundtrip_gated_retry(&mut self, op: &Op) -> Result<Response, String> {
+    fn roundtrip_gated_retry(&mut self, op: &Op) -> Result<Response, SendError> {
         let timeout = self.timeout_for(op);
         let deadline = std::time::Instant::now() + timeout;
         let mut last_err = String::new();
@@ -528,10 +570,17 @@ impl AgentClient {
             if self.session.is_none() {
                 self.features = None;
             }
-            let request = self.negotiated(op, deadline)?.unwrap_or_else(|| op.clone());
+            let request = self
+                .negotiated(op, deadline)
+                .map_err(SendError::unsent)?
+                .unwrap_or_else(|| op.clone());
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
-                return Err(no_answer(self.addr, timeout, "operation timed out"));
+                return Err(SendError::unsent(no_answer(
+                    self.addr,
+                    timeout,
+                    "operation timed out",
+                )));
             }
             let id_num = self.next_id;
             self.next_id += 1;
@@ -544,13 +593,16 @@ impl AgentClient {
                     self.drop_session();
                     sleep_before_retry(deadline);
                 }
-                Err(WireError::Fatal(err)) => return Err(err),
+                Err(WireError::Fatal(err)) => return Err(SendError::sent(err)),
                 Err(WireError::NoReply(err)) => {
-                    return Err(no_answer(self.addr, remaining, &err));
+                    return Err(SendError::sent(no_answer(self.addr, remaining, &err)));
+                }
+                Err(WireError::Unsent(err)) => {
+                    return Err(SendError::unsent(no_answer(self.addr, remaining, &err)));
                 }
             }
         }
-        Err(no_answer(self.addr, timeout, &last_err))
+        Err(SendError::unsent(no_answer(self.addr, timeout, &last_err)))
     }
 
     fn roundtrip_wire(
@@ -561,14 +613,14 @@ impl AgentClient {
     ) -> Result<Response, WireError> {
         let timeout = deadline.saturating_duration_since(Instant::now());
         if timeout.is_zero() {
-            return Err(WireError::NoReply("operation deadline elapsed".into()));
+            return Err(WireError::Unsent("operation deadline elapsed".into()));
         }
         if self.session.is_none() {
             self.features = None;
             match LiveSession::open_until(self.addr, deadline, self.token.as_deref()) {
                 Ok(session) => self.session = Some(session),
                 Err(error) if Instant::now() >= deadline => {
-                    return Err(WireError::NoReply(error));
+                    return Err(WireError::Unsent(error));
                 }
                 Err(error) => return Err(WireError::Retryable(error)),
             }
@@ -591,7 +643,7 @@ impl AgentClient {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             self.drop_session();
-            return Err(WireError::NoReply("operation deadline elapsed".into()));
+            return Err(WireError::Unsent("operation deadline elapsed".into()));
         }
         self.session
             .as_mut()
@@ -684,7 +736,7 @@ impl AgentClient {
                         err
                     });
                 }
-                Err(WireError::NoReply(err)) => {
+                Err(WireError::NoReply(err) | WireError::Unsent(err)) => {
                     self.drop_session();
                     return Err(no_answer(self.addr, reply_timeout, &err));
                 }
@@ -891,10 +943,96 @@ impl AgentClient {
     /// (the recipe runner's receipts): `ok: false` is returned, not an `Err`.
     pub fn rpc_gated(&mut self, op: &Op) -> Result<Response, String> {
         if op.feature().is_some() {
-            self.roundtrip_gated_retry(op)
+            Ok(self.roundtrip_gated_retry(op)?)
         } else {
             self.rpc_op(op)
         }
+    }
+
+    /// Typed [`rpc_gated`](Self::rpc_gated): a host reply, `ok: false`
+    /// included, comes back as `Ok` with `error_code`/`hint` set and, for an
+    /// op that [acts](Op::acts), a `delivery_status`. A transport failure
+    /// is a [`CallFailure`] that says whether the request may have run.
+    pub fn call_response(&mut self, op: &Op) -> Result<Response, CallFailure> {
+        let sent = if op.feature().is_some() {
+            self.roundtrip_gated_retry(op)
+        } else {
+            self.roundtrip_retry(op)
+        };
+        let acts = op.acts();
+        match sent {
+            Ok(mut resp) => {
+                resp.fill_error_code();
+                if acts && resp.delivery_status.is_none() {
+                    resp.delivery_status = Some(match resp.code() {
+                        None => DeliveryStatus::DeliveredUnverified,
+                        Some(code) => DeliveryStatus::of_failure(code),
+                    });
+                }
+                Ok(resp)
+            }
+            Err(err) => Err(transport_failure(err, acts)),
+        }
+    }
+
+    /// [`call_response`](Self::call_response) that turns `ok: false` into
+    /// a [`CallFailure`] too.
+    pub fn call(&mut self, op: &Op) -> Result<Response, CallFailure> {
+        let resp = self.call_response(op)?;
+        if resp.ok {
+            Ok(resp)
+        } else {
+            Err(CallFailure::from_response(&resp, op.acts()))
+        }
+    }
+
+    /// [`call`](Self::call) for an action, with a read-back when
+    /// `read_back` is set and the op has a [target](Op::read_back_target):
+    /// the target is read before and after, the reply gets `after`, and
+    /// `delivery_status` becomes `delivered_verified` when the target
+    /// changed. On hosts that track revisions an unchanged `rev` skips the
+    /// second snapshot. A read-back that cannot be taken leaves the action's
+    /// own result as it was (`delivered_unverified`).
+    pub fn act(&mut self, op: &Op, read_back: bool) -> Result<Response, CallFailure> {
+        let Some(target) = op.read_back_target().filter(|_| read_back) else {
+            return self.call(op);
+        };
+        let target = target.to_string();
+        let before = match self.call_response(&Op::snapshot()) {
+            Ok(resp) => read_target(&resp, &target),
+            // Nothing of the action was written yet: report that instead
+            // of waiting out a second connect.
+            Err(failure) => {
+                return Err(CallFailure {
+                    delivery_status: op.acts().then_some(DeliveryStatus::NotDelivered),
+                    ..failure
+                });
+            }
+        };
+        let mut resp = self.call(op)?;
+        let Some((before_rev, before_state)) = before else {
+            return Ok(resp);
+        };
+        let unchanged_rev = before_rev.is_some_and(|rev| {
+            self.call_response(&Op::Revision)
+                .is_ok_and(|probe| probe.ok && probe.rev == Some(rev))
+        });
+        let after = if unchanged_rev {
+            Some(before_state.clone())
+        } else {
+            match self.call_response(&Op::snapshot()) {
+                Ok(snap) => read_target(&snap, &target).map(|(_, state)| state),
+                Err(_) => None,
+            }
+        };
+        if let Some(mut after) = after {
+            after.changed = after != before_state;
+            if after.changed {
+                resp.delivery_status = Some(DeliveryStatus::DeliveredVerified);
+            }
+            resp.after = Some(after);
+        }
+        Ok(resp)
     }
 
     /// `Some(invoke)` when the host needs the 0.1 spelling, `None` when
@@ -1079,11 +1217,65 @@ impl AgentClient {
     }
 }
 
+/// Classify a transport failure. Nothing written means `connect_failed`
+/// and `not_delivered`; a written request with no usable reply means
+/// `no_reply` and `delivery_uncertain`, unless the text names a refusal
+/// (an unauthenticated challenge, a client-side `unsupported_op`).
+fn transport_failure(err: SendError, acts: bool) -> CallFailure {
+    let mut code = error_code_of(&err.message);
+    if code == error_code::HOST_ERROR || (!err.sent && code == error_code::NO_REPLY) {
+        code = if err.sent {
+            error_code::NO_REPLY
+        } else {
+            error_code::CONNECT_FAILED
+        };
+    }
+    let delivery = if !err.sent || error_code::refused_before_dispatch(code) {
+        DeliveryStatus::NotDelivered
+    } else {
+        DeliveryStatus::DeliveryUncertain
+    };
+    CallFailure::with_code(err.message, code, acts.then_some(delivery))
+}
+
+/// The snapshot's revision and `target`'s state in it. `None` when the
+/// snapshot failed or the id is ambiguous, so there is nothing to compare.
+fn read_target(snap: &Response, target: &str) -> Option<(Option<u64>, ReadBack)> {
+    let tree = snap.tree.as_ref().filter(|_| snap.ok)?;
+    let rev = snap.rev.or(tree.rev);
+    let found = tree.find_all(target);
+    let state = match found.as_slice() {
+        [] => ReadBack {
+            exists: false,
+            value: None,
+            checked: None,
+            focused: None,
+            enabled: None,
+            changed: false,
+        },
+        [node] => ReadBack {
+            exists: true,
+            value: node.value.clone(),
+            checked: node.checked,
+            focused: Some(node.focused),
+            enabled: Some(node.enabled),
+            changed: false,
+        },
+        _ => return None,
+    };
+    Some((rev, state))
+}
+
 fn parse_response_line(line: &[u8]) -> Result<Response, String> {
     if parse_challenge_line(line).is_ok() {
         return Err("automation token required".into());
     }
-    serde_json::from_slice(line).map_err(|err| format!("bad response: {err}"))
+    let mut resp: Response =
+        serde_json::from_slice(line).map_err(|err| format!("bad response: {err}"))?;
+    // Hosts that predate `error_code` send only the prefixed text; classify
+    // it with the same table the server uses.
+    resp.fill_error_code();
+    Ok(resp)
 }
 
 #[cfg(test)]
@@ -1224,6 +1416,205 @@ mod tests {
         assert!(
             refused.starts_with("connect 127.0.0.1:17421 failed"),
             "{refused}"
+        );
+    }
+
+    /// One-connection fake host. Each entry answers one request line:
+    /// `Some(reply)` is sent with the request's id, `None` closes the
+    /// connection without replying. Returns the ops it read.
+    fn fake_host(
+        replies: Vec<Option<serde_json::Value>>,
+    ) -> (SocketAddr, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut ops = Vec::new();
+            for reply in replies {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                ops.push(request["op"].as_str().unwrap_or_default().to_string());
+                let Some(mut reply) = reply else {
+                    break;
+                };
+                reply["v"] = serde_json::json!(PROTOCOL_VERSION);
+                reply["id"] = request["id"].clone();
+                serde_json::to_writer(&mut stream, &reply).unwrap();
+                stream.write_all(b"\n").unwrap();
+                stream.flush().unwrap();
+            }
+            ops
+        });
+        (addr, server)
+    }
+
+    fn tree_with(value: &str, rev: u64) -> serde_json::Value {
+        serde_json::json!({
+            "ok": true,
+            "rev": rev,
+            "tree": {
+                "app": "fake",
+                "platform": "headless",
+                "ready": true,
+                "rev": rev,
+                "nodes": [{ "id": "a", "role": "textbox", "name": "A", "value": value, "enabled": true }]
+            }
+        })
+    }
+
+    fn client_for(addr: SocketAddr) -> AgentClient {
+        AgentClient::connect(addr).with_timeout(Duration::from_millis(600))
+    }
+
+    #[test]
+    fn nothing_listening_is_not_delivered() {
+        let addr = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let failure = client_for(addr).call(&Op::click("a")).unwrap_err();
+        assert_eq!(
+            failure.error_code,
+            error_code::CONNECT_FAILED,
+            "{failure:?}"
+        );
+        assert_eq!(failure.delivery_status, Some(DeliveryStatus::NotDelivered));
+        assert!(failure.hint.is_some());
+    }
+
+    #[test]
+    fn a_host_that_drops_after_the_write_is_delivery_uncertain() {
+        let (addr, server) = fake_host(vec![None]);
+        let failure = client_for(addr).call(&Op::click("a")).unwrap_err();
+        assert_eq!(server.join().unwrap(), ["click"]);
+        assert_eq!(failure.error_code, error_code::NO_REPLY, "{failure:?}");
+        assert_eq!(
+            failure.delivery_status,
+            Some(DeliveryStatus::DeliveryUncertain)
+        );
+    }
+
+    #[test]
+    fn host_replies_classify_delivery() {
+        let (addr, server) = fake_host(vec![
+            Some(serde_json::json!({ "ok": true })),
+            // A host that predates `error_code`: only the prefixed text.
+            Some(
+                serde_json::json!({ "ok": false, "error": "stale_target: `a` changed between snapshot and dispatch" }),
+            ),
+            Some(serde_json::json!({ "ok": false, "error": "cannot click `a`" })),
+            Some(serde_json::json!({ "ok": false, "error": "node `a` not found" })),
+        ]);
+        let mut client = client_for(addr);
+        let ok = client.call(&Op::click("a")).unwrap();
+        assert_eq!(
+            ok.delivery_status,
+            Some(DeliveryStatus::DeliveredUnverified)
+        );
+        assert_eq!(ok.error_code, None);
+
+        let stale = client.call(&Op::click("a")).unwrap_err();
+        assert_eq!(stale.error_code, error_code::STALE_TARGET);
+        assert_eq!(stale.hint.as_deref(), Some("take a new snapshot and retry"));
+        assert_eq!(stale.delivery_status, Some(DeliveryStatus::NotDelivered));
+
+        let mid_dispatch = client.call(&Op::click("a")).unwrap_err();
+        assert_eq!(mid_dispatch.error_code, error_code::HOST_ERROR);
+        assert_eq!(
+            mid_dispatch.delivery_status,
+            Some(DeliveryStatus::DeliveryUncertain)
+        );
+
+        // A read is not an action: code, but no delivery status.
+        let missing = client
+            .call(&Op::Assert {
+                spec: AssertSpec {
+                    target: "a".into(),
+                    name: None,
+                    value: None,
+                    role: None,
+                    checked: None,
+                    exists: None,
+                    visible: None,
+                    in_viewport: None,
+                },
+            })
+            .unwrap_err();
+        assert_eq!(missing.error_code, error_code::NOT_FOUND);
+        assert_eq!(missing.delivery_status, None);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn the_string_api_still_returns_old_host_errors_as_text() {
+        let (addr, server) = fake_host(vec![Some(
+            serde_json::json!({ "ok": false, "error": "target_gone: `a` is no longer in the tree" }),
+        )]);
+        let mut client = client_for(addr);
+        let resp = client.rpc(Op::click("a")).unwrap();
+        assert_eq!(resp.error_code.as_deref(), Some(error_code::TARGET_GONE));
+        assert_eq!(resp.delivery_status, None);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn read_back_verifies_a_changed_target() {
+        let (addr, server) = fake_host(vec![
+            Some(tree_with("x", 1)),
+            Some(serde_json::json!({ "ok": true })),
+            Some(serde_json::json!({ "ok": true, "rev": 2 })),
+            Some(tree_with("xy", 2)),
+        ]);
+        let resp = client_for(addr)
+            .act(&Op::type_text("a", "y"), true)
+            .unwrap();
+        assert_eq!(
+            server.join().unwrap(),
+            ["snapshot", "type", "revision", "snapshot"]
+        );
+        assert_eq!(
+            resp.delivery_status,
+            Some(DeliveryStatus::DeliveredVerified)
+        );
+        let after = resp.after.unwrap();
+        assert!(after.exists && after.changed);
+        assert_eq!(after.value.as_deref(), Some("xy"));
+        assert_eq!(after.enabled, Some(true));
+    }
+
+    #[test]
+    fn an_unchanged_revision_skips_the_second_snapshot() {
+        let (addr, server) = fake_host(vec![
+            Some(tree_with("x", 7)),
+            Some(serde_json::json!({ "ok": true })),
+            Some(serde_json::json!({ "ok": true, "rev": 7 })),
+        ]);
+        let resp = client_for(addr).act(&Op::click("a"), true).unwrap();
+        assert_eq!(server.join().unwrap(), ["snapshot", "click", "revision"]);
+        assert_eq!(
+            resp.delivery_status,
+            Some(DeliveryStatus::DeliveredUnverified)
+        );
+        let after = resp.after.unwrap();
+        assert!(after.exists && !after.changed);
+    }
+
+    #[test]
+    fn no_read_back_sends_only_the_action() {
+        let (addr, server) = fake_host(vec![Some(serde_json::json!({ "ok": true }))]);
+        let resp = client_for(addr).act(&Op::click("a"), false).unwrap();
+        assert_eq!(server.join().unwrap(), ["click"]);
+        assert!(resp.after.is_none());
+        assert_eq!(
+            resp.delivery_status,
+            Some(DeliveryStatus::DeliveredUnverified)
         );
     }
 }

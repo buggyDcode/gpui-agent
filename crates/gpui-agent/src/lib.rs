@@ -19,6 +19,7 @@ pub mod client;
 pub mod diff;
 pub mod discovery;
 pub mod dispatch;
+pub mod error_code;
 pub mod event;
 pub mod hmac_auth;
 pub mod host;
@@ -45,6 +46,7 @@ pub use dispatch::{
     DispatchResult, TreeCache, assert_tree, authorize_request, check_fingerprint_gate,
     handle_request, handle_request_cached,
 };
+pub use error_code::{CallFailure, DeliveryStatus, error_code_of, hint_for};
 pub use hmac_auth::{
     Challenge, challenge_for_nonce, hex_decode, hex_encode, hmac_hex, hmac_verify,
 };
@@ -59,7 +61,7 @@ pub use mailbox::{AgentMailbox, MAX_MAILBOX_DEPTH, MailboxRequest};
 pub use ndjson::{line_is_blank, read_limited_line, read_limited_line_into, write_json_line};
 pub use protocol::{
     AssertSpec, DeliveryMode, DeviceInfo, HelloAuth, HelloInfo, KeybindingScope, Op,
-    PROTOCOL_VERSION, PlatformKind, Request, Response, ScreenshotMode, SnapshotFormat,
+    PROTOCOL_VERSION, PlatformKind, ReadBack, Request, Response, ScreenshotMode, SnapshotFormat,
     SwipeDirection, SystemAction, UNSUPPORTED_OP, is_unsupported_op, unsupported_op,
 };
 pub use screenshot::{
