@@ -266,6 +266,21 @@ fn compact_node(node: &UiNode, depth: usize, out: &mut String) {
     if !node.visible {
         return;
     }
+    compact_line(node, depth, None, out);
+    for child in &node.children {
+        compact_node(child, depth + 1, out);
+    }
+}
+
+/// One compact line for `node` (visible or not), `depth` levels in.
+/// `children_count` is the number of children an outline cut
+/// ([`crate::outline`]).
+pub(crate) fn compact_line(
+    node: &UiNode,
+    depth: usize,
+    children_count: Option<usize>,
+    out: &mut String,
+) {
     for _ in 0..depth {
         out.push_str("  ");
     }
@@ -295,15 +310,15 @@ fn compact_node(node: &UiNode, depth: usize, out: &mut String) {
             flags.push(format!("value=\"{}\"", v.replace('"', "'")));
         }
     }
+    if let Some(count) = children_count {
+        flags.push(format!("children_count={count}"));
+    }
     if !flags.is_empty() {
         out.push_str("  [");
         out.push_str(&flags.join("|"));
         out.push(']');
     }
     out.push('\n');
-    for child in &node.children {
-        compact_node(child, depth + 1, out);
-    }
 }
 
 #[cfg(test)]
