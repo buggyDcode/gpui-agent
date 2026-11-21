@@ -108,7 +108,7 @@ fn build_questions(
                 let id = a.id().as_str();
                 // Region part after `KIND:` — entity ids keep their
                 // name (`INVOKE:todo.add` → `todo.add`).
-                let region = id.split_once(':').map(|(_, r)| r).unwrap_or(id);
+                let region = id.split_once(':').map_or(id, |(_, r)| r);
                 let mut element = Map::new();
                 element.insert(
                     "element".to_owned(),
@@ -275,16 +275,32 @@ pub struct JevEscalation {
     model: Option<String>,
 }
 
+impl std::fmt::Debug for JevEscalation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JevEscalation")
+            .field("model", &self.model)
+            .finish_non_exhaustive()
+    }
+}
+
 impl JevEscalation {
     /// `TYPESAFE_API_KEY` (required), `TYPESAFE_MODEL` (optional);
     /// `TYPESAFE_BASE_URL` / `TYPESAFE_DEFAULT_MODEL` are read by the
     /// SDK builder.
+    ///
+    /// # Errors
+    /// A message when `TYPESAFE_API_KEY` is unset or the client fails
+    /// to build.
     pub fn from_env() -> Result<Self, String> {
         let key = std::env::var("TYPESAFE_API_KEY")
             .map_err(|_| "--escalate jev requires TYPESAFE_API_KEY".to_owned())?;
         Self::with_key(&key)
     }
 
+    /// Build the escalation from an explicit API key.
+    ///
+    /// # Errors
+    /// A message when the client fails to build.
     pub fn with_key(key: &str) -> Result<Self, String> {
         let client = Client::builder()
             .api_key(key)
@@ -663,7 +679,7 @@ mod tests {
     #[test]
     fn choose_sends_state_questions_and_model() {
         let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        let base = mock_system_one(captured.clone());
+        let base = mock_system_one(std::sync::Arc::clone(&captured));
         let client = Client::builder()
             .api_key("k")
             .base_url(base)
