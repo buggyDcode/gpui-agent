@@ -78,7 +78,7 @@ is the old reconnect path for benches). It is not a new wire `op`.
 `recipe run --screenshot-dir` issues extra `screenshot` ops after steps
 so an agent can visually check UI state mid-run. Headless stays honest.
 macOS **embedded-host** writes the app window. Details:
-[RECORDING.md](RECORDING.md) and [TRY_ON_MAC.md](TRY_ON_MAC.md).
+[RECORDING.md](RECORDING.md).
 
 ## Response
 

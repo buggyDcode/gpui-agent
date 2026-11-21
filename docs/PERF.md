@@ -1,6 +1,6 @@
 # Performance notes
 
-P0 of the [no-brainer plan](NO_BRAINER_PLAN.md): session reuse, NDJSON
+Session reuse, NDJSON
 buffer reuse, tree flatten, mailbox `take`. Recipes reuse that session;
 all-Read DAG waves may `rpc_pipeline` (write N lines, then read). Write /
 Exit / mixed waves stay sequential.

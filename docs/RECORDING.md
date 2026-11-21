@@ -31,7 +31,6 @@ Do not put tokens, passwords, or CI secrets in the painted window.
 `snapshot` already returns field `value`s (SECURITY M3); a PNG is the
 same class of local observation. See [SECURITY.md](SECURITY.md).
 
-Laptop steps: [TRY_ON_MAC.md](TRY_ON_MAC.md#8-step-screenshots).
 
 ## Scrolled screenshots (`mode=scrolled`)
 

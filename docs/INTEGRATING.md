@@ -5,7 +5,7 @@ The CLI does **not** attach to an arbitrary GPUI Kit process. You embed
 
 `gpui-agent` is a **generic** control plane. Your app supplies the
 semantic tree and action handlers; the CLI/MCP never learn your domain.
-Cookbook and `TestHost`: [SDK.md](SDK.md). Sync model: [ADR-001](ADR-001-daemon-sot.md).
+Cookbook and `TestHost`: [SDK.md](SDK.md).
 
 ## 1. Opt in
 
@@ -208,7 +208,7 @@ reuses a single TCP session across `tools/call`.
 - [ ] Optional `invoke` map documented for agents
 - [ ] Optional: check in a JSON `recipe` of those ops so agents run one
       CLI invocation instead of one process per click
-      ([RECIPES.md](RECIPES.md); laptop verify: [TRY_ON_MAC.md](TRY_ON_MAC.md)).
+      ([RECIPES.md](RECIPES.md)).
       `invoke` names in the recipe must match the host allow-list;
       shutdown recipes need `--yes`. Optional `--screenshot-dir` is
       observe-only; headless / Linux / Windows stay

@@ -9,12 +9,9 @@ plan and runs with **one CLI (or MCP) invocation** — one process, one
 TCP session, many ops — instead of a tool round-trip per action.
 
 **Canonical format: JSON.** Line-based `.wants` is still accepted as a
-thin alias. Laptop (pull + run only): [TRY_ON_MAC.md](TRY_ON_MAC.md).
+thin alias.
 Threat model vs PR #3 caps: [SECURITY.md](SECURITY.md#recipes-experimental).
 Wire ops stay one NDJSON request each: [PROTOCOL.md](PROTOCOL.md).
-Roadmap: [NO_BRAINER_PLAN.md](NO_BRAINER_PLAN.md) (P0–P5 are on `main`,
-including **P3** Mac window PNG [#20](https://github.com/hexuria/gpui-agent/pull/20)
-and **P4** CI recipe receipt [#21](https://github.com/hexuria/gpui-agent/pull/21)).
 
 ## What was borrowed
 
@@ -406,11 +403,8 @@ crates/gpui-agent          Session reuse, ndjson buffers, tree/mailbox, screensh
 crates/gpui-agent-cli      experimental recipe validate|plan|run|resolve + MCP tools
 examples/recipes/          Sample todo CRUD (JSON canonical + .wants alias)
 docs/RECIPES.md            This note
-docs/TRY_ON_MAC.md         Pull + run recipes on a laptop (headless first)
-docs/RECORDING.md          PNG vs --record (P3)
+docs/RECORDING.md          PNG vs --record
 docs/SECURITY.md           Caps + recipe threat model
-docs/NO_BRAINER_PLAN.md    P0–P5 roadmap
 .github/workflows/ci.yml   Headless cargo test + recipe receipt
 scripts/ci-recipe.sh       Local/CI recipe receipt assert
-docs/STACK_HYGIENE.md      Leftover #4/#5 closed without merge
 ```
