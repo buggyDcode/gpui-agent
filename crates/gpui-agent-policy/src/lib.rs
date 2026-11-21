@@ -1,10 +1,10 @@
 //! Deterministic, local policy for `gpui-agent` — Instinct-backed.
 //!
-//! Same architecture as aui's `observe → action-space → policy → gate`
-//! loop, minus the browser: an intent or goal is scored against a closed
-//! menu of candidates, [`arbitration::choose`] gates it through Instinct
-//! (`CandidateSet` + `Scores` + `arbitrate`), and an `Abstain` answer
-//! can never be dispatched. No floats in the decision path, no network,
+//! The loop is `observe → action-space → policy → gate`: an intent or
+//! goal is scored against a closed menu of candidates,
+//! [`arbitration::choose`] gates it through Instinct (`CandidateSet` +
+//! `Scores` + `arbitrate`), and an `Abstain` answer can never be
+//! dispatched. No floats in the decision path, no network,
 //! no model — deterministic decisions in microseconds.
 //!
 //! The `jev` feature is the one carve-out: it adds a blocking System One
@@ -12,20 +12,27 @@
 //! post-decision verification only, never inside local scoring, and it
 //! can only select among offered ids or fail closed as `Blocked`.
 //!
-//! `evidence` is a port of `aui-policy/src/evidence.rs`: integer milli
-//! scores (`0..=1000`), exact-label saturation, `NON_EXACT_CAP`,
+//! `evidence` scores candidates with integer milli scores
+//! (`0..=1000`), exact-label saturation, `NON_EXACT_CAP`,
 //! `UNNAMED_OPERATION_CAP`, and `target_phrase` (goal minus quoted
 //! payload, leading verb, connectives). A target's evidence text is its
 //! own `name` + `role` — ancestor names are not concatenated.
 //!
 //! `action_space`/`policy`/`text`/`goal` are the M4 observe → decide
 //! surface: `ActionSpace::from_tree` maps a `UiTree` into offered
-//! actions, `UiPolicy`/`InstinctPolicy` is the two-head decide ported
-//! from `aui-policy/src/instinct_policy.rs`, `TextResolver` supplies
+//! actions, `UiPolicy`/`InstinctPolicy` is the two-head decide
+//! (operation, then target), `TextResolver` supplies
 //! TYPE/SET_VALUE payloads, and `split_sequential_clauses` cuts
 //! `then`/`and then` goals into single intents. `escalate` (M7) adds an
 //! optional abstain-only fallback over a closed command wire — the
 //! local policy still decides first and an abstain is never re-scored.
+//!
+//! # Policy
+//!
+//! gpui-agent keeps its own policy: everything above lives in this
+//! crate. It shares only the Instinct libraries `instinct-core`,
+//! `instinct-text` and `instinct-lexicon` from crates.io, and does not
+//! depend on ultra-instinct or any of its crates.
 #![forbid(unsafe_code)]
 
 pub mod action_space;

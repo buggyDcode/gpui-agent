@@ -1,5 +1,7 @@
 # PRD: Instinct-backed gpui-agent — faster, cheaper, still accurate
 
+> Historical note: the `aui-*` names in this dated plan are crates of hexuria/ultra-instinct used as a reference at the time; gpui-agent keeps its own policy and does not depend on them.
+
 - **Status:** Approved for execution · **Date:** 2026-10-17 · **Owner:** codeitlikemiley
 - **Executor:** Devin (autonomous). Use the goal prompt in
   [`2026-10-17-instinct-devin-goal.md`](2026-10-17-instinct-devin-goal.md).
