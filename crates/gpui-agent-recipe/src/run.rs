@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use gpui_agent::client::AgentClient;
+use gpui_agent::error_code_of;
 use gpui_agent::protocol::Op;
 use thiserror::Error;
 
@@ -106,6 +107,7 @@ pub fn run_plan_with_screenshots(
                     for (step, resp) in wave_steps.iter().zip(resps) {
                         let ok = resp.ok;
                         let error = resp.error.clone();
+                        let error_code = resp.code().map(str::to_string);
                         if !ok && failed.is_none() {
                             failed = Some((
                                 step.id.clone(),
@@ -116,6 +118,9 @@ pub fn run_plan_with_screenshots(
                             id: step.id.clone(),
                             ok,
                             error,
+                            error_code,
+                            // Pipelined waves are read-only: nothing to deliver.
+                            delivery_status: None,
                             elapsed_ms: elapsed,
                             result: resp.result,
                             screenshot: None,
@@ -138,6 +143,8 @@ pub fn run_plan_with_screenshots(
                     receipt.steps.push(StepReceipt {
                         id: first.id.clone(),
                         ok: false,
+                        error_code: Some(error_code_of(&error).to_string()),
+                        delivery_status: None,
                         error: Some(error.clone()),
                         elapsed_ms: step_started.elapsed().as_millis() as u64,
                         result: None,
@@ -157,11 +164,12 @@ pub fn run_plan_with_screenshots(
         for step in wave_steps {
             let step_started = Instant::now();
             shot_index += 1;
-            match client.rpc_gated(&step.op) {
+            match client.call_response(&step.op) {
                 Ok(resp) => {
                     receipt.session_reused = client.has_session();
                     let ok = resp.ok;
                     let error = resp.error.clone();
+                    let error_code = resp.code().map(str::to_string);
                     let screenshot = capture_screenshot(client, screenshots, shot_index, step);
                     if let Some(shot) = screenshot.clone() {
                         receipt.screenshots.push(shot);
@@ -170,6 +178,8 @@ pub fn run_plan_with_screenshots(
                         id: step.id.clone(),
                         ok,
                         error: error.clone(),
+                        error_code,
+                        delivery_status: resp.delivery_status,
                         elapsed_ms: step_started.elapsed().as_millis() as u64,
                         result: resp.result,
                         screenshot,
@@ -184,7 +194,8 @@ pub fn run_plan_with_screenshots(
                         });
                     }
                 }
-                Err(error) => {
+                Err(failure) => {
+                    let error = failure.error;
                     receipt.ok = false;
                     receipt.session_reused = client.has_session();
                     let screenshot = capture_screenshot(client, screenshots, shot_index, step);
@@ -195,6 +206,8 @@ pub fn run_plan_with_screenshots(
                         id: step.id.clone(),
                         ok: false,
                         error: Some(error.clone()),
+                        error_code: Some(failure.error_code),
+                        delivery_status: failure.delivery_status,
                         elapsed_ms: step_started.elapsed().as_millis() as u64,
                         result: None,
                         screenshot,

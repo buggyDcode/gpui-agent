@@ -397,6 +397,18 @@ invoke todo.toggle id=1
             assert!(receipt.steps[0].ok, "{receipt:?}");
             assert!(receipt.steps[1].ok, "{receipt:?}");
             assert!(!receipt.steps[2].ok, "{receipt:?}");
+            // The invoke acted and was answered; the assert is a read.
+            assert_eq!(
+                receipt.steps[1].delivery_status,
+                Some(gpui_agent::DeliveryStatus::DeliveredUnverified),
+                "{receipt:?}"
+            );
+            assert_eq!(
+                receipt.steps[2].error_code.as_deref(),
+                Some("assert_failed"),
+                "{receipt:?}"
+            );
+            assert_eq!(receipt.steps[2].delivery_status, None, "{receipt:?}");
         }
         other => panic!("unexpected {other}"),
     }
@@ -419,6 +431,11 @@ fn host_down_fails_without_running_later_steps() {
             assert!(!receipt.ok);
             assert_eq!(receipt.steps.len(), 1);
             assert!(!receipt.steps[0].ok);
+            assert_eq!(
+                receipt.steps[0].error_code.as_deref(),
+                Some("connect_failed"),
+                "{receipt:?}"
+            );
             assert!(
                 error.contains("connect") || error.contains("Connection refused"),
                 "{error}"

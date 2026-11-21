@@ -1,3 +1,4 @@
+use gpui_agent::DeliveryStatus;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,6 +19,12 @@ pub struct StepReceipt {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Stable code of a failed step ([`gpui_agent::error_code`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    /// Whether a step that acts reached the app; absent on reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_status: Option<DeliveryStatus>,
     pub elapsed_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,

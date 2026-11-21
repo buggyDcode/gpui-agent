@@ -216,7 +216,7 @@ pattern). That pays process + TCP handshake every time.
 | `recipe` | Recipe name |
 | `fingerprint` | Hash of the compiled plan (`DefaultHasher` — fine in one process, not a cross-version lock) |
 | `session_reused` | `AgentClient` still held a live TCP session after the last step |
-| `steps[]` | Per-step `id` / `ok` / `error` / `elapsed_ms` / `result` / optional `screenshot` |
+| `steps[]` | Per-step `id` / `ok` / `error` / `elapsed_ms` / `result` / optional `screenshot`; a failed step adds its stable `error_code`, and a step that acts adds `delivery_status` (`not_delivered`, `delivery_uncertain`, `delivered_unverified`) |
 | `screenshots[]` | Intended PNG paths (`path` / `ok` / `error`). Unavailable hosts do not fake a file. |
 | `elapsed_ms` | Wall time for the run |
 
