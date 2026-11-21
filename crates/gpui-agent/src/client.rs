@@ -112,7 +112,12 @@ impl LiveSession {
         }
     }
 
-    fn exchange_wire(&mut self, id: &str, op: &Op) -> Result<Response, WireError> {
+    fn exchange_wire(
+        &mut self,
+        id: &str,
+        op: &Op,
+        legacy_secret_redaction: bool,
+    ) -> Result<Response, WireError> {
         let req = WireRequest {
             v: PROTOCOL_VERSION,
             id,
@@ -137,7 +142,7 @@ impl LiveSession {
             }
             Err(err) => return Err(WireError::Fatal(err.to_string())),
         }
-        parse_response_line(&self.line_buf).map_err(WireError::Fatal)
+        parse_response_line(&self.line_buf, legacy_secret_redaction).map_err(WireError::Fatal)
     }
 
     fn exchange_wire_with_timeouts(
@@ -146,6 +151,7 @@ impl LiveSession {
         op: &Op,
         write_deadline: Instant,
         reply_timeout: Duration,
+        legacy_secret_redaction: bool,
     ) -> Result<Response, WireError> {
         let write_timeout = write_deadline.saturating_duration_since(Instant::now());
         if write_timeout.is_zero() {
@@ -160,7 +166,7 @@ impl LiveSession {
             .get_ref()
             .set_read_timeout(Some(reply_timeout))
             .map_err(|err| WireError::Retryable(err.to_string()))?;
-        self.exchange_wire(id, op)
+        self.exchange_wire(id, op, legacy_secret_redaction)
     }
 
     /// Write every request line, flush once, then read one response each.
@@ -174,6 +180,7 @@ impl LiveSession {
         ops: &[&Op],
         write_deadline: Instant,
         reply_timeout: Duration,
+        legacy_secret_redaction: bool,
     ) -> Result<Vec<Response>, WireError> {
         self.reader
             .get_ref()
@@ -223,7 +230,10 @@ impl LiveSession {
                 Ok(false) => return Err(pipeline_eof(&out)),
                 Err(err) => return Err(WireError::Fatal(err.to_string())),
             }
-            out.push(parse_response_line(&self.line_buf).map_err(WireError::Fatal)?);
+            out.push(
+                parse_response_line(&self.line_buf, legacy_secret_redaction)
+                    .map_err(WireError::Fatal)?,
+            );
         }
         Ok(out)
     }
@@ -465,7 +475,7 @@ impl AgentClient {
         let mut force_full = Vec::with_capacity(ops.len());
         let mut prepared = Vec::with_capacity(ops.len());
         for op in ops {
-            let (op, full) = self.prepare_legacy_snapshot_since(op)?;
+            let (op, full) = self.prepare_snapshot_op(op)?;
             prepared.push(op);
             force_full.push(full);
         }
@@ -497,9 +507,7 @@ impl AgentClient {
 
     fn roundtrip_retry(&mut self, op: &Op) -> Result<Response, SendError> {
         self.drop_idle_session();
-        let (op, force_full) = self
-            .prepare_legacy_snapshot_since(op)
-            .map_err(SendError::unsent)?;
+        let (op, force_full) = self.prepare_snapshot_op(op).map_err(SendError::unsent)?;
         let timeout = self.timeout_for(&op);
         let connect_deadline = Instant::now() + self.timeout;
         let mut response = self.roundtrip_retry_until(&op, connect_deadline, timeout, None)?;
@@ -509,30 +517,46 @@ impl AgentClient {
         Ok(response)
     }
 
-    fn prepare_legacy_snapshot_since(&mut self, op: &Op) -> Result<(Op, bool), String> {
+    fn prepare_snapshot_op(&mut self, op: &Op) -> Result<(Op, bool), String> {
         let Op::Snapshot {
-            since: Some(_),
+            since,
+            format,
             fingerprints,
-            ..
         } = op
         else {
             return Ok((op.clone(), false));
         };
+        if since.is_none() && *fingerprints != Some(true) {
+            return Ok((op.clone(), false));
+        }
         let secret_redaction = self
             .features()?
             .iter()
             .any(|feature| feature == "secret_redaction");
-        if secret_redaction {
+        if secret_redaction || since.is_none() {
             return Ok((op.clone(), false));
         }
         Ok((
             Op::Snapshot {
                 since: None,
-                format: None,
+                format: if format == &Some(SnapshotFormat::Compact) {
+                    None
+                } else {
+                    *format
+                },
                 fingerprints: *fingerprints,
             },
             true,
         ))
+    }
+
+    fn legacy_secret_redaction(&self) -> bool {
+        !self
+            .features
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .any(|feature| feature == "secret_redaction")
     }
 
     fn roundtrip_retry_until(
@@ -697,11 +721,12 @@ impl AgentClient {
             .expect("session")
             .set_io_timeout(remaining)
             .map_err(WireError::Retryable)?;
+        let legacy_secret_redaction = self.legacy_secret_redaction();
         let result = self
             .session
             .as_mut()
             .expect("session")
-            .exchange_wire(id, op);
+            .exchange_wire(id, op, legacy_secret_redaction);
         match result {
             Ok(resp) => {
                 self.session.as_mut().expect("session").last_used = Instant::now();
@@ -740,11 +765,18 @@ impl AgentClient {
                 Err(error) => return Err(WireError::Retryable(error)),
             }
         }
+        let legacy_secret_redaction = self.legacy_secret_redaction();
         let result = self
             .session
             .as_mut()
             .expect("session")
-            .exchange_wire_with_timeouts(id, op, connect_deadline, reply_timeout);
+            .exchange_wire_with_timeouts(
+                id,
+                op,
+                connect_deadline,
+                reply_timeout,
+                legacy_secret_redaction,
+            );
         match result {
             Ok(resp) => {
                 self.session.as_mut().expect("session").last_used = Instant::now();
@@ -821,11 +853,13 @@ impl AgentClient {
                 }
             }
         }
+        let legacy_secret_redaction = self.legacy_secret_redaction();
         let result = self.session.as_mut().expect("session").exchange_pipeline(
             start_id,
             ops,
             connect_deadline,
             reply_timeout,
+            legacy_secret_redaction,
         );
         match result {
             Ok(resps) => {
@@ -1031,23 +1065,6 @@ impl AgentClient {
         match sent {
             Ok(mut resp) => {
                 resp.fill_error_code();
-                if resp.fingerprints.is_some() {
-                    let supports_secret_redaction = if matches!(op, Op::Hello) {
-                        resp.hello.as_ref().is_some_and(|hello| {
-                            hello
-                                .features
-                                .iter()
-                                .any(|feature| feature == "secret_redaction")
-                        })
-                    } else {
-                        self.features().is_ok_and(|features| {
-                            features.iter().any(|feature| feature == "secret_redaction")
-                        })
-                    };
-                    if !supports_secret_redaction {
-                        drop_legacy_secret_fingerprints(&mut resp);
-                    }
-                }
                 if acts && resp.delivery_status.is_none() {
                     resp.delivery_status = Some(match resp.code() {
                         None => DeliveryStatus::DeliveredUnverified,
@@ -1435,7 +1452,10 @@ fn read_target(snap: &Response, target: &str) -> Option<(Option<u64>, Target)> {
     Some((rev, state))
 }
 
-fn parse_response_line(line: &[u8]) -> Result<Response, String> {
+fn parse_response_line(
+    line: &[u8],
+    legacy_secret_redaction: bool,
+) -> Result<Response, String> {
     if parse_challenge_line(line).is_ok() {
         return Err("automation token required".into());
     }
@@ -1448,6 +1468,9 @@ fn parse_response_line(line: &[u8]) -> Result<Response, String> {
     // arrival, so no output built from this tree can show one.
     if let Some(tree) = resp.tree.as_mut() {
         tree.redact_secrets();
+    }
+    if legacy_secret_redaction {
+        drop_legacy_secret_fingerprints(&mut resp);
     }
     Ok(resp)
 }
@@ -1739,6 +1762,89 @@ mod tests {
         (addr, server)
     }
 
+    fn legacy_fingerprint_host(
+        snapshots: usize,
+    ) -> (SocketAddr, thread::JoinHandle<Vec<serde_json::Value>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut secret = crate::tree::UiNode::new("secret", "textbox", "Password")
+            .with_value("hunter2");
+        secret.states.push("secret".into());
+        let raw_fingerprint = secret.fingerprint(None);
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut requests = Vec::new();
+            for _ in 0..=snapshots {
+                let mut line = String::new();
+                assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                requests.push(request.clone());
+                let response = match request["op"].as_str() {
+                    Some("hello") => serde_json::json!({
+                        "ok": true,
+                        "hello": {
+                            "protocol": PROTOCOL_VERSION,
+                            "app": "legacy",
+                            "platform": "headless",
+                            "ready": true,
+                            "features": []
+                        }
+                    }),
+                    Some("snapshot") => serde_json::json!({
+                        "ok": true,
+                        "rev": 2,
+                        "tree": {
+                            "app": "legacy",
+                            "platform": "headless",
+                            "ready": true,
+                            "nodes": [
+                                {
+                                    "id": "secret",
+                                    "role": "textbox",
+                                    "name": "Password",
+                                    "value": "hunter2",
+                                    "states": ["secret"],
+                                    "enabled": true
+                                },
+                                {
+                                    "id": "plain",
+                                    "role": "button",
+                                    "name": "Submit",
+                                    "enabled": true
+                                }
+                            ]
+                        },
+                        "fingerprints": {"secret": raw_fingerprint, "plain": 456}
+                    }),
+                    op => panic!("unexpected op: {op:?}"),
+                };
+                let mut response = response;
+                response["v"] = serde_json::json!(PROTOCOL_VERSION);
+                response["id"] = request["id"].clone();
+                serde_json::to_writer(&mut stream, &response).unwrap();
+                stream.write_all(b"\n").unwrap();
+                stream.flush().unwrap();
+            }
+            requests
+        });
+        (addr, server)
+    }
+
+    fn assert_legacy_snapshot_is_sanitized(response: &Response) {
+        let tree = response.tree.as_ref().expect("full tree");
+        assert_eq!(
+            tree.find("secret").and_then(|node| node.value.as_deref()),
+            Some("•••••••")
+        );
+        let fingerprints = response.fingerprints.as_ref().expect("fingerprints");
+        assert!(!fingerprints.contains_key("secret"));
+        assert_eq!(fingerprints.get("plain"), Some(&456));
+    }
+
     #[test]
     fn legacy_since_snapshot_requests_a_full_masked_tree() {
         let (addr, server) = legacy_since_host();
@@ -1764,6 +1870,31 @@ mod tests {
         assert_eq!(requests[1]["op"], "snapshot");
         assert!(requests[1].get("since").is_none(), "{requests:?}");
         assert!(requests[1].get("format").is_none(), "{requests:?}");
+    }
+
+    #[test]
+    fn rpc_op_and_pipeline_sanitize_legacy_secret_fingerprints() {
+        let (addr, server) = legacy_fingerprint_host(3);
+        let mut client = client_for(addr);
+        let op = Op::Snapshot {
+            since: None,
+            format: None,
+            fingerprints: Some(true),
+        };
+        let direct = client.rpc_op(&op).unwrap();
+        assert_legacy_snapshot_is_sanitized(&direct);
+
+        let pipeline = client.rpc_pipeline(&[&op, &op]).unwrap();
+        assert_eq!(pipeline.len(), 2);
+        for response in &pipeline {
+            assert_legacy_snapshot_is_sanitized(response);
+        }
+
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests.iter().map(|request| request["op"].as_str().unwrap()).collect::<Vec<_>>(),
+            ["hello", "snapshot", "snapshot", "snapshot"]
+        );
     }
 
     #[test]
@@ -1793,11 +1924,6 @@ mod tests {
         let (addr, server) = fake_host(vec![
             Some(serde_json::json!({
                 "ok": true,
-                "tree": tree.clone(),
-                "fingerprints": fingerprints.clone()
-            })),
-            Some(serde_json::json!({
-                "ok": true,
                 "hello": {
                     "protocol": PROTOCOL_VERSION,
                     "app": "fake",
@@ -1805,6 +1931,11 @@ mod tests {
                     "ready": true,
                     "features": []
                 }
+            })),
+            Some(serde_json::json!({
+                "ok": true,
+                "tree": tree.clone(),
+                "fingerprints": fingerprints.clone()
             })),
             Some(serde_json::json!({
                 "ok": true,
@@ -1851,7 +1982,7 @@ mod tests {
         assert_eq!(resync_fingerprints.get("plain"), Some(&456));
         assert_eq!(
             server.join().unwrap(),
-            ["snapshot", "hello", "snapshot", "snapshot"]
+            ["hello", "snapshot", "snapshot", "snapshot"]
         );
     }
 
