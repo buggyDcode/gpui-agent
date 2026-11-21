@@ -954,7 +954,13 @@ fn run() -> Result<()> {
             chord,
             confirm,
             activate,
-        } => print_resp(rpc(client.keybinding(id, scope, chord, confirm, activate))?),
+        } => print_resp(call(client.call(&Op::Keybinding {
+            binding: id,
+            chord,
+            scope,
+            confirm,
+            activate,
+        }))?),
         Command::Keybindings => print_resp(rpc(client.keybindings())?),
         Command::Assert {
             id,

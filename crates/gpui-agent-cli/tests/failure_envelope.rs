@@ -127,3 +127,24 @@ fn action_reads_back_by_default() {
     assert_eq!(reply["delivery_status"], "delivered_unverified", "{reply}");
     assert!(reply.get("after").is_none(), "{reply}");
 }
+
+#[test]
+fn keybinding_reports_delivery_status() {
+    let todo = Todo::spawn(TOKEN);
+    let out = cli(
+        &todo.addr,
+        &[
+            "keybinding",
+            "--id",
+            todo_core::ids::KEY_GO_SETTINGS,
+            "--scope",
+            "global",
+        ],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let reply: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        reply["delivery_status"], "delivered_unverified",
+        "{reply}"
+    );
+}

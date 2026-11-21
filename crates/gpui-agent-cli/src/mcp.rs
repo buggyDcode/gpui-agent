@@ -609,8 +609,14 @@ fn call_tool(
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             client
-                .keybinding(binding, scope, chord, confirm, activate)
-                .map_err(fail_text)?
+                .call(&Op::Keybinding {
+                    binding,
+                    chord,
+                    scope,
+                    confirm,
+                    activate,
+                })
+                .map_err(fail)?
         }
         "keybindings" | "keybinding.list" => client.keybindings().map_err(fail_text)?,
         "events" => {
@@ -1554,6 +1560,30 @@ mod tests {
             "{unverified}"
         );
         assert!(unverified.get("after").is_none(), "{unverified}");
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[test]
+    fn keybinding_reports_delivery_status() {
+        let (mut client, shutdown) = spawn_todo_client();
+        let result = call_tool(
+            &mut client,
+            &json!({
+                "name": "keybinding",
+                "arguments": {
+                    "id": todo_core::ids::KEY_GO_SETTINGS,
+                    "scope": "global"
+                }
+            }),
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(
+            result["delivery_status"],
+            json!("delivered_unverified"),
+            "{result}"
+        );
         shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
