@@ -93,7 +93,7 @@ fn resolve_intent_keywords(intent: &str, registry: &Registry) -> Result<ResolveR
         schema: schema.name.clone(),
         op,
         effects: schema.effects.clone(),
-        confidence: (best as f32 / 10.0).min(1.0),
+        confidence: f32::from(u16::try_from(best.clamp(0, 10)).unwrap_or(0)) / 10.0,
         confidence_millis: None,
         tokens_filled,
         idempotent: schema.idempotent,
