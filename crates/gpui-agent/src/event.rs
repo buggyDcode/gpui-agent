@@ -107,7 +107,7 @@ impl EventRing {
         target: impl Into<String>,
         message: impl Into<String>,
     ) -> u64 {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let seq = inner.next;
         inner.next += 1;
         if self.capacity > 0 && inner.buf.len() == self.capacity {
@@ -127,7 +127,7 @@ impl EventRing {
     /// Events with `seq > since` (`None` → all retained), oldest first,
     /// capped at `limit` (clamped to the ring's capacity).
     pub fn since(&self, since: Option<u64>, limit: usize) -> EventPoll {
-        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let inner = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let limit = limit.min(self.capacity.max(1));
         let base_seq = inner.next - inner.buf.len() as u64;
         let newest_seq = inner.next.saturating_sub(1);
@@ -147,12 +147,12 @@ impl EventRing {
 
     /// Highest allocated seq (0 when empty).
     pub fn latest(&self) -> u64 {
-        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let inner = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.next - 1
     }
 
     pub fn is_empty(&self) -> bool {
-        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let inner = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.buf.is_empty()
     }
 }
@@ -165,7 +165,7 @@ impl Default for EventRing {
 
 impl std::fmt::Debug for EventRing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let inner = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         f.debug_struct("EventRing")
             .field("capacity", &self.capacity)
             .field("len", &inner.buf.len())

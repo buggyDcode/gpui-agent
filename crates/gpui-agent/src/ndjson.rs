@@ -20,7 +20,7 @@ pub fn write_json_line<W: Write, T: Serialize>(
 
 /// True when `buf` is empty or only ASCII whitespace.
 pub fn line_is_blank(buf: &[u8]) -> bool {
-    buf.iter().all(|b| b.is_ascii_whitespace())
+    buf.iter().all(u8::is_ascii_whitespace)
 }
 
 /// Read one NDJSON line into `buf`, capped at `max_bytes` (excluding the newline).

@@ -49,9 +49,7 @@ pub fn screenshot_base_dir() -> PathBuf {
     std::env::var("GPUI_AGENT_SCREENSHOT_DIR")
         .ok()
         .map(|raw| raw.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("gpui-agent-screenshots"))
+        .filter(|s| !s.is_empty()).map_or_else(|| std::env::temp_dir().join("gpui-agent-screenshots"), PathBuf::from)
 }
 
 /// Resolve a client screenshot name against [`screenshot_base_dir`].
@@ -186,7 +184,7 @@ pub const TEST_PNG: &[u8] = &[
 
 /// Argv for `screencapture` of **one** window. Never omits `-l`; never
 /// interactive (`-i`/`-w`) or full-screen (`-S`) capture. `window_id` is
-/// a host-chosen CGWindowID (not a client string). `path` is the only
+/// a host-chosen `CGWindowID` (not a client string). `path` is the only
 /// client-influenced argument and is passed as a single argv slot (no
 /// shell).
 pub fn screencapture_window_argv(window_id: u32, path: &str) -> Result<Vec<String>, String> {

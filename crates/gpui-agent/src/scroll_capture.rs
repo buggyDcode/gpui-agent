@@ -21,10 +21,13 @@ pub const MAX_SCROLLED_PNG_BYTES: usize = 32 * 1024 * 1024;
 /// Stable error prefix when the host cannot resolve or drive `target`.
 pub const SCROLL_UNAVAILABLE: &str = "scroll_unavailable";
 
+/// Format a `scroll_unavailable:` error for `detail`.
 pub fn scroll_unavailable(detail: impl Into<String>) -> String {
     format!("{SCROLL_UNAVAILABLE}: {}", detail.into())
 }
 
+/// Whether `error` is a `scroll_unavailable` failure.
+#[must_use]
 pub fn is_scroll_unavailable(error: &str) -> bool {
     error == SCROLL_UNAVAILABLE
         || error.starts_with(SCROLL_UNAVAILABLE)
@@ -34,13 +37,18 @@ pub fn is_scroll_unavailable(error: &str) -> bool {
 /// Borrowed `screenshot` fields after JSON parse.
 #[derive(Debug, Clone, Copy)]
 pub struct ScreenshotSpec<'a> {
+    /// Output file path (host-side), when the op names one.
     pub path: Option<&'a str>,
+    /// Viewport or scrolled capture.
     pub mode: crate::protocol::ScreenshotMode,
+    /// Named scroll container for `mode=scrolled`.
     pub target: Option<&'a str>,
+    /// Client cap on the stitched height (`None` → [`DEFAULT_MAX_HEIGHT_PX`]).
     pub max_height_px: Option<u32>,
 }
 
 impl<'a> ScreenshotSpec<'a> {
+    /// Build from the parsed op fields.
     pub fn from_op(
         path: &'a Option<String>,
         mode: crate::protocol::ScreenshotMode,
@@ -56,6 +64,11 @@ impl<'a> ScreenshotSpec<'a> {
     }
 
     /// Protocol checks that do not require a pixel surface.
+    ///
+    /// # Errors
+    ///
+    /// `mode=scrolled` without `target`, or `max_height_px` of 0 or
+    /// above [`DEFAULT_MAX_HEIGHT_PX`].
     pub fn validate_request(&self) -> Result<(), String> {
         if self.mode.is_scrolled() {
             match self.target.map(str::trim).filter(|s| !s.is_empty()) {
@@ -76,10 +89,16 @@ impl<'a> ScreenshotSpec<'a> {
         Ok(())
     }
 
+    /// `max_height_px` or [`DEFAULT_MAX_HEIGHT_PX`].
     pub fn height_cap(&self) -> u32 {
         self.max_height_px.unwrap_or(DEFAULT_MAX_HEIGHT_PX)
     }
 
+    /// The named scroll target, required for `mode=scrolled`.
+    ///
+    /// # Errors
+    ///
+    /// `target` absent or blank.
     pub fn scrolled_target(&self) -> Result<&'a str, String> {
         match self.target.map(str::trim).filter(|s| !s.is_empty()) {
             Some(target) => Ok(target),
@@ -94,12 +113,16 @@ impl<'a> ScreenshotSpec<'a> {
 /// `ScrollHandle` convert `offset().y` (negative when scrolled down) here.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScrollMetrics {
+    /// The visible rect of the scroll container.
     pub viewport: Bounds,
+    /// Total scrollable content height.
     pub content_height: f32,
+    /// Current scroll offset (0 = top).
     pub offset_y: f32,
 }
 
 impl ScrollMetrics {
+    /// `content_height - viewport.h`, floored at 0.
     pub fn max_offset_y(self) -> f32 {
         (self.content_height - self.viewport.h).max(0.0)
     }
@@ -109,13 +132,25 @@ impl ScrollMetrics {
 /// viewport and keep `take_height_px` of content.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TileSpec {
+    /// Scroll offset to set before capturing.
     pub offset_y: f32,
+    /// Rows of the viewport crop to drop (already captured above).
     pub skip_top_px: f32,
+    /// Rows of new content to keep from this tile.
     pub take_height_px: f32,
 }
 
 /// Plan non-overlapping content slices. Fails closed if content is taller
 /// than `max_height_px` or the tile cap would be exceeded.
+///
+/// # Errors
+///
+/// `max_height_px` of 0, a degenerate viewport or content height,
+/// content taller than `max_height_px`, or more than
+/// [`MAX_SCROLL_TILES`] tiles.
+#[expect(clippy::as_conversions, reason = "pixel counts fit; f32 mantissa covers the allowed height range")]
+#[expect(clippy::cast_precision_loss, reason = "pixel dimensions fit f32's 24-bit mantissa for any allowed height")]
+#[expect(clippy::cast_possible_truncation, reason = "tile count is bounded by MAX_SCROLL_TILES")]
 pub fn plan_scroll_tiles(
     metrics: &ScrollMetrics,
     max_height_px: u32,
@@ -177,15 +212,24 @@ pub fn plan_scroll_tiles(
 /// Decoded 8-bit RGBA bitmap. Not a substitute for a live window grab.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RgbaImage {
+    /// Width in pixels.
     pub width: u32,
+    /// Height in pixels.
     pub height: u32,
+    /// `width * height * 4` bytes, row-major RGBA.
     pub pixels: Vec<u8>,
 }
 
 impl RgbaImage {
+    /// Wrap `pixels`, requiring exactly `width * height * 4` bytes.
+    ///
+    /// # Errors
+    ///
+    /// The size overflows `usize` or `pixels` has the wrong length.
     pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Result<Self, String> {
-        let need = (width as usize)
-            .checked_mul(height as usize)
+        let need = usize::try_from(width)
+            .ok()
+            .and_then(|w| w.checked_mul(usize::try_from(height).ok()?) )
             .and_then(|n| n.checked_mul(4))
             .ok_or_else(|| "rgba image size overflow".to_string())?;
         if pixels.len() != need {
@@ -202,11 +246,17 @@ impl RgbaImage {
     }
 
     fn pixel_index(&self, x: u32, y: u32) -> usize {
-        ((y as usize * self.width as usize) + x as usize) * 4
+        ((usize::try_from(y).unwrap_or(usize::MAX / 8) * usize::try_from(self.width).unwrap_or(0))
+            + usize::try_from(x).unwrap_or(0))
+            * 4
     }
 }
 
 /// Decode a PNG into 8-bit RGBA. Does not invent pixels.
+///
+/// # Errors
+///
+/// Not a PNG, a decode failure, or an unsupported color layout.
 pub fn decode_png_rgba(bytes: &[u8]) -> Result<RgbaImage, String> {
     if !bytes.starts_with(b"\x89PNG") {
         return Err(screenshot_unavailable("not a PNG"));
@@ -240,8 +290,9 @@ fn to_rgba(
     if depth != png::BitDepth::Eight {
         return Err(format!("unsupported png bit depth {depth:?}"));
     }
-    let n = (width as usize)
-        .checked_mul(height as usize)
+    let n = usize::try_from(width)
+        .ok()
+        .and_then(|w| w.checked_mul(usize::try_from(height).ok()?))
         .ok_or_else(|| "png size overflow".to_string())?;
     let mut pixels = Vec::with_capacity(n * 4);
     match color {
@@ -275,12 +326,16 @@ fn to_rgba(
                 pixels.extend_from_slice(&[chunk[0], chunk[0], chunk[0], chunk[1]]);
             }
         }
-        other => return Err(format!("unsupported png color type {other:?}")),
+        png::ColorType::Indexed => return Err("unsupported png color type Indexed".into()),
     }
     RgbaImage::new(width, height, pixels)
 }
 
 /// Encode 8-bit RGBA as PNG.
+///
+/// # Errors
+///
+/// A `png` encoder failure.
 pub fn encode_png_rgba(img: &RgbaImage) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     let mut encoder = png::Encoder::new(&mut out, img.width, img.height);
@@ -299,6 +354,10 @@ pub fn encode_png_rgba(img: &RgbaImage) -> Result<Vec<u8>, String> {
 }
 
 /// Crop `src` to `[x, y, w, h)` in bitmap pixels.
+///
+/// # Errors
+///
+/// A zero-size crop, or a rect outside `src`.
 pub fn crop_rgba(src: &RgbaImage, x: u32, y: u32, w: u32, h: u32) -> Result<RgbaImage, String> {
     if w == 0 || h == 0 {
         return Err("crop size must be > 0".into());
@@ -311,16 +370,21 @@ pub fn crop_rgba(src: &RgbaImage, x: u32, y: u32, w: u32, h: u32) -> Result<Rgba
             src.width, src.height
         ));
     }
-    let mut pixels = Vec::with_capacity(w as usize * h as usize * 4);
+    let mut pixels =
+        Vec::with_capacity(usize::try_from(w).unwrap_or(0) * usize::try_from(h).unwrap_or(0) * 4);
     for row in y..y + h {
         let start = src.pixel_index(x, row);
-        let end = start + w as usize * 4;
+        let end = start + usize::try_from(w).unwrap_or(0) * 4;
         pixels.extend_from_slice(&src.pixels[start..end]);
     }
     RgbaImage::new(w, h, pixels)
 }
 
 /// Concatenate tiles top-to-bottom. Widths must match. No “AI fill”.
+///
+/// # Errors
+///
+/// No tiles, mismatched widths, a zero-size tile, or an overflow.
 pub fn stitch_tiles_vertically(tiles: &[RgbaImage]) -> Result<RgbaImage, String> {
     if tiles.is_empty() {
         return Err("scrolled screenshot produced no tiles".into());
@@ -344,7 +408,9 @@ pub fn stitch_tiles_vertically(tiles: &[RgbaImage]) -> Result<RgbaImage, String>
             .checked_add(tile.height)
             .ok_or_else(|| "stitched height overflow".to_string())?;
     }
-    let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+    let mut pixels = Vec::with_capacity(
+        usize::try_from(width).unwrap_or(0) * usize::try_from(height).unwrap_or(usize::MAX / 8) * 4,
+    );
     for tile in tiles {
         pixels.extend_from_slice(&tile.pixels);
     }
@@ -355,6 +421,14 @@ pub fn stitch_tiles_vertically(tiles: &[RgbaImage]) -> Result<RgbaImage, String>
 ///
 /// If the PNG is taller than `window_h * scale` (typical macOS titlebar),
 /// that extra is added to `clip.y`.
+///
+/// # Errors
+///
+/// PNG decode failure, a zero window size, or a clip outside the image.
+#[expect(clippy::as_conversions, reason = "clip coordinates are rounded and clamped into the image bounds")]
+#[expect(clippy::cast_precision_loss, reason = "bitmap dimensions fit f32's 24-bit mantissa")]
+#[expect(clippy::cast_possible_truncation, reason = "rounded clip coordinates are clamped into the image bounds below")]
+#[expect(clippy::cast_sign_loss, reason = "negative values are clamped to 0 before the u32 conversion")]
 pub fn crop_window_png(
     png: &[u8],
     window_w: f32,
@@ -405,6 +479,8 @@ pub fn scrolled_result_json(
     })
 }
 
+/// [`scrolled_result_json`] as a [`DispatchResult`].
+#[must_use]
 pub fn scrolled_dispatch_result(
     path: &str,
     target: &str,
@@ -423,6 +499,11 @@ pub fn scrolled_dispatch_result(
 
 /// Drive scroll → wait → capture → stitch → **always restore** `original`
 /// offset. `wait_paint` may be a no-op in unit tests.
+///
+/// # Errors
+///
+/// The tile plan, a scroll set, a capture, or the stitch fails; a
+/// restore failure after a successful run is its own error.
 pub fn run_scrolled_capture_sync(
     target: &str,
     metrics: ScrollMetrics,
@@ -493,6 +574,7 @@ mod tests {
         }
     }
 
+    #[expect(clippy::as_conversions, reason = "test fixture dimensions are tiny")]
     fn solid(width: u32, height: u32, rgba: [u8; 4]) -> RgbaImage {
         let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
         for _ in 0..width * height {
@@ -573,7 +655,11 @@ mod tests {
     #[test]
     fn plan_fails_closed_on_too_many_tiles() {
         let err =
-            plan_scroll_tiles(&metrics(1.0, DEFAULT_MAX_HEIGHT_PX as f32, 0.0), 16384).unwrap_err();
+            plan_scroll_tiles(
+                &metrics(1.0, f32::from(u16::try_from(DEFAULT_MAX_HEIGHT_PX).unwrap_or(u16::MAX)), 0.0),
+                16384,
+            )
+            .unwrap_err();
         assert!(err.contains("tiles"), "{err}");
     }
 
@@ -599,7 +685,7 @@ mod tests {
         let mut pixels = Vec::with_capacity(100 * 132 * 4);
         for y in 0..132u32 {
             for _x in 0..100u32 {
-                pixels.extend_from_slice(&[y as u8, 0, 0, 255]);
+                pixels.extend_from_slice(&[u8::try_from(y).unwrap_or(u8::MAX), 0, 0, 255]);
             }
         }
         let img = RgbaImage::new(100, 132, pixels).unwrap();

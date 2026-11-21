@@ -152,13 +152,12 @@ fn authorize_remote_endpoint(
 
 pub fn truthy_env(name: &str) -> bool {
     std::env::var(name)
-        .map(|v| {
+        .is_ok_and(|v| {
             matches!(
                 v.trim().to_ascii_lowercase().as_str(),
                 "1" | "true" | "yes" | "on"
             )
         })
-        .unwrap_or(false)
 }
 
 /// True for IPv4 `127.0.0.0/8` and IPv6 `::1` only.

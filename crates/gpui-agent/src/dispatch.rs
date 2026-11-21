@@ -276,8 +276,7 @@ pub fn handle_request_cached(
                 let poll = ring.since(
                     since,
                     limit
-                        .map(|l| l as usize)
-                        .unwrap_or(crate::event::EVENTS_DEFAULT_LIMIT),
+                        .map_or(crate::event::EVENTS_DEFAULT_LIMIT, |l| l as usize),
                 );
                 let mut resp = Response::ok(req.id);
                 resp.result = serde_json::to_value(poll).ok();
@@ -365,15 +364,12 @@ fn snapshot_response(
         Some(s) if rev == Some(s) => {
             resp.result = Some(serde_json::json!({ "unchanged": true }));
         }
-        Some(s) => match rev.and_then(|_| cache.tree_at(s)) {
-            Some(old) => {
-                let diff = crate::diff::diff_trees(&old, &tree);
-                resp.result = Some(serde_json::json!({ "diff": diff }));
-            }
-            None => {
-                resp.tree = Some(redacted(&tree));
-                resp.result = Some(serde_json::json!({ "full": true }));
-            }
+        Some(s) => if let Some(old) = rev.and_then(|_| cache.tree_at(s)) {
+            let diff = crate::diff::diff_trees(&old, &tree);
+            resp.result = Some(serde_json::json!({ "diff": diff }));
+        } else {
+            resp.tree = Some(redacted(&tree));
+            resp.result = Some(serde_json::json!({ "full": true }));
         },
         None => {
             resp.tree = Some(redacted(&tree));

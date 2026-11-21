@@ -1,6 +1,6 @@
 //! GPUI Agent — embeddable SDK + protocol for controllable GPUI Kit apps.
 //!
-//! This is **not** Chrome DevTools Protocol. GPUI Kit apps are GPU-rendered
+//! This is **not** Chrome `DevTools` Protocol. GPUI Kit apps are GPU-rendered
 //! native surfaces with no DOM, so Playwright/CDP cannot attach. Agents talk
 //! to an opt-in NDJSON server that publishes a semantic UI tree
 //! (stable ids, roles, names, state) and dispatches actions into the same

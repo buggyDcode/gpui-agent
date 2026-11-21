@@ -40,7 +40,7 @@ pub fn store(bytes: Vec<u8>) -> serde_json::Value {
         "bytes": bytes.len(),
         "chunks": chunk_count(bytes.len()),
     });
-    let mut blobs = BLOBS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut blobs = BLOBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     while blobs.len() >= MAX_BLOBS {
         blobs.pop_front();
     }
@@ -51,7 +51,7 @@ pub fn store(bytes: Vec<u8>) -> serde_json::Value {
 /// One chunk as `{blob, index, last, data}`; the blob is dropped once its
 /// last chunk has been read.
 pub fn read_chunk(name: &str, index: u32) -> Result<serde_json::Value, String> {
-    let mut blobs = BLOBS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut blobs = BLOBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let at = blobs
         .iter()
         .position(|(n, _)| n == name)

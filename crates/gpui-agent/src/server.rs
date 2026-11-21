@@ -314,7 +314,7 @@ fn handle_stream_host<H: AgentHost>(
             }
         };
         if let Err(resp) =
-            authorize_request(&req, token, session_nonce.as_ref().map(|n| n.as_slice()))
+            authorize_request(&req, token, session_nonce.as_ref().map(<[u8; 32]>::as_slice))
         {
             write_resp(&mut writer, &mut encode_buf, &resp);
             break;
@@ -348,7 +348,7 @@ fn handle_stream_host<H: AgentHost>(
                 &mut cache,
                 req,
                 token,
-                session_nonce.as_ref().map(|n| n.as_slice()),
+                session_nonce.as_ref().map(<[u8; 32]>::as_slice),
             )
         };
         write_resp(&mut writer, &mut encode_buf, &resp);
@@ -412,7 +412,7 @@ fn handle_stream_mailbox(
         // Authorize here so virtual ops (which skip handle_request on the
         // UI thread) still get version + token checks.
         if let Err(resp) =
-            authorize_request(&req, token, session_nonce.as_ref().map(|n| n.as_slice()))
+            authorize_request(&req, token, session_nonce.as_ref().map(<[u8; 32]>::as_slice))
         {
             write_resp(&mut writer, &mut encode_buf, &resp);
             break;

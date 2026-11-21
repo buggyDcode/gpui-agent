@@ -1,4 +1,4 @@
-//! Find a running AgentHost by bundle id or executable name.
+//! Find a running `AgentHost` by bundle id or executable name.
 //!
 //! Each host writes one JSON record when it starts listening and removes it
 //! on shutdown. The CLI matches `--connect <id>` against those records, then
@@ -37,66 +37,121 @@ unsafe extern "C" {
     fn geteuid() -> u32;
 }
 
+/// One live `AgentHost`'s discovery record (`hosts/<pid>-<port>.json`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HostRecord {
+    /// `addr:port` the host listens on.
     pub addr: String,
+    /// Host process id, for liveness pruning.
     pub pid: u32,
+    /// The app's `hello().app`.
     pub app: String,
+    /// Executable basename `--connect` matches on.
     pub executable: String,
+    /// macOS bundle id (or [`CONNECT_ID_ENV`]) `--connect` matches on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundle_id: Option<String>,
+    /// [`CONNECT_ID_ENV`] override `--connect` matches on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connect_id: Option<String>,
 }
 
+/// The app the last `--connect <id>` picked (`session.json`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionRecord {
+    /// Saved host address.
     pub addr: String,
+    /// Saved connect id.
     pub id: String,
 }
 
 /// A saved address and credentials for a named CLI session.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NamedSession {
+    /// Session name (`[a-z0-9][a-z0-9_-]{0,63}`).
     pub name: String,
+    /// Saved host address.
     pub addr: String,
+    /// Saved automation token, if the user stored one.
     pub token: Option<String>,
+    /// Whether a non-loopback `addr` was explicitly accepted.
     pub allow_remote: bool,
+    /// The app's `hello().app`, recorded for display.
     pub app: Option<String>,
 }
 
+/// What this process publishes for `--connect` matching.
 #[derive(Debug, Clone)]
 pub struct HostIdentity {
+    /// Executable basename.
     pub executable: String,
+    /// macOS bundle id when the executable sits in a `.app`.
     pub bundle_id: Option<String>,
+    /// [`CONNECT_ID_ENV`] override.
     pub connect_id: Option<String>,
 }
 
+/// Why a `--connect` / named-session lookup failed.
 #[derive(Debug, Error, PartialEq, Eq)]
+#[expect(clippy::exhaustive_enums, reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches")]
 pub enum ResolveError {
+    /// No live host record matches the id.
     #[error("no AgentHost is running for '{id}'")]
-    Missing { id: String },
+    Missing {
+        /// The id the user asked for.
+        id: String,
+    },
+    /// More than one live host record matches the id.
     #[error("more than one AgentHost matches '{id}': {detail}")]
-    Ambiguous { id: String, detail: String },
+    Ambiguous {
+        /// The id the user asked for.
+        id: String,
+        /// `app (addr)` of each match.
+        detail: String,
+    },
+    /// The resolved address is not a socket address.
     #[error("invalid host address '{addr}'")]
-    BadAddr { addr: String },
+    BadAddr {
+        /// The unparseable address.
+        addr: String,
+    },
+    /// `--connect last` with nothing saved.
     #[error("no earlier --connect to reuse; pass --connect <bundle id or executable>")]
     NoSession,
+    /// No `sessions/<name>.json` record.
     #[error(
         "no session named \"{name}\"; create it with: gpui-agent --session <name> attach <target>"
     )]
-    NoNamedSession { name: String },
+    NoNamedSession {
+        /// The session name.
+        name: String,
+    },
+    /// The session name fails `[a-z0-9][a-z0-9_-]{0,63}`.
     #[error("invalid session name \"{name}\"; use [a-z0-9][a-z0-9_-]{{0,63}}")]
-    BadSessionName { name: String },
+    BadSessionName {
+        /// The rejected name.
+        name: String,
+    },
+    /// The runtime directory is missing, unsafe, or not writable.
     #[error("could not use runtime directory: {detail}")]
-    RuntimeDirectory { detail: String },
+    RuntimeDirectory {
+        /// The underlying error.
+        detail: String,
+    },
+    /// A named session record exists but could not be read.
     #[error("could not read session \"{name}\": {detail}")]
-    NamedSessionRead { name: String, detail: String },
+    NamedSessionRead {
+        /// The session name.
+        name: String,
+        /// The underlying error.
+        detail: String,
+    },
 }
 
 /// Where a command goes, and which app that is when discovery chose it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientTarget {
+    /// The address the command should connect to.
     pub addr: SocketAddr,
     /// The app's `hello().app` from its record; `None` for `--addr` and the default address.
     pub app: Option<String>,
@@ -135,6 +190,7 @@ pub fn runtime_root() -> PathBuf {
 fn current_uid() -> u32 {
     #[cfg(unix)]
     {
+        // SAFETY: `getuid` is always safe to call.
         unsafe { getuid() }
     }
     #[cfg(not(unix))]
@@ -145,10 +201,12 @@ fn current_uid() -> u32 {
 
 #[cfg(unix)]
 fn effective_uid() -> u32 {
+    // SAFETY: `geteuid` is always safe to call.
     unsafe { geteuid() }
 }
 
 #[cfg(unix)]
+#[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether a missing directory is created")]
 fn ensure_private_directory(path: &Path, create: bool) -> io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 
@@ -229,6 +287,7 @@ fn ensure_private_directory(path: &Path, create: bool) -> io::Result<()> {
 }
 
 #[cfg(not(unix))]
+#[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether a missing directory is created")]
 fn ensure_private_directory(path: &Path, create: bool) -> io::Result<()> {
     if create {
         fs::create_dir_all(path)?;
@@ -237,6 +296,11 @@ fn ensure_private_directory(path: &Path, create: bool) -> io::Result<()> {
 }
 
 /// Create or validate the private per-user runtime directory.
+///
+/// # Errors
+///
+/// The directory cannot be created, is a symlink, is owned by another
+/// user, or group/other access cannot be removed.
 pub fn ensure_runtime_dir(path: &Path) -> io::Result<()> {
     ensure_private_directory(path, true)
 }
@@ -303,6 +367,7 @@ fn named_session_path(root: &Path, name: &str) -> PathBuf {
     named_sessions_dir(root).join(format!("{name}.json"))
 }
 
+#[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether a missing directory is created")]
 fn checked_named_sessions_dir(root: &Path, create: bool) -> io::Result<PathBuf> {
     ensure_private_directory(root, create)?;
     let dir = named_sessions_dir(root);
@@ -339,7 +404,7 @@ fn invalid_session_name(name: &str) -> ResolveError {
     }
 }
 
-fn named_session_read_error(name: &str, err: io::Error) -> ResolveError {
+fn named_session_read_error(name: &str, err: &io::Error) -> ResolveError {
     if err.kind() == ErrorKind::NotFound {
         ResolveError::NoNamedSession {
             name: name.to_string(),
@@ -410,6 +475,10 @@ fn read_bundle_id(plist: &Path) -> Option<String> {
 }
 
 /// Write the record for this process and return a guard that deletes it.
+///
+/// # Errors
+///
+/// The runtime directory or record file cannot be written.
 pub fn publish_current(addr: SocketAddr, app: &str) -> io::Result<PublishedHost> {
     let ident = detect_identity();
     let record = HostRecord {
@@ -423,6 +492,11 @@ pub fn publish_current(addr: SocketAddr, app: &str) -> io::Result<PublishedHost>
     publish_record(&runtime_root(), &record)
 }
 
+/// Write `record` under `root/hosts` and return a guard that deletes it.
+///
+/// # Errors
+///
+/// The runtime directory or record file cannot be written.
 pub fn publish_record(root: &Path, record: &HostRecord) -> io::Result<PublishedHost> {
     ensure_private_directory(root, true)?;
     let dir = hosts_dir(root);
@@ -441,6 +515,8 @@ pub fn publish_record(root: &Path, record: &HostRecord) -> io::Result<PublishedH
     Ok(PublishedHost { path })
 }
 
+/// Deletes a host's discovery record on drop (see [`publish_record`]).
+#[derive(Debug)]
 pub struct PublishedHost {
     path: PathBuf,
 }
@@ -452,6 +528,7 @@ impl Drop for PublishedHost {
 }
 
 impl PublishedHost {
+    /// The record file this guard removes on drop.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -460,6 +537,11 @@ impl PublishedHost {
 /// `--addr` wins. Otherwise `--connect <id>` (saved for `--connect last`), then
 /// `--connect last`, then the loopback default. A bare command never reuses the
 /// saved choice (#48).
+///
+/// # Errors
+///
+/// A [`ResolveError`] when the id matches no live host, several, or a
+/// saved record is unreadable.
 pub fn resolve_client_addr(
     root: &Path,
     explicit: Option<SocketAddr>,
@@ -470,6 +552,11 @@ pub fn resolve_client_addr(
 
 /// `resolve_client_addr`, also naming the app discovery chose so the CLI can say
 /// which app it is about to drive.
+///
+/// # Errors
+///
+/// A [`ResolveError`] when the id matches no live host, several, or a
+/// saved record is unreadable.
 pub fn resolve_client_target(
     root: &Path,
     explicit: Option<SocketAddr>,
@@ -521,6 +608,18 @@ pub fn resolve_client_target(
     })
 }
 
+/// The live host record matching `id`: exact `bundle_id`/`connect_id`/
+/// `executable`/`app` first, executable basename as a fallback. Stale
+/// records (dead pid, refused TCP) are pruned as they are met.
+///
+/// # Errors
+///
+/// [`ResolveError::Missing`] on no match, [`ResolveError::Ambiguous`]
+/// on more than one.
+///
+/// # Panics
+///
+/// Never: the `open.pop()` unwrap is guarded by `open.len() == 1`.
 pub fn resolve_id(root: &Path, id: &str) -> Result<HostRecord, ResolveError> {
     ensure_runtime_root_for_discovery(root)?;
     let live = load_live(root);
@@ -546,7 +645,7 @@ pub fn resolve_id(root: &Path, id: &str) -> Result<HostRecord, ResolveError> {
     }
     match open.len() {
         0 => Err(ResolveError::Missing { id: id.to_string() }),
-        1 => Ok(open.pop().unwrap()),
+        1 => Ok(open.pop().expect("one candidate")),
         _ => Err(ResolveError::Ambiguous {
             id: id.to_string(),
             detail: open
@@ -618,6 +717,10 @@ fn load_live(root: &Path) -> Vec<(PathBuf, HostRecord)> {
 /// Every host that published itself under `root` and is still running.
 ///
 /// Returns an error when the runtime directory is unusable rather than an empty list.
+///
+/// # Errors
+///
+/// [`ResolveError::RuntimeDirectory`] when the runtime directory is missing, unsafe, or not writable.
 pub fn live_hosts(root: &Path) -> Result<Vec<HostRecord>, ResolveError> {
     ensure_runtime_root_for_discovery(root)?;
     let mut hosts: Vec<_> = load_live(root).into_iter().map(|(_, rec)| rec).collect();
@@ -625,6 +728,11 @@ pub fn live_hosts(root: &Path) -> Result<Vec<HostRecord>, ResolveError> {
     Ok(hosts)
 }
 
+/// Atomically write `session.json` (the `--connect last` record).
+///
+/// # Errors
+///
+/// The runtime directory or file cannot be written.
 pub fn save_session(root: &Path, addr: &str, id: &str) -> io::Result<()> {
     ensure_private_directory(root, true)?;
     let rec = SessionRecord {
@@ -639,12 +747,17 @@ pub fn save_session(root: &Path, addr: &str, id: &str) -> io::Result<()> {
     fs::rename(tmp, path)
 }
 
+/// Read `session.json`; `None` when absent or unparsable.
 pub fn load_session(root: &Path) -> Option<SessionRecord> {
     let body = fs::read(session_path(root)).ok()?;
     serde_json::from_slice(&body).ok()
 }
 
 /// Atomically save a named session under `root/sessions`.
+///
+/// # Errors
+///
+/// The name is invalid, or the directory or file cannot be written.
 pub fn save_named_session(root: &Path, session: &NamedSession) -> io::Result<()> {
     validate_session_name(&session.name)?;
     let dir = checked_named_sessions_dir(root, true)?;
@@ -687,15 +800,21 @@ pub fn save_named_session(root: &Path, session: &NamedSession) -> io::Result<()>
 }
 
 /// Load a named session, rejecting invalid names and missing records.
+///
+/// # Errors
+///
+/// [`ResolveError::BadSessionName`], [`ResolveError::NoNamedSession`],
+/// or [`ResolveError::NamedSessionRead`]/[`ResolveError::RuntimeDirectory`]
+/// when the record cannot be read or is unsafe.
 pub fn load_named_session(root: &Path, name: &str) -> Result<NamedSession, ResolveError> {
     if !valid_session_name(name) {
         return Err(invalid_session_name(name));
     }
     let dir = checked_named_sessions_dir(root, false)
-        .map_err(|err| named_session_read_error(name, err))?;
+        .map_err(|err| named_session_read_error(name, &err))?;
     let path = dir.join(format!("{name}.json"));
-    ensure_private_session_file(&path).map_err(|err| named_session_read_error(name, err))?;
-    let body = fs::read(&path).map_err(|err| named_session_read_error(name, err))?;
+    ensure_private_session_file(&path).map_err(|err| named_session_read_error(name, &err))?;
+    let body = fs::read(&path).map_err(|err| named_session_read_error(name, &err))?;
     let session: NamedSession =
         serde_json::from_slice(&body).map_err(|err| ResolveError::NamedSessionRead {
             name: name.to_string(),
@@ -711,6 +830,10 @@ pub fn load_named_session(root: &Path, name: &str) -> Result<NamedSession, Resol
 }
 
 /// Remove a named session, returning whether a record existed.
+///
+/// # Errors
+///
+/// The name is invalid or session storage cannot be read.
 pub fn remove_named_session(root: &Path, name: &str) -> io::Result<bool> {
     validate_session_name(name)?;
     let dir = match checked_named_sessions_dir(root, false) {
@@ -728,6 +851,11 @@ pub fn remove_named_session(root: &Path, name: &str) -> io::Result<bool> {
 /// List valid saved sessions, ordered by name.
 ///
 /// Returns an error when session storage is unreadable or unsafe.
+///
+/// # Errors
+///
+/// [`ResolveError::RuntimeDirectory`] or [`ResolveError::NamedSessionRead`]
+/// when a record cannot be read or is unsafe.
 pub fn list_named_sessions(root: &Path) -> Result<Vec<NamedSession>, ResolveError> {
     let dir = match checked_named_sessions_dir(root, false) {
         Ok(dir) => dir,
@@ -806,6 +934,8 @@ fn parse_addr(addr: &str) -> Result<SocketAddr, ResolveError> {
     })
 }
 
+/// Whether a TCP connect to `addr` succeeds within 200 ms.
+#[must_use]
 pub fn tcp_open(addr: &str) -> bool {
     let Ok(addr) = addr.parse::<SocketAddr>() else {
         return false;
@@ -813,6 +943,8 @@ pub fn tcp_open(addr: &str) -> bool {
     TcpStream::connect_timeout(&addr, PROBE_TIMEOUT).is_ok()
 }
 
+/// Whether `pid` names a live process on this machine.
+#[must_use]
 pub fn pid_alive(pid: u32) -> bool {
     // `kill(-1, 0)` targets every process. Refuse pids that do not fit in a
     // positive pid_t.
@@ -821,10 +953,12 @@ pub fn pid_alive(pid: u32) -> bool {
     }
     #[cfg(unix)]
     {
-        if pid > i32::MAX as u32 {
+        if i32::try_from(pid).is_err() {
             return false;
         }
-        let rc = unsafe { kill(pid as i32, 0) };
+        // SAFETY: `kill` with a valid positive pid and signal 0 only
+        // probes for existence; the pid is checked to fit `pid_t` above.
+        let rc = unsafe { kill(i32::try_from(pid).unwrap_or(i32::MAX), 0) };
         if rc == 0 {
             return true;
         }
@@ -1022,7 +1156,7 @@ mod tests {
         let root = temp_root("stale");
         let dead = HostRecord {
             addr: "127.0.0.1:9".into(),
-            pid: i32::MAX as u32,
+            pid: u32::try_from(i32::MAX).unwrap_or(u32::MAX),
             app: "gone".into(),
             executable: "gone".into(),
             bundle_id: Some("dev.example.gone".into()),
@@ -1179,7 +1313,7 @@ mod tests {
         save_named_session(&root, &another).unwrap();
         assert_eq!(
             list_named_sessions(&root).unwrap(),
-            vec![another.clone(), session.clone()]
+            vec![another.clone(), session]
         );
 
         assert!(remove_named_session(&root, "work_agent").unwrap());
