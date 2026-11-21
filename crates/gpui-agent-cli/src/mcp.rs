@@ -1072,7 +1072,17 @@ mod instinct {
         let rev = snap.rev.or(tree.rev);
         let keybindings = client.keybinding_catalog().map_err(fail_text)?;
         let invokes = offered_invokes(args, schema_paths)?;
-        let space = ActionSpace::from_tree(&tree, &keybindings, &invokes);
+        let secret_redaction = client
+            .features()
+            .map_err(fail_text)?
+            .iter()
+            .any(|feature| feature == "secret_redaction");
+        let space = ActionSpace::from_tree_with_secret_redaction(
+            &tree,
+            &keybindings,
+            &invokes,
+            secret_redaction,
+        );
         Ok(Observed {
             rev,
             keybindings,

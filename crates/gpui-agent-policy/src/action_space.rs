@@ -306,16 +306,28 @@ impl ActionSpace {
     /// catalog and invoke schemas.
     ///
     /// Hidden or disabled nodes — and every node under a hidden or
-    /// disabled ancestor — are skipped before scoring.
+    /// disabled ancestor — are skipped before scoring. Without a negotiated
+    /// host capability, secret-node fingerprints are omitted.
     pub fn from_tree(
         tree: &UiTree,
         keybindings: &[KeybindingInfo],
         invokes: &[OfferedInvoke],
     ) -> Self {
+        Self::from_tree_with_secret_redaction(tree, keybindings, invokes, false)
+    }
+
+    /// Build the offered set, omitting secret-node fingerprints when the
+    /// host predates redaction and hashes the raw value.
+    pub fn from_tree_with_secret_redaction(
+        tree: &UiTree,
+        keybindings: &[KeybindingInfo],
+        invokes: &[OfferedInvoke],
+        secret_redaction: bool,
+    ) -> Self {
         let mut actions = BTreeMap::new();
         let mut texts = Vec::new();
         for node in &tree.nodes {
-            collect_node(node, None, true, &mut actions, &mut texts);
+            collect_node(node, None, true, secret_redaction, &mut actions, &mut texts);
         }
         for kb in keybindings {
             // Identifier separators split into words so a goal naming
@@ -503,6 +515,7 @@ fn collect_node(
     node: &UiNode,
     parent: Option<&UiNode>,
     ancestors_viable: bool,
+    secret_redaction: bool,
     actions: &mut BTreeMap<ActionId, OfferedAction>,
     texts: &mut Vec<NodeText>,
 ) {
@@ -520,7 +533,8 @@ fn collect_node(
         });
         let parent_role = parent.map(|p| p.role.as_str());
         let parent_id = parent.map(|p| p.id.as_str());
-        let fingerprint = Some(node.fingerprint(parent_id));
+        let fingerprint =
+            (!node.is_secret() || secret_redaction).then(|| node.fingerprint(parent_id));
         let state = NodeState::of(node);
         let clickable = matches!(
             node.role.as_str(),
@@ -577,6 +591,151 @@ fn collect_node(
         }
     }
     for child in &node.children {
-        collect_node(child, Some(node), viable, actions, texts);
+        collect_node(child, Some(node), viable, secret_redaction, actions, texts);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    use gpui_agent::protocol::{HelloInfo, Op, Request, Response};
+    use gpui_agent::{AgentClient, PlatformKind};
+
+    fn legacy_fingerprint(node: &UiNode, parent_id: Option<&str>) -> u64 {
+        const OFF: u64 = 0xcbf29ce484222325;
+        fn feed(mut hash: u64, bytes: &[u8]) -> u64 {
+            for byte in bytes {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+            hash
+        }
+        let mut hash = OFF;
+        for field in [&node.id, &node.role, &node.name] {
+            hash = feed(hash, field.as_bytes());
+            hash = feed(hash, &[0xff]);
+        }
+        hash = feed(hash, &[u8::from(node.enabled), u8::from(node.visible)]);
+        hash = feed(
+            hash,
+            &[match node.checked {
+                None => 0,
+                Some(false) => 1,
+                Some(true) => 2,
+            }],
+        );
+        let value_hash = node
+            .value
+            .as_deref()
+            .map_or(0u64, |value| feed(OFF, value.as_bytes()));
+        hash = feed(hash, &value_hash.to_le_bytes());
+        for state in &node.states {
+            hash = feed(hash, state.as_bytes());
+            hash = feed(hash, &[0xff]);
+        }
+        if let Some(parent) = parent_id {
+            hash = feed(hash, parent.as_bytes());
+        }
+        feed(hash, &[u8::from(parent_id.is_some())])
+    }
+
+    #[test]
+    fn legacy_host_raw_secret_fingerprint_is_not_offered_for_dispatch() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let mut raw_secret =
+            UiNode::new("password-field", role::TEXTBOX, "Password").with_value("hunter2");
+        raw_secret.states.push("secret".into());
+        let raw_fingerprint = legacy_fingerprint(&raw_secret, None);
+        let mut redacted = raw_secret.clone();
+        redacted.redact_secrets();
+        let tree = UiTree {
+            app: "legacy".into(),
+            platform: PlatformKind::Headless,
+            ready: true,
+            nodes: vec![redacted],
+            rev: None,
+        };
+        let server_tree = tree.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            for _ in 0..2 {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let request: Request = serde_json::from_str(&line).unwrap();
+                let mut response = Response::ok(&request.id);
+                match request.op {
+                    Op::Hello => {
+                        response.hello = Some(
+                            serde_json::from_value::<HelloInfo>(serde_json::json!({
+                                "protocol": 2,
+                                "app": "legacy",
+                                "platform": "headless",
+                                "ready": true,
+                                "features": []
+                            }))
+                            .unwrap(),
+                        );
+                    }
+                    Op::Snapshot { .. } => {
+                        response.tree = Some(server_tree.clone());
+                        response.fingerprints =
+                            Some(BTreeMap::from([("password-field".into(), raw_fingerprint)]));
+                    }
+                    other => panic!("unexpected request {other:?}"),
+                }
+                writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
+                stream.flush().unwrap();
+            }
+        });
+
+        let mut client = AgentClient::connect(addr);
+        let supports_redaction = client
+            .features()
+            .unwrap()
+            .iter()
+            .any(|feature| feature == "secret_redaction");
+        assert!(!supports_redaction);
+
+        let response = client
+            .call(&Op::Snapshot {
+                since: None,
+                format: None,
+                fingerprints: Some(true),
+            })
+            .unwrap();
+        let tree = response.tree.unwrap();
+        let host_fingerprint = response.fingerprints.unwrap()["password-field"];
+        assert_eq!(host_fingerprint, raw_fingerprint);
+        assert_ne!(
+            tree.find("password-field").unwrap().fingerprint(None),
+            raw_fingerprint
+        );
+
+        let space = ActionSpace::from_tree_with_secret_redaction(&tree, &[], &[], false);
+        let action = space.get_str("TYPE:password-field").unwrap();
+        assert_eq!(action.fingerprint(), None);
+        assert_eq!(
+            ActionSpace::from_tree(&tree, &[], &[])
+                .get_str("TYPE:password-field")
+                .unwrap()
+                .fingerprint(),
+            None
+        );
+        assert!(
+            ActionSpace::from_tree_with_secret_redaction(&tree, &[], &[], true)
+                .get_str("TYPE:password-field")
+                .unwrap()
+                .fingerprint()
+                .is_some()
+        );
+        server.join().unwrap();
     }
 }

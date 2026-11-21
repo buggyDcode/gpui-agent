@@ -820,11 +820,66 @@ fn run() -> Result<()> {
         client = client.as_written();
     }
 
-    let read_back = !cli.no_read_back;
+    let (fingerprint_target, explicit_fingerprint) = match &cli.command {
+        Command::Click {
+            target,
+            expect_fingerprint,
+            ..
+        }
+        | Command::Type {
+            target,
+            expect_fingerprint,
+            ..
+        }
+        | Command::SetValue {
+            target,
+            expect_fingerprint,
+            ..
+        }
+        | Command::Key {
+            target,
+            expect_fingerprint,
+            ..
+        } => (Some(target.as_str()), *expect_fingerprint),
+        Command::Press {
+            target,
+            expect_fingerprint,
+            ..
+        } => (target.as_deref(), *expect_fingerprint),
+        _ => (None, None),
+    };
     let guarded = cli.guard;
+    let omit_secret_fingerprint =
+        if explicit_fingerprint.is_some() || (guarded && guard_target_is_ref) {
+            let secret_redaction = client
+                .features()
+                .map_err(anyhow::Error::msg)?
+                .iter()
+                .any(|feature| feature == "secret_redaction");
+            if secret_redaction {
+                false
+            } else if let Some(target) = fingerprint_target {
+                let snapshot = call(client.call(&Op::Snapshot {
+                    since: None,
+                    format: None,
+                    fingerprints: None,
+                }))?;
+                snapshot
+                    .tree
+                    .is_some_and(|tree| tree.find(target).is_some_and(|node| node.is_secret()))
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+    let read_back = !cli.no_read_back;
     // The fingerprint `snapshot --refs` saved for `target`, when `--guard`
     // is on and `target` was given as a ref.
     let guard = |target: Option<&str>, explicit: Option<u64>| -> Result<Option<u64>> {
+        if omit_secret_fingerprint {
+            return Ok(None);
+        }
         if explicit.is_some() || !guarded || !guard_target_is_ref {
             return Ok(explicit);
         }
@@ -900,6 +955,12 @@ fn run() -> Result<()> {
             depth,
             root,
         } => {
+            let secret_redaction = refs
+                && client
+                    .features()
+                    .map_err(anyhow::Error::msg)?
+                    .iter()
+                    .any(|feature| feature == "secret_redaction");
             // `--refs` always asks for fingerprints, for `--guard`; a host
             // that has none answers without them.
             let resp = call(client.call(&Op::Snapshot {
@@ -910,7 +971,15 @@ fn run() -> Result<()> {
             let mut options = gpui_agent::OutlineOptions::new();
             options.root = root;
             options.depth = depth.map(|n| usize::try_from(n).unwrap_or(usize::MAX));
-            print_snapshot(resp, &options, refs, pretty, fingerprints, addr)?;
+            print_snapshot(
+                resp,
+                &options,
+                refs,
+                pretty,
+                fingerprints,
+                secret_redaction,
+                addr,
+            )?;
         }
         Command::Screenshot {
             out,
@@ -1295,6 +1364,7 @@ fn print_snapshot(
     refs: bool,
     pretty: bool,
     fingerprints: bool,
+    secret_redaction: bool,
     addr: SocketAddr,
 ) -> Result<()> {
     if options.is_full() && !refs && !pretty {
@@ -1318,7 +1388,8 @@ fn print_snapshot(
     let mut fps = resp.fingerprints.take().unwrap_or_default();
     outline.retain_fingerprints(&mut fps);
     if refs {
-        let (text, table) = refs::render(&outline, &fps, fingerprints);
+        let (text, table) =
+            refs::render_with_secret_redaction(&outline, &fps, fingerprints, secret_redaction);
         refs::save(&gpui_agent::runtime_root(), addr, &table).context("saving the ref table")?;
         print!("{text}");
         return Ok(());

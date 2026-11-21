@@ -465,7 +465,17 @@ impl<'a> Runner<'a> {
                 }
             };
             let (goal_text, mode) = clause_mode(&clause);
-            let mut space = ActionSpace::from_tree(&tree, &keybindings, &self.invokes);
+            let secret_redaction = self
+                .client
+                .features()?
+                .iter()
+                .any(|feature| feature == "secret_redaction");
+            let mut space = ActionSpace::from_tree_with_secret_redaction(
+                &tree,
+                &keybindings,
+                &self.invokes,
+                secret_redaction,
+            );
             secret_drafts.retain(|(id, text)| {
                 tree.find(id).is_some_and(|n| {
                     n.is_secret()

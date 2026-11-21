@@ -485,6 +485,7 @@ fn hello_response(host: &dyn AgentHost, id: &str, expected_token: Option<&str>) 
         "snapshot_since",
         "snapshot_compact",
         "expect_fingerprint",
+        "secret_redaction",
         "screenshot_inline",
     ] {
         if !hello.features.iter().any(|f| f == feature) {
