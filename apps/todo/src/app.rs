@@ -47,6 +47,9 @@ pub struct TodoApp {
     pending_keybinding: Option<PendingKeybindingFire>,
     #[cfg(feature = "embedded-host")]
     keybinding_backlog: VecDeque<MailboxRequest>,
+    /// A virtual op is queued after `render`; later requests wait for its reply.
+    #[cfg(feature = "embedded-host")]
+    virtual_input_in_flight: bool,
     #[cfg(feature = "embedded-host")]
     last_keybinding_result: Option<(String, Result<gpui_agent::DispatchResult, String>)>,
     _refresh: Option<Task<()>>,
@@ -162,6 +165,8 @@ impl TodoApp {
             pending_keybinding: None,
             #[cfg(feature = "embedded-host")]
             keybinding_backlog: VecDeque::new(),
+            #[cfg(feature = "embedded-host")]
+            virtual_input_in_flight: false,
             #[cfg(feature = "embedded-host")]
             last_keybinding_result: None,
             _refresh: None,
@@ -345,7 +350,9 @@ impl TodoApp {
             self.advance_scrolled_job(window, cx);
             return;
         }
-        if self.pending_keybinding.is_some() {
+        // Requests are answered in order: later ones wait for an in-flight
+        // keybinding or virtual input to reply first.
+        if self.pending_keybinding.is_some() || self.virtual_input_in_flight {
             return;
         }
         while let Some(posted) = self.keybinding_backlog.pop_front() {
@@ -390,23 +397,26 @@ impl TodoApp {
                 continue;
             }
 
-            let shutdown = matches!(posted.request.op, gpui_agent::Op::Shutdown);
-            let response = if posted.request.op.is_virtual_input() {
+            if posted.request.op.is_virtual_input() {
                 match gpui_agent::check_fingerprint_gate(
                     &self.agent_cache.snapshot(&self.store),
                     &posted.request.op,
                 ) {
-                    Ok(()) => match self.dispatch_virtual(&posted.request.op, window, cx) {
-                        Ok(result) => {
-                            let mut resp = gpui_agent::Response::ok(&posted.request.id);
-                            resp.result = result.value;
-                            resp
-                        }
-                        Err(error) => gpui_agent::Response::err(&posted.request.id, error),
-                    },
-                    Err(error) => gpui_agent::Response::err(&posted.request.id, error),
+                    Ok(()) => {
+                        self.start_virtual_input(posted, window, cx);
+                        break;
+                    }
+                    Err(error) => {
+                        let id = posted.request.id.clone();
+                        posted.reply(gpui_agent::Response::err(id, error));
+                        cx.notify();
+                        continue;
+                    }
                 }
-            } else if let gpui_agent::Op::Assert { spec } = &posted.request.op {
+            }
+
+            let shutdown = matches!(posted.request.op, gpui_agent::Op::Shutdown);
+            let response = if let gpui_agent::Op::Assert { spec } = &posted.request.op {
                 match gpui_agent::assert_tree(&self.store.tree(), spec) {
                     Ok(()) => gpui_agent::Response::ok(&posted.request.id),
                     Err(error) => gpui_agent::Response::err(&posted.request.id, error),
@@ -821,91 +831,129 @@ impl TodoApp {
         self.store.tree()
     }
 
+    /// Queue a virtual op to run after `render` returns, and reply once its
+    /// events have been dispatched.
+    ///
+    /// `apply_agent` runs inside `render`, while GPUI is updating this entity.
+    /// Widget handlers reached by the synthesized events update it again
+    /// (`cx.listener`, `entity.update`), which GPUI refuses with a panic. The
+    /// deferred callback runs once the frame is drawn, outside any entity
+    /// update, against the hitboxes and bounds that frame recorded.
     #[cfg(feature = "embedded-host")]
-    fn dispatch_virtual(
+    fn start_virtual_input(
         &mut self,
-        op: &gpui_agent::Op,
+        posted: MailboxRequest,
         window: &mut Window,
         cx: &mut Context<Self>,
+    ) {
+        self.virtual_input_in_flight = true;
+        let entity = cx.entity();
+        window.defer(cx, move |window, cx| {
+            let response = match Self::dispatch_virtual(&entity, &posted.request.op, window, cx) {
+                Ok(result) => {
+                    let mut resp = gpui_agent::Response::ok(&posted.request.id);
+                    resp.result = result.value;
+                    resp
+                }
+                Err(error) => gpui_agent::Response::err(&posted.request.id, error),
+            };
+            entity.update(cx, |this, cx| {
+                this.virtual_input_in_flight = false;
+                this.sync_draft_from_input(cx);
+                this.sync_input_from_store(window, cx);
+                posted.reply(response);
+                cx.notify();
+            });
+        });
+    }
+
+    /// Runs outside any update of the `TodoApp` entity (see
+    /// `start_virtual_input`); borrow it only between dispatches.
+    #[cfg(feature = "embedded-host")]
+    fn dispatch_virtual(
+        entity: &Entity<Self>,
+        op: &gpui_agent::Op,
+        window: &mut Window,
+        cx: &mut App,
     ) -> Result<gpui_agent::DispatchResult, String> {
         match op {
-            gpui_agent::Op::Click { target, .. } => self.virtual_click(target, window, cx),
-            gpui_agent::Op::Type { target, text, .. } => {
-                self.virtual_type(target, text, window, cx)
+            gpui_agent::Op::Click { target, .. } => {
+                let (x, y) = Self::virtual_click(entity, target, window, cx)?;
+                Ok(gpui_agent::DispatchResult::json(serde_json::json!({
+                    "delivery": "virtual",
+                    "target": target,
+                    "x": x,
+                    "y": y,
+                    "path": "gpui.dispatch_event"
+                })))
             }
-            gpui_agent::Op::Key { target, key, .. } => self.virtual_key(target, key, window, cx),
+            gpui_agent::Op::Type { target, text, .. } => {
+                let keystrokes = gpui_agent::text_keystrokes(text)?
+                    .iter()
+                    .map(|token| Keystroke::parse(token).map_err(|err| err.to_string()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Self::virtual_focus(entity, target, window, cx)?;
+                for keystroke in keystrokes {
+                    window.dispatch_keystroke(keystroke, cx);
+                }
+                Ok(gpui_agent::DispatchResult::json(serde_json::json!({
+                    "delivery": "virtual",
+                    "target": target,
+                    "text": text,
+                    "path": "gpui.dispatch_keystroke"
+                })))
+            }
+            gpui_agent::Op::Key { target, key, .. } => {
+                let token = gpui_agent::keystroke_token(key)?;
+                let keystroke = Keystroke::parse(&token).map_err(|err| err.to_string())?;
+                Self::virtual_focus(entity, target, window, cx)?;
+                window.dispatch_keystroke(keystroke, cx);
+                Ok(gpui_agent::DispatchResult::json(serde_json::json!({
+                    "delivery": "virtual",
+                    "target": target,
+                    "key": key,
+                    "path": "gpui.dispatch_keystroke"
+                })))
+            }
             _ => Err(gpui_agent::virtual_unavailable(
                 "only click, type, and key support virtual delivery",
             )),
         }
     }
 
+    /// Click the target's recorded centre; returns the point clicked.
     #[cfg(feature = "embedded-host")]
     fn virtual_click(
-        &mut self,
+        entity: &Entity<Self>,
         target: &str,
         window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Result<gpui_agent::DispatchResult, String> {
-        let plan = gpui_agent::plan_click(&self.snapshot_with_bounds(), target)?;
-        self.agent_cursor.move_to(plan.x, plan.y);
-        self.dispatch_pointer_click(plan.x, plan.y, window, cx);
-        Ok(gpui_agent::DispatchResult::json(serde_json::json!({
-            "delivery": "virtual",
-            "target": target,
-            "x": plan.x,
-            "y": plan.y,
-            "path": "gpui.dispatch_event"
-        })))
+        cx: &mut App,
+    ) -> Result<(f32, f32), String> {
+        let plan = entity.update(cx, |this, cx| {
+            let plan = gpui_agent::plan_click(&this.snapshot_with_bounds(), target)?;
+            this.agent_cursor.move_to(plan.x, plan.y);
+            cx.notify();
+            Ok::<_, String>(plan)
+        })?;
+        dispatch_pointer_click(plan.x, plan.y, window, cx);
+        Ok((plan.x, plan.y))
     }
 
+    /// Click the target, then give the text input keyboard focus when it is
+    /// the target, so the keystrokes that follow reach it.
     #[cfg(feature = "embedded-host")]
-    fn virtual_type(
-        &mut self,
+    fn virtual_focus(
+        entity: &Entity<Self>,
         target: &str,
-        text: &str,
         window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Result<gpui_agent::DispatchResult, String> {
-        self.virtual_click(target, window, cx)?;
+        cx: &mut App,
+    ) -> Result<(), String> {
+        Self::virtual_click(entity, target, window, cx)?;
         if target == ids::INPUT {
-            self.input.update(cx, |state, cx| state.focus(window, cx));
+            let input = entity.read(cx).input.clone();
+            input.update(cx, |state, cx| state.focus(window, cx));
         }
-        for token in gpui_agent::text_keystrokes(text)? {
-            let keystroke = Keystroke::parse(&token).map_err(|err| err.to_string())?;
-            window.dispatch_keystroke(keystroke, cx);
-        }
-        self.sync_draft_from_input(cx);
-        Ok(gpui_agent::DispatchResult::json(serde_json::json!({
-            "delivery": "virtual",
-            "target": target,
-            "text": text,
-            "path": "gpui.dispatch_keystroke"
-        })))
-    }
-
-    #[cfg(feature = "embedded-host")]
-    fn virtual_key(
-        &mut self,
-        target: &str,
-        key: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Result<gpui_agent::DispatchResult, String> {
-        self.virtual_click(target, window, cx)?;
-        if target == ids::INPUT {
-            self.input.update(cx, |state, cx| state.focus(window, cx));
-        }
-        let token = gpui_agent::keystroke_token(key)?;
-        let keystroke = Keystroke::parse(&token).map_err(|err| err.to_string())?;
-        window.dispatch_keystroke(keystroke, cx);
-        self.sync_draft_from_input(cx);
-        Ok(gpui_agent::DispatchResult::json(serde_json::json!({
-            "delivery": "virtual",
-            "target": target,
-            "key": key,
-            "path": "gpui.dispatch_keystroke"
-        })))
+        Ok(())
     }
 
     /// Authorize + dispatch the GPUI Action only. Listeners own store mutation.
@@ -1059,44 +1107,6 @@ impl TodoApp {
                 cx.quit();
             }
         });
-    }
-
-    /// Inject move + down + up through GPUI's window event pipeline.
-    /// Updates GPUI's in-window mouse position only — never the OS cursor.
-    #[cfg(feature = "embedded-host")]
-    fn dispatch_pointer_click(&self, x: f32, y: f32, window: &mut Window, cx: &mut Context<Self>) {
-        let position = point(px(x), px(y));
-        let modifiers = Modifiers::default();
-        window.dispatch_event(
-            MouseMoveEvent {
-                position,
-                pressed_button: None,
-                modifiers,
-            }
-            .to_platform_input(),
-            cx,
-        );
-        window.dispatch_event(
-            MouseDownEvent {
-                button: MouseButton::Left,
-                position,
-                modifiers,
-                click_count: 1,
-                first_mouse: false,
-            }
-            .to_platform_input(),
-            cx,
-        );
-        window.dispatch_event(
-            MouseUpEvent {
-                button: MouseButton::Left,
-                position,
-                modifiers,
-                click_count: 1,
-            }
-            .to_platform_input(),
-            cx,
-        );
     }
 
     /// Record a child's painted bounds under a semantic id (previous frame is
@@ -1517,6 +1527,44 @@ impl TodoApp {
             row.into_any_element()
         }
     }
+}
+
+/// Inject move + down + up through GPUI's window event pipeline.
+/// Updates GPUI's in-window mouse position only — never the OS cursor.
+#[cfg(feature = "embedded-host")]
+fn dispatch_pointer_click(x: f32, y: f32, window: &mut Window, cx: &mut App) {
+    let position = point(px(x), px(y));
+    let modifiers = Modifiers::default();
+    window.dispatch_event(
+        MouseMoveEvent {
+            position,
+            pressed_button: None,
+            modifiers,
+        }
+        .to_platform_input(),
+        cx,
+    );
+    window.dispatch_event(
+        MouseDownEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers,
+            click_count: 1,
+            first_mouse: false,
+        }
+        .to_platform_input(),
+        cx,
+    );
+    window.dispatch_event(
+        MouseUpEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers,
+            click_count: 1,
+        }
+        .to_platform_input(),
+        cx,
+    );
 }
 
 #[cfg(feature = "embedded-host")]
