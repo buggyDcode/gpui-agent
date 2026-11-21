@@ -108,7 +108,7 @@ A failed response keeps its human-readable `error` and adds a stable
 | `error_code` | Meaning |
 | --- | --- |
 | `unauthorized` | Missing or wrong token |
-| `bad_request` | Malformed request line |
+| `bad_request` | Malformed request line (over MCP, also bad tool arguments) |
 | `unsupported_version` | Request `v` the host does not speak |
 | `unsupported_op` | Op or feature the host does not list |
 | `stale_target` / `target_gone` | `expect_fingerprint` mismatch / target absent (nothing dispatched) |
@@ -148,7 +148,10 @@ The CLI and MCP read back by default; `--no-read-back` / `no_read_back:
 true` turn it off. A failed CLI command prints
 `{"ok":false,"error":…,"error_code":…,"hint":…,"delivery_status":…}` on
 stdout as well as `error: …` on stderr (exit code 1); an MCP tool error
-carries the same JSON as its text.
+carries the same JSON as its text. An MCP call rejected before any
+request was made (missing or malformed arguments, an unknown tool, a
+recipe that does not compile) has `error_code` `bad_request`. A failed
+`recipe_run` carries its receipt instead.
 
 ## Revisions (`snapshot since`, `revision`)
 

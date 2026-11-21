@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use gpui_agent::CallFailure;
 use gpui_agent::client::AgentClient;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, KeybindingScope, Op};
+use gpui_agent::{CallFailure, error_code};
 use gpui_agent::{MAX_LINE_BYTES, line_is_blank, read_limited_line_into};
 use gpui_agent_recipe::{
     RunError, ScreenshotCapture, compile_plan, parse_recipe_source, registry_from_schema_paths,
@@ -443,6 +443,28 @@ fn fail(failure: CallFailure) -> String {
     serde_json::to_string(&failure.envelope()).unwrap_or(failure.error)
 }
 
+/// [`fail`] for a request made through a string-returning client API: the
+/// text is classified by [`gpui_agent::error_code_of`].
+fn fail_text(error: String) -> String {
+    fail(CallFailure::from_message(error))
+}
+
+/// Tool error text: an envelope or recipe receipt passes through; any
+/// other text was produced before a request reached the host (bad tool
+/// arguments, an unknown tool, a recipe that does not compile), so it
+/// becomes a `bad_request` envelope. A text that already names a code
+/// keeps it.
+fn tool_error_text(error: String) -> String {
+    if serde_json::from_str::<serde_json::Map<String, Value>>(&error).is_ok() {
+        return error;
+    }
+    let code = match gpui_agent::error_code_of(&error) {
+        error_code::HOST_ERROR => error_code::BAD_REQUEST,
+        code => code,
+    };
+    fail(CallFailure::with_code(error, code, None))
+}
+
 fn parse_delivery(args: &Value) -> Result<DeliveryMode, String> {
     match args.get("delivery") {
         None => Ok(DeliveryMode::Semantic),
@@ -485,7 +507,7 @@ fn call_tool(
             client.set_timeout(wait_reply_timeout(reply_timeout, bound_ms));
             let ready = client.wait_ready();
             client.set_timeout(reply_timeout);
-            ready?
+            ready.map_err(fail_text)?
         }
         "wait_until" => {
             let timeout_ms = args
@@ -497,7 +519,7 @@ fn call_tool(
             client.set_timeout(wait_reply_timeout(reply_timeout, Some(timeout_ms)));
             let ready = client.wait_until(spec, timeout_ms);
             client.set_timeout(reply_timeout);
-            ready?
+            ready.map_err(fail_text)?
         }
         "hello" => client.call(&Op::Hello).map_err(fail)?,
         "snapshot" => {
@@ -510,13 +532,15 @@ fn call_tool(
             };
             let fingerprints = args.get("fingerprints").and_then(Value::as_bool);
             if fingerprints == Some(true) {
-                client.expect_ok(Op::Snapshot {
-                    since,
-                    format,
-                    fingerprints,
-                })?
+                client
+                    .expect_ok(Op::Snapshot {
+                        since,
+                        format,
+                        fingerprints,
+                    })
+                    .map_err(fail_text)?
             } else {
-                client.snapshot_with(since, format)?
+                client.snapshot_with(since, format).map_err(fail_text)?
             }
         }
         "screenshot" => {
@@ -530,7 +554,9 @@ fn call_tool(
             if mode.is_scrolled() && target.as_deref().map(str::trim).unwrap_or("").is_empty() {
                 return Err("screenshot mode=scrolled requires target".into());
             }
-            client.screenshot_with(path, mode, target, max_height_px)?
+            client
+                .screenshot_with(path, mode, target, max_height_px)
+                .map_err(fail_text)?
         }
         "click" => {
             let op = Op::Click {
@@ -582,18 +608,19 @@ fn call_tool(
                 .get("activate")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            client.keybinding(binding, scope, chord, confirm, activate)?
+            client
+                .keybinding(binding, scope, chord, confirm, activate)
+                .map_err(fail_text)?
         }
-        "keybindings" | "keybinding.list" => client.keybindings()?,
+        "keybindings" | "keybinding.list" => client.keybindings().map_err(fail_text)?,
         "events" => {
             let since = args.get("since").and_then(Value::as_u64);
             let limit = args
                 .get("limit")
                 .and_then(Value::as_u64)
                 .map(|v| v.min(u32::MAX as u64) as u32);
-            return client
-                .events(since, limit)
-                .and_then(|poll| serde_json::to_value(poll).map_err(|e| e.to_string()));
+            let poll = client.events(since, limit).map_err(fail_text)?;
+            return serde_json::to_value(poll).map_err(|e| e.to_string());
         }
         "assert" => {
             let spec = parse_assert_spec(&args)?;
@@ -746,7 +773,7 @@ fn tools_call_result(client: &mut AgentClient, params: &Value, schema_paths: &[P
         }),
         Err(err) => json!({
             "isError": true,
-            "content": [{ "type": "text", "text": err }]
+            "content": [{ "type": "text", "text": tool_error_text(err) }]
         }),
     }
 }
@@ -820,12 +847,17 @@ mod instinct {
         args: &Value,
         schema_paths: &[PathBuf],
     ) -> Result<Observed, String> {
-        let snap = client.snapshot()?;
-        let tree = snap
-            .tree
-            .ok_or_else(|| "host returned no ui tree".to_string())?;
+        let snap = client.snapshot().map_err(fail_text)?;
+        // The host answered without a tree: its fault, not the caller's.
+        let tree = snap.tree.ok_or_else(|| {
+            fail(CallFailure::with_code(
+                "host returned no ui tree".to_owned(),
+                error_code::HOST_ERROR,
+                None,
+            ))
+        })?;
         let rev = snap.rev.or(tree.rev);
-        let keybindings = client.keybinding_catalog()?;
+        let keybindings = client.keybinding_catalog().map_err(fail_text)?;
         let invokes = offered_invokes(args, schema_paths)?;
         let space = ActionSpace::from_tree(&tree, &keybindings, &invokes);
         Ok(Observed {
@@ -1057,7 +1089,11 @@ mod instinct {
             Err(err) if is_stale_dispatch_error(&err) => {
                 return Ok(ActStep::Stale);
             }
-            Err(err) => return Err(err),
+            Err(err) => {
+                let code = gpui_agent::error_code_of(&err);
+                let delivery = gpui_agent::DeliveryStatus::of_failure(code);
+                return Err(fail(CallFailure::with_code(err, code, Some(delivery))));
+            }
         }
         // Re-observe against the decide-time rev so the reply carries
         // the post-dispatch rev + diff (PRD M4.5). `result` is
@@ -1518,6 +1554,87 @@ mod tests {
             "{unverified}"
         );
         assert!(unverified.get("after").is_none(), "{unverified}");
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[test]
+    fn wait_until_timeout_carries_the_envelope() {
+        let (mut client, shutdown) = spawn_todo_client();
+        let result = tools_call_result(
+            &mut client,
+            &json!({
+                "name": "wait_until",
+                "arguments": { "target": "nope", "timeout_ms": 100 }
+            }),
+            &[],
+        );
+        let envelope = tool_error_envelope(&result);
+        assert_eq!(envelope["error_code"], json!("timeout"), "{envelope}");
+        assert!(envelope["hint"].is_string(), "{envelope}");
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[test]
+    fn string_api_tools_carry_the_envelope_when_unreachable() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let mut client = AgentClient::connect(addr).with_timeout(Duration::from_millis(300));
+        for (name, arguments) in [
+            ("snapshot", json!({})),
+            ("snapshot", json!({ "fingerprints": true })),
+            ("keybindings", json!({})),
+            ("events", json!({})),
+            ("wait", json!({ "timeout_ms": 100 })),
+        ] {
+            let result = tools_call_result(
+                &mut client,
+                &json!({ "name": name, "arguments": arguments }),
+                &[],
+            );
+            let envelope = tool_error_envelope(&result);
+            assert_eq!(
+                envelope["error_code"],
+                json!("connect_failed"),
+                "{name}: {envelope}"
+            );
+        }
+    }
+
+    #[test]
+    fn bad_arguments_are_a_bad_request_envelope() {
+        let mut client = AgentClient::connect("127.0.0.1:1".parse().unwrap());
+        let result = tools_call_result(
+            &mut client,
+            &json!({ "name": "click", "arguments": {} }),
+            &[],
+        );
+        let envelope = tool_error_envelope(&result);
+        assert_eq!(envelope["error_code"], json!("bad_request"), "{envelope}");
+        assert!(envelope.get("delivery_status").is_none(), "{envelope}");
+    }
+
+    #[test]
+    fn click_on_a_missing_target_is_not_found_and_not_delivered() {
+        let (mut client, shutdown) = spawn_todo_client();
+        for no_read_back in [false, true] {
+            let result = tools_call_result(
+                &mut client,
+                &json!({
+                    "name": "click",
+                    "arguments": { "target": "no-such-node", "no_read_back": no_read_back }
+                }),
+                &[],
+            );
+            let envelope = tool_error_envelope(&result);
+            assert_eq!(envelope["error_code"], json!("not_found"), "{envelope}");
+            assert_eq!(
+                envelope["delivery_status"],
+                json!("not_delivered"),
+                "{envelope}"
+            );
+            assert!(envelope["hint"].is_string(), "{envelope}");
+        }
         shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }

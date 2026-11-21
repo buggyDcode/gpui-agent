@@ -899,7 +899,7 @@ fn run() -> Result<()> {
             print_resp(call(client.call(&Op::System { action, value }))?)
         }
         Command::Events { since, limit } => {
-            let poll = client.events(since, limit).map_err(anyhow::Error::msg)?;
+            let poll = rpc(client.events(since, limit))?;
             println!("{}", serde_json::to_string_pretty(&poll)?);
         }
         Command::Click {

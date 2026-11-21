@@ -60,6 +60,16 @@ fn click_on_a_missing_target_reports_not_found_and_not_delivered() {
 }
 
 #[test]
+fn wait_until_timeout_reports_timeout() {
+    let todo = Todo::spawn(TOKEN);
+    let envelope = failed_envelope(&cli(
+        &todo.addr,
+        &["wait-until", "--id", "nope", "--timeout-ms", "100"],
+    ));
+    assert_eq!(envelope["error_code"], "timeout", "{envelope}");
+}
+
+#[test]
 fn stale_fingerprint_reports_stale_target_and_not_delivered() {
     let todo = Todo::spawn(TOKEN);
     let envelope = failed_envelope(&cli(
@@ -86,6 +96,20 @@ fn unreachable_host_reports_connect_failed() {
     ));
     assert_eq!(envelope["error_code"], "connect_failed", "{envelope}");
     assert_eq!(envelope["delivery_status"], "not_delivered", "{envelope}");
+}
+
+#[test]
+fn string_api_commands_report_connect_failed() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    drop(listener);
+    for command in ["events", "snapshot", "keybindings"] {
+        let envelope = failed_envelope(&cli(&addr, &["--reply-timeout-ms", "300", command]));
+        assert_eq!(
+            envelope["error_code"], "connect_failed",
+            "{command}: {envelope}"
+        );
+    }
 }
 
 #[test]
