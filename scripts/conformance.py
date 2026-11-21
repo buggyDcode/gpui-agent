@@ -19,6 +19,15 @@ or --addr / --token passed through) and checks that:
   declines with `screenshot_unavailable` also gets a warning. Either case is
   a failure with --require-screenshot.
 
+- a failed command prints a JSON envelope on stdout with a stable
+  `error_code`: `not_found` for an `assert` on a missing node,
+  `not_delivered` for a `click` on one with and without read-back (so the
+  host must refuse an id that is not in its tree), with `not_found` after
+  read-back and `not_found` or `target_gone` from the host, and, when the
+  host lists `expect_fingerprint`, `stale_target` (with `delivery_status`
+  `not_delivered`) for a `click` whose fingerprint does not match. The
+  host refuses that click before dispatching, so nothing acts.
+
 `press` is only tried with --press <node id>, since it changes the app.
 Exit code 0 when every check passed; 1 otherwise.
 """
@@ -42,7 +51,8 @@ GATED = {
     "long_press": ["long-press", "--x", "1", "--y", "1"],
     "pinch": ["pinch", "--scale", "1.1"],
     "viewport": ["viewport", "--width", "800", "--height", "600"],
-    "paste": ["paste", "conformance-no-such-node", "x"],
+    # Read-back would find no such node and stop before the host is asked.
+    "paste": ["paste", "conformance-no-such-node", "x", "--no-read-back"],
     "system.back": ["system", "back"],
     "system.home": ["system", "home"],
     "system.rotate": ["system", "rotate", "landscape"],
@@ -77,6 +87,19 @@ class Run:
             return json.loads(out), ""
         except ValueError as exc:
             return None, f"not JSON: {exc}"
+
+    def failure(self, *args):
+        """Run a command expected to fail; return its stdout envelope."""
+        code, out, err = self.cli(*args)
+        if code == 0:
+            return None, "the command succeeded"
+        try:
+            envelope = json.loads(out)
+        except ValueError:
+            return None, f"no JSON envelope on stdout ({err})"
+        if not isinstance(envelope, dict) or envelope.get("ok") is not False:
+            return None, f"not a failure envelope: {out.strip()}"
+        return envelope, err
 
     def nodes(self):
         reply, err = self.json("snapshot")
@@ -230,6 +253,59 @@ def scroll_probes(run, features, nodes, size):
         run.check(f"{feature} back on {scroller['id']}", code == 0, err)
 
 
+def error_code_checks(run, features, ids):
+    envelope, err = run.failure("assert", "--id", "conformance-no-such-node")
+    code = (envelope or {}).get("error_code")
+    run.check(
+        "a missing target fails with error_code not_found",
+        code == "not_found",
+        err if envelope is None else str(code),
+    )
+    # With read-back (the default) the client finds no such node and sends
+    # nothing, so the code is always not_found. With --no-read-back the host
+    # itself must refuse the id before dispatching: `not_found` and
+    # `target_gone` both say that (nsh's adapter answers `target_gone: <id>`).
+    passes = (
+        ((), "after read-back", ("not_found",)),
+        (("--no-read-back",), "from the host", ("not_found", "target_gone")),
+    )
+    for extra, how, accepted in passes:
+        envelope, err = run.failure("click", "conformance-no-such-node", *extra)
+        code = (envelope or {}).get("error_code")
+        delivery = (envelope or {}).get("delivery_status")
+        run.check(
+            f"a click on a missing target fails with {' or '.join(accepted)} {how}",
+            code in accepted,
+            err if envelope is None else str(code),
+        )
+        run.check(
+            f"a click on a missing target is not_delivered {how}",
+            delivery == "not_delivered",
+            str(delivery),
+        )
+    if "expect_fingerprint" not in features:
+        run.skip("stale fingerprint", "hello.features does not list expect_fingerprint")
+        return
+    if not ids:
+        run.skip("stale fingerprint", "the snapshot has no node")
+        return
+    # A fingerprint is a 64-bit hash: 1 matching a real node is not a risk
+    # worth a second probe.
+    envelope, err = run.failure("click", ids[0], "--expect-fingerprint", "1")
+    code = (envelope or {}).get("error_code")
+    delivery = (envelope or {}).get("delivery_status")
+    run.check(
+        f"a stale fingerprint on {ids[0]} fails with error_code stale_target",
+        code == "stale_target",
+        err if envelope is None else str(code),
+    )
+    run.check(
+        "a stale fingerprint is not_delivered",
+        delivery == "not_delivered",
+        str(delivery),
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cli", default=os.environ.get("GPUI_AGENT_CLI", "gpui-agent"))
@@ -283,6 +359,7 @@ def main():
     else:
         run.skip("refusal of unlisted ops", "a 0.1 host does not know them")
 
+    error_code_checks(run, features, ids)
     scroll_probes(run, features, nodes, size)
     if "hover" in features:
         button = first(nodes, "button", size)

@@ -838,6 +838,38 @@ pub struct Response {
     /// "do not cache": every snapshot may differ even at the same rev.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rev: Option<u64>,
+    /// Stable code for a failure ([`crate::error_code`]). The shared
+    /// server fills it from `error`; the client fills it for older hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    /// Fixed recovery hint for `error_code`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+    /// Client-side: whether an action reached the app. Hosts never send
+    /// it; the client sets it on actions (distinct from `result.delivery`,
+    /// which names the `semantic`/`virtual` path).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_status: Option<crate::error_code::DeliveryStatus>,
+    /// Client-side: the target as a snapshot saw it after the action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<ReadBack>,
+}
+
+/// Target state read back after an action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadBack {
+    pub exists: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focused: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// The target's state differs from the snapshot taken before the
+    /// action (or it left the tree).
+    pub changed: bool,
 }
 
 /// Whether the host will enforce `GPUI_AGENT_TOKEN` on every request.
@@ -1276,6 +1308,46 @@ impl Op {
             Self::Click { .. } | Self::Type { .. } | Self::Key { .. }
         ) && self.delivery().is_virtual()
     }
+
+    /// `true` for ops that change the app, so a reply to them carries a
+    /// `delivery_status`. Reads (snapshot, assert, wait, …) never do.
+    pub fn acts(&self) -> bool {
+        matches!(
+            self,
+            Self::Click { .. }
+                | Self::Type { .. }
+                | Self::SetValue { .. }
+                | Self::Key { .. }
+                | Self::Keybinding { .. }
+                | Self::Invoke { .. }
+                | Self::Shutdown
+                | Self::Press { .. }
+                | Self::Scroll { .. }
+                | Self::Hover { .. }
+                | Self::Drag { .. }
+                | Self::Swipe { .. }
+                | Self::LongPress { .. }
+                | Self::Pinch { .. }
+                | Self::Viewport { .. }
+                | Self::Paste { .. }
+                | Self::System { .. }
+        )
+    }
+
+    /// The node a read-back checks after this action: the target of
+    /// `click`, `type`, `set_value`, `key`, `paste`, and of `press` and
+    /// `long_press` when they name one.
+    pub fn read_back_target(&self) -> Option<&str> {
+        match self {
+            Self::Click { target, .. }
+            | Self::Type { target, .. }
+            | Self::SetValue { target, .. }
+            | Self::Key { target, .. }
+            | Self::Paste { target, .. } => Some(target),
+            Self::Press { target, .. } | Self::LongPress { target, .. } => target.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 impl Response {
@@ -1290,6 +1362,10 @@ impl Response {
             result: None,
             fingerprints: None,
             rev: None,
+            error_code: None,
+            hint: None,
+            delivery_status: None,
+            after: None,
         }
     }
 
@@ -1304,7 +1380,43 @@ impl Response {
             result: None,
             fingerprints: None,
             rev: None,
+            error_code: None,
+            hint: None,
+            delivery_status: None,
+            after: None,
         }
+    }
+
+    /// An error response that already carries its `error_code` and `hint`.
+    pub fn err_coded(id: impl Into<String>, error: impl Into<String>) -> Self {
+        let mut resp = Self::err(id, error);
+        resp.fill_error_code();
+        resp
+    }
+
+    /// Set `error_code` (and `hint`) from `error` on a failed response that
+    /// has none. Used by the server before writing and by the client on
+    /// replies from hosts that predate the field.
+    pub fn fill_error_code(&mut self) {
+        if self.ok || self.error_code.is_some() {
+            return;
+        }
+        let code = crate::error_code::error_code_of(self.error.as_deref().unwrap_or(""));
+        self.error_code = Some(code.to_string());
+        if self.hint.is_none() {
+            self.hint = crate::error_code::hint_for(code).map(str::to_string);
+        }
+    }
+
+    /// The failure's code: `error_code` when sent, else classified from
+    /// `error`. `None` on success.
+    pub fn code(&self) -> Option<&str> {
+        if self.ok {
+            return None;
+        }
+        Some(self.error_code.as_deref().unwrap_or_else(|| {
+            crate::error_code::error_code_of(self.error.as_deref().unwrap_or(""))
+        }))
     }
 }
 

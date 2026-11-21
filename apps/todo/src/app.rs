@@ -886,11 +886,10 @@ impl TodoApp {
                 })))
             }
             gpui_agent::Op::Type { target, text, .. } => {
-                let keystrokes = gpui_agent::text_keystrokes(text)?
-                    .iter()
-                    .map(|token| Keystroke::parse(token).map_err(|err| err.to_string()))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Self::virtual_focus(entity, target, window, cx)?;
+                let keystrokes = validate_then_click(
+                    || parse_virtual_text(text),
+                    || Self::virtual_focus(entity, target, window, cx),
+                )?;
                 for keystroke in keystrokes {
                     window.dispatch_keystroke(keystroke, cx);
                 }
@@ -902,9 +901,10 @@ impl TodoApp {
                 })))
             }
             gpui_agent::Op::Key { target, key, .. } => {
-                let token = gpui_agent::keystroke_token(key)?;
-                let keystroke = Keystroke::parse(&token).map_err(|err| err.to_string())?;
-                Self::virtual_focus(entity, target, window, cx)?;
+                let keystroke = validate_then_click(
+                    || parse_virtual_key(key),
+                    || Self::virtual_focus(entity, target, window, cx),
+                )?;
                 window.dispatch_keystroke(keystroke, cx);
                 Ok(gpui_agent::DispatchResult::json(serde_json::json!({
                     "delivery": "virtual",
@@ -1141,6 +1141,65 @@ impl TodoApp {
         child: impl IntoElement,
     ) -> impl IntoElement {
         child
+    }
+}
+
+#[cfg(feature = "embedded-host")]
+fn validate_then_click<T>(
+    prepare: impl FnOnce() -> Result<T, String>,
+    click: impl FnOnce() -> Result<(), String>,
+) -> Result<T, String> {
+    let payload = prepare()?;
+    click()?;
+    Ok(payload)
+}
+
+#[cfg(feature = "embedded-host")]
+fn parse_virtual_text(text: &str) -> Result<Vec<Keystroke>, String> {
+    gpui_agent::text_keystrokes(text)?
+        .iter()
+        .map(|token| Keystroke::parse(token).map_err(|err| err.to_string()))
+        .collect()
+}
+
+#[cfg(feature = "embedded-host")]
+fn parse_virtual_key(key: &str) -> Result<Keystroke, String> {
+    let token = gpui_agent::keystroke_token(key)?;
+    Keystroke::parse(&token).map_err(|err| err.to_string())
+}
+
+#[cfg(all(test, feature = "embedded-host"))]
+mod tests {
+    use super::{parse_virtual_key, parse_virtual_text, validate_then_click};
+
+    #[test]
+    fn virtual_type_rejects_unsupported_text_before_click() {
+        let mut clicked = false;
+        let result = validate_then_click(
+            || parse_virtual_text("snowman ☃"),
+            || {
+                clicked = true;
+                Ok(())
+            },
+        );
+
+        assert!(result.unwrap_err().contains("ASCII-only"));
+        assert!(!clicked);
+    }
+
+    #[test]
+    fn virtual_key_rejects_unsupported_key_before_click() {
+        let mut clicked = false;
+        let result = validate_then_click(
+            || parse_virtual_key("NotAKey"),
+            || {
+                clicked = true;
+                Ok(())
+            },
+        );
+
+        assert!(result.unwrap_err().contains("unhandled virtual key"));
+        assert!(!clicked);
     }
 }
 

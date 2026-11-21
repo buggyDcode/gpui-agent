@@ -15,6 +15,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use clap::parser::ValueSource;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use gpui_agent::CallFailure;
 use gpui_agent::client::AgentClient;
 use gpui_agent::discovery::NamedSession;
 use gpui_agent::protocol::{AssertSpec, DeliveryMode, KeybindingScope, Op};
@@ -69,6 +70,12 @@ struct Cli {
     /// host; an agent wants the default.
     #[arg(long, global = true)]
     as_written: bool,
+    /// Skip the read-back after an action (`click`, `type`, `set-value`,
+    /// `key`, `press`, `paste`, `long-press`). By default the CLI snapshots
+    /// the target before and after, reports it as `after`, and sets
+    /// `delivery_status` to `delivered_verified` when it changed.
+    #[arg(long, global = true)]
+    no_read_back: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -268,6 +275,11 @@ enum Command {
         /// `semantic` (default) calls the handler. `virtual` synthesizes GPUI events.
         #[arg(long, default_value = "semantic")]
         delivery: DeliveryMode,
+        /// Refuse with `stale_target`, without clicking, unless the target's
+        /// fingerprint is still this value (the MCP `snapshot` tool returns
+        /// them with `fingerprints: true`).
+        #[arg(long, value_name = "FINGERPRINT")]
+        expect_fingerprint: Option<u64>,
     },
     /// Append text to an editable widget.
     Type {
@@ -430,6 +442,14 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
+            // A failed request also prints its envelope on stdout, so a
+            // caller parsing JSON gets the code and delivery status.
+            if let Some(failure) = err.downcast_ref::<CallFailure>() {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&failure.envelope()).unwrap()
+                );
+            }
             eprintln!("error: {err}");
             ExitCode::FAILURE
         }
@@ -716,11 +736,12 @@ fn run() -> Result<()> {
         client = client.as_written();
     }
 
+    let read_back = !cli.no_read_back;
     match cli.command {
         Command::Wait { timeout_ms } => {
             let reply_timeout = request_timeout.unwrap_or_else(|| client.timeout());
             client.set_timeout(wait_reply_timeout(reply_timeout, timeout_ms));
-            print_resp(rpc(client.expect_ok(Op::Wait { timeout_ms }))?)
+            print_resp(call(client.call(&Op::Wait { timeout_ms }))?)
         }
         Command::WaitUntil {
             timeout_ms,
@@ -746,11 +767,15 @@ fn run() -> Result<()> {
                 visible,
                 in_viewport,
             };
-            print_resp(rpc(client.wait_until(spec, timeout_ms))?)
+            print_resp(call(client.call(&Op::WaitUntil { timeout_ms, spec }))?)
         }
-        Command::Hello => print_resp(rpc(client.expect_ok(Op::Hello))?),
+        Command::Hello => print_resp(call(client.call(&Op::Hello))?),
         Command::Snapshot { pretty, refs } => {
-            let resp = rpc(client.snapshot())?;
+            let resp = call(client.call(&Op::Snapshot {
+                since: None,
+                format: None,
+                fingerprints: None,
+            }))?;
             if refs {
                 let tree = resp
                     .tree
@@ -773,7 +798,7 @@ fn run() -> Result<()> {
             inline,
         } => {
             if inline {
-                let png = rpc(client.screenshot_bytes(mode, target, max_height_px))?;
+                let png = call(client.screenshot_bytes_call(mode, target, max_height_px))?;
                 std::fs::write(&out, &png)
                     .map_err(|err| anyhow!("write {}: {err}", out.display()))?;
                 println!(
@@ -787,26 +812,30 @@ fn run() -> Result<()> {
                     "screenshot --mode scrolled requires --target <scroll-view-id>"
                 ));
             }
-            print_resp(rpc(client.screenshot_with(
-                out.to_string_lossy().into_owned(),
+            print_resp(call(client.call(&Op::Screenshot {
+                path: Some(out.to_string_lossy().into_owned()),
                 mode,
                 target,
                 max_height_px,
-            ))?)
+                inline: false,
+            }))?)
         }
-        Command::Press { target, x, y } => print_resp(rpc(client.gated(Op::Press {
-            target,
-            x,
-            y,
-            expect_fingerprint: None,
-        }))?),
+        Command::Press { target, x, y } => print_resp(call(client.act(
+            &Op::Press {
+                target,
+                x,
+                y,
+                expect_fingerprint: None,
+            },
+            read_back,
+        ))?),
         Command::Scroll {
             target,
             x,
             y,
             dx,
             dy,
-        } => print_resp(rpc(client.gated(Op::Scroll {
+        } => print_resp(call(client.call(&Op::Scroll {
             target,
             x,
             y,
@@ -814,7 +843,7 @@ fn run() -> Result<()> {
             dy,
         }))?),
         Command::Hover { target, x, y } => {
-            print_resp(rpc(client.gated(Op::Hover { target, x, y }))?)
+            print_resp(call(client.call(&Op::Hover { target, x, y }))?)
         }
         Command::Drag {
             target,
@@ -824,7 +853,7 @@ fn run() -> Result<()> {
             y,
             dx,
             dy,
-        } => print_resp(rpc(client.gated(Op::Drag {
+        } => print_resp(call(client.call(&Op::Drag {
             from,
             to,
             target,
@@ -837,7 +866,7 @@ fn run() -> Result<()> {
             direction,
             target,
             distance,
-        } => print_resp(rpc(client.gated(Op::Swipe {
+        } => print_resp(call(client.call(&Op::Swipe {
             target,
             direction,
             distance,
@@ -847,55 +876,96 @@ fn run() -> Result<()> {
             x,
             y,
             duration_ms,
-        } => print_resp(rpc(client.gated(Op::LongPress {
-            target,
-            x,
-            y,
-            duration_ms,
-        }))?),
+        } => print_resp(call(client.act(
+            &Op::LongPress {
+                target,
+                x,
+                y,
+                duration_ms,
+            },
+            read_back,
+        ))?),
         Command::Pinch { target, scale } => {
-            print_resp(rpc(client.gated(Op::Pinch { target, scale }))?)
+            print_resp(call(client.call(&Op::Pinch { target, scale }))?)
         }
         Command::Viewport {
             width,
             height,
             preset,
-        } => print_resp(rpc(client.gated(Op::Viewport {
+        } => print_resp(call(client.call(&Op::Viewport {
             width,
             height,
             preset,
         }))?),
         Command::Paste { target, text } => {
-            print_resp(rpc(client.gated(Op::Paste { target, text }))?)
+            print_resp(call(client.act(&Op::Paste { target, text }, read_back))?)
         }
         Command::System { action, value } => {
-            print_resp(rpc(client.gated(Op::System { action, value }))?)
+            print_resp(call(client.call(&Op::System { action, value }))?)
         }
         Command::Events { since, limit } => {
-            let poll = client.events(since, limit).map_err(anyhow::Error::msg)?;
+            let poll = rpc(client.events(since, limit))?;
             println!("{}", serde_json::to_string_pretty(&poll)?);
         }
-        Command::Click { target, delivery } => {
-            print_resp(rpc(client.click_with_delivery(target, delivery))?)
-        }
+        Command::Click {
+            target,
+            delivery,
+            expect_fingerprint,
+        } => print_resp(call(client.act(
+            &Op::Click {
+                target,
+                delivery,
+                expect_fingerprint,
+            },
+            read_back,
+        ))?),
         Command::Type {
             target,
             text,
             delivery,
-        } => print_resp(rpc(client.type_with_delivery(target, text, delivery))?),
-        Command::SetValue { target, value } => print_resp(rpc(client.set_value(target, value))?),
+        } => print_resp(call(client.act(
+            &Op::Type {
+                target,
+                text,
+                delivery,
+                expect_fingerprint: None,
+            },
+            read_back,
+        ))?),
+        Command::SetValue { target, value } => print_resp(call(client.act(
+            &Op::SetValue {
+                target,
+                value,
+                expect_fingerprint: None,
+            },
+            read_back,
+        ))?),
         Command::Key {
             target,
             key,
             delivery,
-        } => print_resp(rpc(client.key_with_delivery(target, key, delivery))?),
+        } => print_resp(call(client.act(
+            &Op::Key {
+                target,
+                key,
+                delivery,
+                expect_fingerprint: None,
+            },
+            read_back,
+        ))?),
         Command::Keybinding {
             id,
             scope,
             chord,
             confirm,
             activate,
-        } => print_resp(rpc(client.keybinding(id, scope, chord, confirm, activate))?),
+        } => print_resp(call(client.call(&Op::Keybinding {
+            binding: id,
+            chord,
+            scope,
+            confirm,
+            activate,
+        }))?),
         Command::Keybindings => print_resp(rpc(client.keybindings())?),
         Command::Assert {
             id,
@@ -918,10 +988,13 @@ fn run() -> Result<()> {
                 visible,
                 in_viewport,
             };
-            print_resp(rpc(client.assert(spec))?);
+            print_resp(call(client.call(&Op::Assert { spec }))?);
         }
-        Command::Invoke { name, args } => print_resp(rpc(client.invoke(name, parse_args(&args)?))?),
-        Command::Shutdown => print_resp(rpc(client.expect_ok(Op::Shutdown))?),
+        Command::Invoke { name, args } => print_resp(call(client.call(&Op::Invoke {
+            name,
+            args: parse_args(&args)?,
+        }))?),
+        Command::Shutdown => print_resp(call(client.call(&Op::Shutdown))?),
         Command::Targets
         | Command::Skill
         | Command::Attach { .. }
@@ -938,8 +1011,15 @@ fn run() -> Result<()> {
     Ok(())
 }
 
+/// A request that failed with only a text: classify it, so `main` prints
+/// its envelope (no delivery status is known here).
 fn rpc<T>(result: std::result::Result<T, String>) -> Result<T> {
-    result.map_err(|e| anyhow!("{e}"))
+    result.map_err(|e| anyhow::Error::new(CallFailure::from_message(e)))
+}
+
+/// A typed request: its [`CallFailure`] reaches `main` intact.
+fn call<T>(result: std::result::Result<T, CallFailure>) -> Result<T> {
+    result.map_err(anyhow::Error::new)
 }
 
 fn parse_args(pairs: &[String]) -> Result<serde_json::Value> {
@@ -1309,9 +1389,14 @@ mod tests {
     fn click_delivery_defaults_to_semantic() {
         let cli = Cli::try_parse_from(["gpui-agent", "click", "todo-add"]).unwrap();
         match cli.command {
-            Command::Click { target, delivery } => {
+            Command::Click {
+                target,
+                delivery,
+                expect_fingerprint,
+            } => {
                 assert_eq!(target, "todo-add");
                 assert_eq!(delivery, DeliveryMode::Semantic);
+                assert_eq!(expect_fingerprint, None);
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -1755,5 +1840,35 @@ mod tests {
             help.contains("GPUI_AGENT_TOKEN") && help.to_ascii_lowercase().contains("recipe run"),
             "{help}"
         );
+    }
+
+    #[test]
+    fn read_back_is_on_unless_no_read_back_is_given() {
+        let cli = Cli::try_parse_from(["gpui-agent", "click", "todo-add"]).unwrap();
+        assert!(!cli.no_read_back);
+        let cli =
+            Cli::try_parse_from(["gpui-agent", "click", "todo-add", "--no-read-back"]).unwrap();
+        assert!(cli.no_read_back);
+        let cli = Cli::try_parse_from(["gpui-agent", "--no-read-back", "type", "todo-input", "x"])
+            .unwrap();
+        assert!(cli.no_read_back);
+    }
+
+    #[test]
+    fn click_takes_an_expected_fingerprint() {
+        let cli = Cli::try_parse_from([
+            "gpui-agent",
+            "click",
+            "todo-add",
+            "--expect-fingerprint",
+            "42",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Click {
+                expect_fingerprint, ..
+            } => assert_eq!(expect_fingerprint, Some(42)),
+            other => panic!("unexpected {other:?}"),
+        }
     }
 }
