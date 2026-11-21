@@ -76,6 +76,30 @@ struct Cli {
     /// `delivery_status` to `delivered_verified` when it changed.
     #[arg(long, global = true)]
     no_read_back: bool,
+    /// When `click`, `type`, `set-value`, `key` or `press` names its target
+    /// by a ref (`@e2`), send the fingerprint `snapshot --refs` saved for it
+    /// as `--expect-fingerprint`: the host refuses with `stale_target`, and
+    /// does nothing, when the node changed since. Opt-in because the
+    /// fingerprint covers the value: after `type @e2 …`, `key @e2 Enter`
+    /// is stale until the next `snapshot --refs`.
+    #[arg(long, global = true)]
+    guard: bool,
+    /// After an action, wait until a node with this id is in the tree, then
+    /// print the new tree in compact form as `compact`.
+    #[arg(
+        long,
+        global = true,
+        value_name = "ID",
+        conflicts_with = "wait_for_gone"
+    )]
+    wait_for: Option<String>,
+    /// After an action, wait until no node with this id is in the tree,
+    /// then print the new tree in compact form as `compact`.
+    #[arg(long, global = true, value_name = "ID")]
+    wait_for_gone: Option<String>,
+    /// Bound of `--wait-for` / `--wait-for-gone`, in milliseconds.
+    #[arg(long, global = true, default_value_t = 5000, value_name = "MS")]
+    wait_timeout_ms: u64,
     #[command(subcommand)]
     command: Command,
 }
@@ -161,6 +185,17 @@ enum Command {
         /// node id, until the next `snapshot --refs` renumbers them.
         #[arg(long, conflicts_with = "pretty")]
         refs: bool,
+        /// Add each node's fingerprint, for `--expect-fingerprint`: the
+        /// `fingerprints` map in JSON, `fp=…` on each `--refs` line.
+        #[arg(long)]
+        fingerprints: bool,
+        /// Keep this many levels (1 = the roots alone). A node whose
+        /// children were cut shows `children_count`.
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+        depth: Option<u64>,
+        /// Keep only the subtree of this node (an id or a ref).
+        #[arg(long, value_name = "ID")]
+        root: Option<String>,
     },
     /// Observe-only PNG of the **app surface**. Host writes `--out`.
     /// Headless / Linux / Windows: `screenshot_unavailable` (no fake file).
@@ -191,6 +226,10 @@ enum Command {
         x: Option<f64>,
         #[arg(long)]
         y: Option<f64>,
+        /// Refuse with `stale_target`, without pressing, unless the target's
+        /// fingerprint (`snapshot --fingerprints`) is still this value.
+        #[arg(long, value_name = "FINGERPRINT", requires = "target")]
+        expect_fingerprint: Option<u64>,
     },
     /// Scroll a node, or what is under `--x`/`--y`, by a delta in points.
     Scroll {
@@ -276,8 +315,7 @@ enum Command {
         #[arg(long, default_value = "semantic")]
         delivery: DeliveryMode,
         /// Refuse with `stale_target`, without clicking, unless the target's
-        /// fingerprint is still this value (the MCP `snapshot` tool returns
-        /// them with `fingerprints: true`).
+        /// fingerprint (`snapshot --fingerprints`) is still this value.
         #[arg(long, value_name = "FINGERPRINT")]
         expect_fingerprint: Option<u64>,
     },
@@ -287,15 +325,30 @@ enum Command {
         text: String,
         #[arg(long, default_value = "semantic")]
         delivery: DeliveryMode,
+        /// Refuse with `stale_target`, without typing, unless the target's
+        /// fingerprint (`snapshot --fingerprints`) is still this value.
+        #[arg(long, value_name = "FINGERPRINT")]
+        expect_fingerprint: Option<u64>,
     },
     /// Replace the value of an editable widget.
-    SetValue { target: String, value: String },
+    SetValue {
+        target: String,
+        value: String,
+        /// Refuse with `stale_target`, without setting it, unless the
+        /// target's fingerprint (`snapshot --fingerprints`) is still this value.
+        #[arg(long, value_name = "FINGERPRINT")]
+        expect_fingerprint: Option<u64>,
+    },
     /// Send a key (`Enter`, `Backspace`) to a widget. No modifiers (use `keybinding`).
     Key {
         target: String,
         key: String,
         #[arg(long, default_value = "semantic")]
         delivery: DeliveryMode,
+        /// Refuse with `stale_target`, without sending it, unless the
+        /// target's fingerprint (`snapshot --fingerprints`) is still this value.
+        #[arg(long, value_name = "FINGERPRINT")]
+        expect_fingerprint: Option<u64>,
     },
     /// Fire a GPUI Action by id (keymap path, never OS HID).
     Keybinding {
@@ -596,6 +649,7 @@ fn require_recipe_mcp_token(token: Option<&str>) -> Result<&str> {
 
 fn run() -> Result<()> {
     let (mut cli, mut sources) = parse_cli_from(std::env::args_os());
+    requested_wait(&cli)?;
     if matches!(&cli.command, Command::Attach { .. } | Command::Detach) {
         check_cli_target_selector_conflicts(&cli, sources)?;
     }
@@ -650,15 +704,17 @@ fn run() -> Result<()> {
     // window is visible. Stderr keeps stdout (and `mcp`'s protocol) clean.
     // `@e3` stands for a node of the last `snapshot --refs` of this host.
     let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let mut used_refs = Vec::new();
     if args
         .iter()
         .skip(1)
         .any(|arg| arg.to_str().is_some_and(refs::has_ref))
     {
-        refs::resolve(&root, target.addr, &mut args[1..]).map_err(|e| anyhow!(e))?;
+        used_refs = refs::resolve(&root, target.addr, &mut args[1..]).map_err(|e| anyhow!(e))?;
         (cli, sources) = parse_cli_from(args);
     }
     let addr = target.addr;
+    let wait = requested_wait(&cli)?;
     if let Some(session) = &session {
         eprintln!("gpui-agent: session {} -> {addr}", session.name);
     } else if target.app.is_some() {
@@ -737,6 +793,45 @@ fn run() -> Result<()> {
     }
 
     let read_back = !cli.no_read_back;
+    let guarded = cli.guard;
+    // The fingerprint `snapshot --refs` saved for `target`, when `--guard`
+    // is on and `target` was given as a ref.
+    let guard = |target: Option<&str>, explicit: Option<u64>| -> Result<Option<u64>> {
+        if explicit.is_some() || !guarded {
+            return Ok(explicit);
+        }
+        let Some(saved) = target.and_then(|id| used_refs.iter().find(|saved| saved.id == id))
+        else {
+            return Ok(None);
+        };
+        saved.fp.map(Some).ok_or_else(|| {
+            anyhow!(
+                "--guard: no fingerprint saved for `{}`; run `gpui-agent snapshot --refs` again (the host may not report fingerprints)",
+                saved.id
+            )
+        })
+    };
+    let finish = |client: &mut AgentClient, resp: gpui_agent::Response| -> Result<()> {
+        match &wait {
+            None => print_resp(resp),
+            Some((wait, timeout_ms)) => {
+                let reply_timeout = request_timeout.unwrap_or_else(|| client.timeout());
+                client.set_timeout(wait_reply_timeout(reply_timeout, Some(*timeout_ms)));
+                let waited = client.wait_after(wait, *timeout_ms);
+                client.set_timeout(reply_timeout);
+                let compact = call(waited.map_err(|failure| CallFailure {
+                    delivery_status: resp.delivery_status,
+                    ..failure
+                }))?;
+                let out = WithCompact {
+                    resp: &resp,
+                    compact: &compact,
+                };
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            }
+        }
+        Ok(())
+    };
     match cli.command {
         Command::Wait { timeout_ms } => {
             let reply_timeout = request_timeout.unwrap_or_else(|| client.timeout());
@@ -770,21 +865,24 @@ fn run() -> Result<()> {
             print_resp(rpc(client.wait_until(spec, timeout_ms))?)
         }
         Command::Hello => print_resp(call(client.call(&Op::Hello))?),
-        Command::Snapshot { pretty, refs } => {
-            let resp = rpc(client.snapshot())?;
-            if refs {
-                let tree = resp
-                    .tree
-                    .ok_or_else(|| anyhow!("the reply carried no tree"))?;
-                let (outline, table) = refs::render(&tree);
-                refs::save(&gpui_agent::runtime_root(), addr, &table)
-                    .context("saving the ref table")?;
-                print!("{outline}");
-            } else if pretty {
-                println!("{}", serde_json::to_string_pretty(&resp.tree)?);
-            } else {
-                print_resp(resp);
-            }
+        Command::Snapshot {
+            pretty,
+            refs,
+            fingerprints,
+            depth,
+            root,
+        } => {
+            // `--refs` always asks for fingerprints, for `--guard`; a host
+            // that has none answers without them.
+            let resp = call(client.call(&Op::Snapshot {
+                since: None,
+                format: None,
+                fingerprints: (refs || fingerprints).then_some(true),
+            }))?;
+            let mut options = gpui_agent::OutlineOptions::new();
+            options.root = root;
+            options.depth = depth.map(|n| usize::try_from(n).unwrap_or(usize::MAX));
+            print_snapshot(resp, &options, refs, pretty, fingerprints, addr)?;
         }
         Command::Screenshot {
             out,
@@ -815,30 +913,43 @@ fn run() -> Result<()> {
                 max_height_px,
             ))?)
         }
-        Command::Press { target, x, y } => print_resp(call(client.act(
-            &Op::Press {
-                target,
-                x,
-                y,
-                expect_fingerprint: None,
-            },
-            read_back,
-        ))?),
+        Command::Press {
+            target,
+            x,
+            y,
+            expect_fingerprint,
+        } => {
+            let expect_fingerprint = guard(target.as_deref(), expect_fingerprint)?;
+            let resp = call(client.act(
+                &Op::Press {
+                    target,
+                    x,
+                    y,
+                    expect_fingerprint,
+                },
+                read_back,
+            ))?;
+            finish(&mut client, resp)?
+        }
         Command::Scroll {
             target,
             x,
             y,
             dx,
             dy,
-        } => print_resp(call(client.call(&Op::Scroll {
-            target,
-            x,
-            y,
-            dx,
-            dy,
-        }))?),
+        } => {
+            let resp = call(client.call(&Op::Scroll {
+                target,
+                x,
+                y,
+                dx,
+                dy,
+            }))?;
+            finish(&mut client, resp)?
+        }
         Command::Hover { target, x, y } => {
-            print_resp(call(client.call(&Op::Hover { target, x, y }))?)
+            let resp = call(client.call(&Op::Hover { target, x, y }))?;
+            finish(&mut client, resp)?
         }
         Command::Drag {
             target,
@@ -848,55 +959,70 @@ fn run() -> Result<()> {
             y,
             dx,
             dy,
-        } => print_resp(call(client.call(&Op::Drag {
-            from,
-            to,
-            target,
-            x,
-            y,
-            dx,
-            dy,
-        }))?),
+        } => {
+            let resp = call(client.call(&Op::Drag {
+                from,
+                to,
+                target,
+                x,
+                y,
+                dx,
+                dy,
+            }))?;
+            finish(&mut client, resp)?
+        }
         Command::Swipe {
             direction,
             target,
             distance,
-        } => print_resp(call(client.call(&Op::Swipe {
-            target,
-            direction,
-            distance,
-        }))?),
+        } => {
+            let resp = call(client.call(&Op::Swipe {
+                target,
+                direction,
+                distance,
+            }))?;
+            finish(&mut client, resp)?
+        }
         Command::LongPress {
             target,
             x,
             y,
             duration_ms,
-        } => print_resp(call(client.act(
-            &Op::LongPress {
-                target,
-                x,
-                y,
-                duration_ms,
-            },
-            read_back,
-        ))?),
+        } => {
+            let resp = call(client.act(
+                &Op::LongPress {
+                    target,
+                    x,
+                    y,
+                    duration_ms,
+                },
+                read_back,
+            ))?;
+            finish(&mut client, resp)?
+        }
         Command::Pinch { target, scale } => {
-            print_resp(call(client.call(&Op::Pinch { target, scale }))?)
+            let resp = call(client.call(&Op::Pinch { target, scale }))?;
+            finish(&mut client, resp)?
         }
         Command::Viewport {
             width,
             height,
             preset,
-        } => print_resp(call(client.call(&Op::Viewport {
-            width,
-            height,
-            preset,
-        }))?),
+        } => {
+            let resp = call(client.call(&Op::Viewport {
+                width,
+                height,
+                preset,
+            }))?;
+            finish(&mut client, resp)?
+        }
         Command::Paste { target, text } => {
-            print_resp(call(client.act(&Op::Paste { target, text }, read_back))?)
+            let resp = call(client.act(&Op::Paste { target, text }, read_back))?;
+            finish(&mut client, resp)?
         }
         Command::System { action, value } => {
-            print_resp(call(client.call(&Op::System { action, value }))?)
+            let resp = call(client.call(&Op::System { action, value }))?;
+            finish(&mut client, resp)?
         }
         Command::Events { since, limit } => {
             let poll = rpc(client.events(since, limit))?;
@@ -906,55 +1032,80 @@ fn run() -> Result<()> {
             target,
             delivery,
             expect_fingerprint,
-        } => print_resp(call(client.act(
-            &Op::Click {
-                target,
-                delivery,
-                expect_fingerprint,
-            },
-            read_back,
-        ))?),
+        } => {
+            let expect_fingerprint = guard(Some(target.as_str()), expect_fingerprint)?;
+            let resp = call(client.act(
+                &Op::Click {
+                    target,
+                    delivery,
+                    expect_fingerprint,
+                },
+                read_back,
+            ))?;
+            finish(&mut client, resp)?
+        }
         Command::Type {
             target,
             text,
             delivery,
-        } => print_resp(call(client.act(
-            &Op::Type {
-                target,
-                text,
-                delivery,
-                expect_fingerprint: None,
-            },
-            read_back,
-        ))?),
-        Command::SetValue { target, value } => print_resp(call(client.act(
-            &Op::SetValue {
-                target,
-                value,
-                expect_fingerprint: None,
-            },
-            read_back,
-        ))?),
+            expect_fingerprint,
+        } => {
+            let expect_fingerprint = guard(Some(target.as_str()), expect_fingerprint)?;
+            let resp = call(client.act(
+                &Op::Type {
+                    target,
+                    text,
+                    delivery,
+                    expect_fingerprint,
+                },
+                read_back,
+            ))?;
+            finish(&mut client, resp)?
+        }
+        Command::SetValue {
+            target,
+            value,
+            expect_fingerprint,
+        } => {
+            let expect_fingerprint = guard(Some(target.as_str()), expect_fingerprint)?;
+            let resp = call(client.act(
+                &Op::SetValue {
+                    target,
+                    value,
+                    expect_fingerprint,
+                },
+                read_back,
+            ))?;
+            finish(&mut client, resp)?
+        }
         Command::Key {
             target,
             key,
             delivery,
-        } => print_resp(call(client.act(
-            &Op::Key {
-                target,
-                key,
-                delivery,
-                expect_fingerprint: None,
-            },
-            read_back,
-        ))?),
+            expect_fingerprint,
+        } => {
+            let expect_fingerprint = guard(Some(target.as_str()), expect_fingerprint)?;
+            let resp = call(client.act(
+                &Op::Key {
+                    target,
+                    key,
+                    delivery,
+                    expect_fingerprint,
+                },
+                read_back,
+            ))?;
+            finish(&mut client, resp)?
+        }
         Command::Keybinding {
             id,
             scope,
             chord,
             confirm,
             activate,
-        } => print_resp(rpc(client.keybinding(id, scope, chord, confirm, activate))?),
+        } => {
+            let resp = rpc(client.keybinding(id, scope, chord, confirm, activate))?;
+            finish(&mut client, resp)?
+        }
         Command::Keybindings => print_resp(rpc(client.keybindings())?),
         Command::Assert {
             id,
@@ -979,10 +1130,13 @@ fn run() -> Result<()> {
             };
             print_resp(call(client.call(&Op::Assert { spec }))?);
         }
-        Command::Invoke { name, args } => print_resp(call(client.call(&Op::Invoke {
-            name,
-            args: parse_args(&args)?,
-        }))?),
+        Command::Invoke { name, args } => {
+            let resp = call(client.call(&Op::Invoke {
+                name,
+                args: parse_args(&args)?,
+            }))?;
+            finish(&mut client, resp)?
+        }
         Command::Shutdown => print_resp(call(client.call(&Op::Shutdown))?),
         Command::Targets
         | Command::Skill
@@ -1022,6 +1176,130 @@ fn parse_args(pairs: &[String]) -> Result<serde_json::Value> {
         map.insert(key.to_string(), value);
     }
     Ok(serde_json::Value::Object(map))
+}
+
+/// `--wait-for` / `--wait-for-gone` with their bound, for an action.
+fn requested_wait(cli: &Cli) -> Result<Option<(gpui_agent::WaitFor, u64)>> {
+    let wait = match (&cli.wait_for, &cli.wait_for_gone) {
+        (Some(id), _) => gpui_agent::WaitFor::Present(id.clone()),
+        (None, Some(id)) => gpui_agent::WaitFor::Gone(id.clone()),
+        (None, None) => return Ok(None),
+    };
+    if !cli.command.is_action() {
+        return Err(anyhow!(
+            "--wait-for and --wait-for-gone follow an action command (click, type, set-value, key, press, paste, long-press, scroll, hover, drag, swipe, pinch, viewport, system, keybinding, invoke)"
+        ));
+    }
+    Ok(Some((wait, cli.wait_timeout_ms)))
+}
+
+impl Command {
+    /// Commands that act on the app, and so may take `--wait-for`.
+    fn is_action(&self) -> bool {
+        matches!(
+            self,
+            Command::Press { .. }
+                | Command::Scroll { .. }
+                | Command::Hover { .. }
+                | Command::Drag { .. }
+                | Command::Swipe { .. }
+                | Command::LongPress { .. }
+                | Command::Pinch { .. }
+                | Command::Viewport { .. }
+                | Command::Paste { .. }
+                | Command::System { .. }
+                | Command::Click { .. }
+                | Command::Type { .. }
+                | Command::SetValue { .. }
+                | Command::Key { .. }
+                | Command::Keybinding { .. }
+                | Command::Invoke { .. }
+        )
+    }
+}
+
+/// `snapshot`: the reply cut to `options`, printed as JSON, the bare tree
+/// (`pretty`) or a ref outline (`refs`, whose table is saved for `addr`).
+fn print_snapshot(
+    mut resp: gpui_agent::Response,
+    options: &gpui_agent::OutlineOptions,
+    refs: bool,
+    pretty: bool,
+    fingerprints: bool,
+    addr: SocketAddr,
+) -> Result<()> {
+    if options.is_full() && !refs && !pretty {
+        print_resp(resp);
+        return Ok(());
+    }
+    let tree = resp
+        .tree
+        .take()
+        .ok_or_else(|| anyhow!("the reply carried no tree"))?;
+    let outline = gpui_agent::outline(&tree, options).map_err(|err| {
+        anyhow::Error::new(CallFailure::with_code(
+            err,
+            gpui_agent::error_code::BAD_REQUEST,
+            None,
+        ))
+    })?;
+    let mut fps = resp.fingerprints.take().unwrap_or_default();
+    if !options.is_full() {
+        let mut kept = std::collections::BTreeSet::new();
+        fn ids<'a>(
+            nodes: &'a [gpui_agent::OutlineNode],
+            kept: &mut std::collections::BTreeSet<&'a str>,
+        ) {
+            for node in nodes {
+                kept.insert(node.node.id.as_str());
+                ids(&node.children, kept);
+            }
+        }
+        ids(&outline.nodes, &mut kept);
+        fps.retain(|id, _| kept.contains(id.as_str()));
+    }
+    if refs {
+        let (text, table) = refs::render(&outline, &fps, fingerprints);
+        refs::save(&gpui_agent::runtime_root(), addr, &table).context("saving the ref table")?;
+        print!("{text}");
+        return Ok(());
+    }
+    if pretty && !fingerprints {
+        println!("{}", serde_json::to_string_pretty(&outline)?);
+        return Ok(());
+    }
+    if pretty {
+        let out = serde_json::json!({ "tree": outline, "fingerprints": fps });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+    if fingerprints {
+        resp.fingerprints = Some(fps);
+    }
+    let out = WithTree {
+        resp: &resp,
+        tree: &outline,
+    };
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
+/// A reply whose tree was cut to an outline: it prints like the reply,
+/// with the outline as `tree`.
+#[derive(serde::Serialize)]
+pub(crate) struct WithTree<'a> {
+    #[serde(flatten)]
+    pub resp: &'a gpui_agent::Response,
+    pub tree: &'a gpui_agent::Outline,
+}
+
+/// An action's reply after `--wait-for`: the tree it waited for, in
+/// compact form, rides as `compact`.
+#[derive(serde::Serialize)]
+pub(crate) struct WithCompact<'a> {
+    #[serde(flatten)]
+    pub resp: &'a gpui_agent::Response,
+    pub compact: &'a str,
 }
 
 fn print_resp(resp: gpui_agent::Response) {
@@ -1859,5 +2137,131 @@ mod tests {
             } => assert_eq!(expect_fingerprint, Some(42)),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn every_guarded_action_takes_an_expected_fingerprint() {
+        let parse = |args: &[&str]| {
+            let mut argv = vec!["gpui-agent"];
+            argv.extend_from_slice(args);
+            Cli::try_parse_from(argv).map(|cli| cli.command)
+        };
+        let fp = |cmd: Command| match cmd {
+            Command::Click {
+                expect_fingerprint, ..
+            }
+            | Command::Type {
+                expect_fingerprint, ..
+            }
+            | Command::SetValue {
+                expect_fingerprint, ..
+            }
+            | Command::Key {
+                expect_fingerprint, ..
+            }
+            | Command::Press {
+                expect_fingerprint, ..
+            } => expect_fingerprint,
+            other => panic!("unexpected {other:?}"),
+        };
+        for args in [
+            &["click", "a", "--expect-fingerprint", "7"][..],
+            &["type", "a", "hi", "--expect-fingerprint", "7"],
+            &["set-value", "a", "hi", "--expect-fingerprint", "7"],
+            &["key", "a", "Enter", "--expect-fingerprint", "7"],
+            &["press", "a", "--expect-fingerprint", "7"],
+        ] {
+            assert_eq!(fp(parse(args).unwrap()), Some(7), "{args:?}");
+        }
+        assert_eq!(
+            fp(parse(&[
+                "key",
+                "a",
+                "Enter",
+                "--expect-fingerprint",
+                "18446744073709551615"
+            ])
+            .unwrap()),
+            Some(u64::MAX)
+        );
+        // A point press has no node to fingerprint.
+        assert!(parse(&["press", "--x", "1", "--y", "2", "--expect-fingerprint", "7"]).is_err());
+    }
+
+    #[test]
+    fn snapshot_outline_flags_parse_and_refuse_a_zero_depth() {
+        let cli = Cli::try_parse_from([
+            "gpui-agent",
+            "snapshot",
+            "--depth",
+            "2",
+            "--root",
+            "page",
+            "--fingerprints",
+            "--refs",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Snapshot {
+                refs,
+                fingerprints,
+                depth,
+                root,
+                ..
+            } => {
+                assert!(refs && fingerprints);
+                assert_eq!(depth, Some(2));
+                assert_eq!(root.as_deref(), Some("page"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["gpui-agent", "snapshot", "--depth", "0"]).is_err());
+    }
+
+    #[test]
+    fn wait_flags_follow_only_actions() {
+        let cli = Cli::try_parse_from(["gpui-agent", "click", "a", "--wait-for", "b"]).unwrap();
+        assert!(!cli.guard);
+        let (wait, timeout_ms) = requested_wait(&cli).unwrap().unwrap();
+        assert_eq!(wait, gpui_agent::WaitFor::Present("b".into()));
+        assert_eq!(timeout_ms, 5000);
+
+        let cli = Cli::try_parse_from([
+            "gpui-agent",
+            "--wait-for-gone",
+            "b",
+            "--wait-timeout-ms",
+            "250",
+            "--guard",
+            "invoke",
+            "todo.clear",
+        ])
+        .unwrap();
+        assert!(cli.guard);
+        let (wait, timeout_ms) = requested_wait(&cli).unwrap().unwrap();
+        assert_eq!(wait, gpui_agent::WaitFor::Gone("b".into()));
+        assert_eq!(timeout_ms, 250);
+
+        let cli = Cli::try_parse_from(["gpui-agent", "snapshot"]).unwrap();
+        assert!(requested_wait(&cli).unwrap().is_none());
+        let cli = Cli::try_parse_from(["gpui-agent", "snapshot", "--wait-for", "b"]).unwrap();
+        assert!(
+            requested_wait(&cli)
+                .unwrap_err()
+                .to_string()
+                .contains("action")
+        );
+        assert!(
+            Cli::try_parse_from([
+                "gpui-agent",
+                "click",
+                "a",
+                "--wait-for",
+                "b",
+                "--wait-for-gone",
+                "c"
+            ])
+            .is_err()
+        );
     }
 }
