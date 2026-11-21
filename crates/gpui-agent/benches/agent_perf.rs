@@ -1,3 +1,10 @@
+//! Criterion benches for the hot paths.
+#![expect(clippy::unwrap_used, reason = "a bench aborts on failure")]
+#![expect(
+    missing_docs,
+    reason = "criterion_group!/criterion_main! generate undocumented entry points"
+)]
+
 use std::hint::black_box;
 use std::io::Write;
 use std::sync::{Arc, Mutex};

@@ -480,7 +480,10 @@ impl AgentClient {
     ///
     /// A transport failure (the host's error string is on `resp.error`,
     /// not returned).
-    #[expect(clippy::needless_pass_by_value, reason = "public API since 0.3.0; a reference changes callers")]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public API since 0.3.0; a reference changes callers"
+    )]
     /// Send `op` and return the reply (`ok: false` included).
     ///
     /// # Errors
@@ -561,7 +564,10 @@ impl AgentClient {
     ///
     /// A transport failure (the host's error string is on `resp.error`,
     /// not returned).
-    #[expect(clippy::needless_pass_by_value, reason = "public API since 0.3.0; a reference changes callers")]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public API since 0.3.0; a reference changes callers"
+    )]
     pub fn rpc_once(&mut self, op: Op) -> Result<Response, String> {
         self.drop_session();
         let resp = self.roundtrip_retry(&op)?;
@@ -1146,7 +1152,10 @@ impl AgentClient {
     /// # Errors
     ///
     /// A transport failure, or the host's error on `ok: false`.
-    #[expect(clippy::needless_pass_by_value, reason = "public API since 0.3.0; a reference changes callers")]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public API since 0.3.0; a reference changes callers"
+    )]
     pub fn gated(&mut self, op: Op) -> Result<Response, String> {
         let response = if op.feature().is_some() {
             self.roundtrip_gated_retry(&op)?
@@ -1233,7 +1242,10 @@ impl AgentClient {
     /// # Errors
     ///
     /// A [`CallFailure`] on `ok: false` or transport failure.
-    #[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether to verify the action with a read-back")]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "one flag: whether to verify the action with a read-back"
+    )]
     pub fn act(&mut self, op: &Op, read_back: bool) -> Result<Response, CallFailure> {
         let Some(target) = op.read_back_target().filter(|_| read_back) else {
             return self.call(op);
@@ -1555,7 +1567,10 @@ impl AgentClient {
     /// # Errors
     ///
     /// A transport failure, or the host's error on `ok: false`.
-    #[expect(clippy::fn_params_excessive_bools, reason = "confirm and activate are wire flags of the op")]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "confirm and activate are wire flags of the op"
+    )]
     pub fn keybinding(
         &mut self,
         binding: impl Into<String>,
@@ -1606,7 +1621,10 @@ impl WaitFor {
 /// and `not_delivered`; a written request with no usable reply means
 /// `no_reply` and `delivery_uncertain`, unless the text names a refusal
 /// (an unauthenticated challenge, a client-side `unsupported_op`).
-#[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether the op was an action (sets delivery status)")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "one flag: whether the op was an action (sets delivery status)"
+)]
 fn transport_failure(err: SendError, acts: bool) -> CallFailure {
     let mut code = error_code_of(&err.message);
     if code == error_code::HOST_ERROR || (!err.sent && code == error_code::NO_REPLY) {
@@ -1668,7 +1686,10 @@ fn read_target(snap: &Response, target: &str) -> Option<(Option<u64>, Target)> {
     Some((rev, state))
 }
 
-#[expect(clippy::fn_params_excessive_bools, reason = "one flag: mask secret values for hosts predating host-side redaction")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "one flag: mask secret values for hosts predating host-side redaction"
+)]
 fn parse_response_line(line: &[u8], legacy_secret_redaction: bool) -> Result<Response, String> {
     if parse_challenge_line(line).is_ok() {
         return Err("automation token required".into());
@@ -2115,7 +2136,10 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::too_many_lines, reason = "a scripted two-phase fixture conversation")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a scripted two-phase fixture conversation"
+    )]
     fn pipeline_relearns_features_after_reconnect() {
         fn read_request(reader: &mut BufReader<std::net::TcpStream>) -> serde_json::Value {
             let mut line = String::new();

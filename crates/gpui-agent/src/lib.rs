@@ -14,27 +14,49 @@
 //! Platform seams (`PlatformKind`) keep the protocol stable across desktop,
 //! a headless test host, and later web (GPUI WASM) or mobile hosts.
 
+/// Chunked blob transfer for oversized results (screenshots).
 pub mod blob;
+/// The blocking client SDK.
 pub mod client;
+/// Id-keyed diffs between two snapshots.
 pub mod diff;
+/// Running-host discovery (`targets`).
 pub mod discovery;
+/// Request → response dispatch shared by every transport.
 pub mod dispatch;
+/// Stable error-code classification.
 pub mod error_code;
+/// Bounded host event stream.
 pub mod event;
+/// Challenge/response auth (HMAC-SHA256 over a nonce).
 pub mod hmac_auth;
+/// The platform-side host trait.
 pub mod host;
+/// Action-id keymap dispatch.
 pub mod keybinding;
+/// Cross-thread inbox for posting work onto a UI thread.
 pub mod mailbox;
+/// One-JSON-value-per-line I/O helpers.
 pub mod ndjson;
+/// Client-side subtree/depth cuts of a snapshot.
 pub mod outline;
+/// The `use gpui_agent::prelude::*` bundle.
 pub mod prelude;
+/// The v2 wire protocol types.
 pub mod protocol;
+/// Observe-only pixel capture of the app surface.
 pub mod screenshot;
+/// Scrolled-capture planning and stitching.
 pub mod scroll_capture;
+/// The `GPUI_AGENT*` opt-in gate.
 pub mod security;
+/// The per-connection TCP server.
 pub mod server;
+/// In-process test-host helpers for SDK E2E.
 pub mod testing;
+/// The semantic UI tree.
 pub mod tree;
+/// Virtual (in-process GPUI event) input planning.
 pub mod virtual_input;
 
 pub use client::{AgentClient, WaitFor};

@@ -207,7 +207,10 @@ pub fn handle_request(
 
 /// [`handle_request`] with a caller-owned [`TreeCache`] so a session can
 /// reuse trees across requests and answer `snapshot since` with diffs.
-#[expect(clippy::too_many_lines, reason = "one linear dispatch match over the op vocabulary")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear dispatch match over the op vocabulary"
+)]
 pub fn handle_request_cached(
     host: &mut dyn AgentHost,
     cache: &mut TreeCache,
@@ -220,9 +223,7 @@ pub fn handle_request_cached(
     }
 
     match req.op {
-        Op::Hello | Op::Wait { timeout_ms: None } => {
-            hello_response(host, &req.id, expected_token)
-        }
+        Op::Hello | Op::Wait { timeout_ms: None } => hello_response(host, &req.id, expected_token),
         Op::Wait {
             timeout_ms: Some(ms),
         } => wait_until_ready(host, &req.id, expected_token, ms),
@@ -298,10 +299,9 @@ pub fn handle_request_cached(
             Some(ring) => {
                 let poll = ring.since(
                     since,
-                    limit
-                        .map_or(crate::event::EVENTS_DEFAULT_LIMIT, |l| {
-                            usize::try_from(l).unwrap_or(usize::MAX)
-                        }),
+                    limit.map_or(crate::event::EVENTS_DEFAULT_LIMIT, |l| {
+                        usize::try_from(l).unwrap_or(usize::MAX)
+                    }),
                 );
                 let mut resp = Response::ok(req.id);
                 resp.result = serde_json::to_value(poll).ok();
@@ -389,13 +389,15 @@ fn snapshot_response(
         Some(s) if rev == Some(s) => {
             resp.result = Some(serde_json::json!({ "unchanged": true }));
         }
-        Some(s) => if let Some(old) = rev.and_then(|_| cache.tree_at(s)) {
-            let diff = crate::diff::diff_trees(&old, &tree);
-            resp.result = Some(serde_json::json!({ "diff": diff }));
-        } else {
-            resp.tree = Some(redacted(&tree));
-            resp.result = Some(serde_json::json!({ "full": true }));
-        },
+        Some(s) => {
+            if let Some(old) = rev.and_then(|_| cache.tree_at(s)) {
+                let diff = crate::diff::diff_trees(&old, &tree);
+                resp.result = Some(serde_json::json!({ "diff": diff }));
+            } else {
+                resp.tree = Some(redacted(&tree));
+                resp.result = Some(serde_json::json!({ "full": true }));
+            }
+        }
         None => {
             resp.tree = Some(redacted(&tree));
         }
@@ -441,7 +443,10 @@ pub fn prepare_inline_screenshot(op: &mut Op) -> Option<bool> {
 
 /// Attach the blob to a mailbox host's screenshot reply. A reply that
 /// already carries one (the host went through [`handle_request`]) is kept.
-#[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether the path was a server-side scratch file")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "one flag: whether the path was a server-side scratch file"
+)]
 pub fn finish_inline_screenshot(resp: &mut Response, scratch: bool) {
     if !resp.ok {
         return;
@@ -470,7 +475,10 @@ pub fn finish_inline_screenshot(resp: &mut Response, scratch: bool) {
 /// Read the PNG the host just wrote (`result.path`) into a blob and
 /// announce it as `result.blob`. A scratch file is removed and its path
 /// withheld: it never existed for the client.
-#[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether the path was a server-side scratch file")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "one flag: whether the path was a server-side scratch file"
+)]
 fn attach_screenshot_blob(resp: &mut Response, scratch: bool) -> Result<(), String> {
     let path = resp
         .result
@@ -1367,7 +1375,10 @@ mod tests {
         );
     }
 
-    #[expect(clippy::fn_params_excessive_bools, reason = "test helper mirroring the node field")]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "test helper mirroring the node field"
+    )]
     fn sample_tree(platform: PlatformKind, visible: bool, bounds: crate::tree::Bounds) -> UiTree {
         UiTree {
             app: "test".into(),

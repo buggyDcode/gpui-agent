@@ -658,27 +658,27 @@ impl Lcg {
     fn next(&mut self) -> u64 {
         self.0 = self
             .0
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         self.0 >> 33
     }
 }
 
 fn gen_tree(rng: &mut Lcg, rev: u64) -> UiTree {
-    let n = 1 + (rng.next() % 12) as usize;
+    let n = 1 + usize::try_from(rng.next() % 12).unwrap_or(usize::MAX);
     let mut roots = Vec::new();
     for i in 0..n {
         let mut top = node(
             &format!("t{i}"),
-            ["window", "group", "list"][(rng.next() % 3) as usize],
+            ["window", "group", "list"][usize::try_from(rng.next() % 3).unwrap_or(usize::MAX)],
             &format!("T{i}"),
         );
-        let kids = (rng.next() % 6) as usize;
+        let kids = usize::try_from(rng.next() % 6).unwrap_or(usize::MAX);
         let mut children = Vec::new();
         for j in 0..kids {
             let mut c = node(
                 &format!("t{i}c{j}"),
-                ["button", "field", "label"][(rng.next() % 3) as usize],
+                ["button", "field", "label"][usize::try_from(rng.next() % 3).unwrap_or(usize::MAX)],
                 &format!("C{j}"),
             );
             c.checked = Some(rng.next() % 2 == 0);
@@ -750,8 +750,7 @@ fn compact_skips_invisible_and_truncates() {
     let value_len = out
         .lines()
         .find(|l| l.contains("value="))
-        .map(|l| l.len())
-        .unwrap_or(0);
+        .map_or(0, str::len);
     assert!(value_len < 260, "200-char cap + wrapper: {value_len}");
     assert!(out.contains('…'), "truncation marker: {out}");
 }

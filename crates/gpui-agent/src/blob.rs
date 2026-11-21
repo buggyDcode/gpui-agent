@@ -14,6 +14,7 @@ use base64::engine::general_purpose::STANDARD;
 
 /// Raw bytes per chunk: 512 KiB is ~683 KiB of base64, under the 1 MiB line.
 pub const BLOB_CHUNK_BYTES: usize = 512 * 1024;
+/// Blobs held at once; the oldest is dropped past this.
 pub const MAX_BLOBS: usize = 4;
 
 static BLOBS: Mutex<VecDeque<(String, Vec<u8>)>> = Mutex::new(VecDeque::new());
@@ -40,7 +41,9 @@ pub fn store(bytes: Vec<u8>) -> serde_json::Value {
         "bytes": bytes.len(),
         "chunks": chunk_count(bytes.len()),
     });
-    let mut blobs = BLOBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut blobs = BLOBS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     while blobs.len() >= MAX_BLOBS {
         blobs.pop_front();
     }
@@ -50,15 +53,22 @@ pub fn store(bytes: Vec<u8>) -> serde_json::Value {
 
 /// One chunk as `{blob, index, last, data}`; the blob is dropped once its
 /// last chunk has been read.
+///
+/// # Errors
+///
+/// `blob_gone` for an unknown or fully-read name, or an index past the
+/// chunk count.
 pub fn read_chunk(name: &str, index: u32) -> Result<serde_json::Value, String> {
-    let mut blobs = BLOBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut blobs = BLOBS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let at = blobs
         .iter()
         .position(|(n, _)| n == name)
         .ok_or_else(|| format!("blob_gone: `{name}` is not held by this host"))?;
     let bytes = &blobs[at].1;
     let chunks = chunk_count(bytes.len());
-    let index = index as usize;
+    let index = usize::try_from(index).unwrap_or(usize::MAX);
     if index >= chunks {
         return Err(format!(
             "blob `{name}` has {chunks} chunks, not {}",
@@ -80,6 +90,11 @@ pub fn read_chunk(name: &str, index: u32) -> Result<serde_json::Value, String> {
     Ok(value)
 }
 
+/// The bytes of one chunk `result` (`data` is base64).
+///
+/// # Errors
+///
+/// `"blob chunk has no data"` or invalid base64.
 pub fn decode_chunk(result: &serde_json::Value) -> Result<Vec<u8>, String> {
     let data = result
         .get("data")
@@ -96,7 +111,9 @@ mod tests {
 
     #[test]
     fn chunks_reassemble_and_blob_is_dropped_after_last() {
-        let bytes: Vec<u8> = (0..BLOB_CHUNK_BYTES * 2 + 17).map(|i| i as u8).collect();
+        let bytes: Vec<u8> = (0..BLOB_CHUNK_BYTES * 2 + 17)
+            .map(|i| u8::try_from(i % 256).unwrap_or_default())
+            .collect();
         let announce = store(bytes.clone());
         assert_eq!(announce["chunks"], 3);
         let name = announce["blob"].as_str().unwrap();

@@ -27,15 +27,21 @@ pub struct OutlineOptions {
 }
 
 impl OutlineOptions {
+    /// Options that keep the whole tree.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Keep only the subtree rooted at `id`.
+    #[must_use]
     pub fn root(mut self, id: impl Into<String>) -> Self {
         self.root = Some(id.into());
         self
     }
 
+    /// Keep `levels` levels from the roots.
+    #[must_use]
     pub fn depth(mut self, levels: usize) -> Self {
         self.depth = Some(levels);
         self
@@ -55,6 +61,7 @@ pub struct OutlineNode {
     /// The node, without its children (they are in [`Self::children`]).
     #[serde(flatten)]
     pub node: UiNode,
+    /// Its kept children (`None` on the wire when empty).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<OutlineNode>,
     /// Number of direct children the depth cap left out. `None` when
@@ -67,16 +74,25 @@ pub struct OutlineNode {
 #[derive(Debug, Clone, Serialize)]
 #[non_exhaustive]
 pub struct Outline {
+    /// The app name, copied from the tree.
     pub app: String,
+    /// The platform kind, copied from the tree.
     pub platform: PlatformKind,
+    /// The readiness flag, copied from the tree.
     pub ready: bool,
+    /// The kept roots.
     pub nodes: Vec<OutlineNode>,
+    /// The revision (`None` when the cut changed the tree).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rev: Option<u64>,
 }
 
 /// Cuts `tree` as `options` say. Fails when `options.root` names no node or
 /// `options.depth` is `0`.
+///
+/// # Errors
+///
+/// `"depth must be at least 1"` or `"no node ... in the snapshot"`.
 pub fn outline(tree: &UiTree, options: &OutlineOptions) -> Result<Outline, String> {
     if options.depth == Some(0) {
         return Err("depth must be at least 1".into());

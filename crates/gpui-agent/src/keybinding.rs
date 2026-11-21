@@ -54,7 +54,10 @@ impl KeybindingInfo {
     }
 
     /// A catalog row.
-    #[expect(clippy::fn_params_excessive_bools, reason = "one flag: the wire's dangerous field")]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "one flag: the wire's dangerous field"
+    )]
     pub fn new(
         id: impl Into<String>,
         chord: impl Into<String>,
@@ -116,7 +119,10 @@ impl<'a> KeybindingRequest<'a> {
 #[must_use]
 pub fn is_quit_binding(binding: &str) -> bool {
     let n = binding.trim().to_ascii_lowercase();
-    #[expect(clippy::case_sensitive_file_extension_comparisons, reason = "`n` is already lowercased on the line above")]
+    #[expect(
+        clippy::case_sensitive_file_extension_comparisons,
+        reason = "`n` is already lowercased on the line above"
+    )]
     let quit = n.ends_with(".quit");
     n == "quit" || n == "app.quit" || quit
 }
@@ -206,7 +212,10 @@ pub fn intercept_keybinding_action(
 /// Empty binding, unknown binding, scope or chord mismatch, `activate`
 /// on global scope, an unfocused app, or a dangerous binding without
 /// `confirm`.
-#[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether the app currently holds OS focus")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "one flag: whether the app currently holds OS focus"
+)]
 pub fn authorize_keybinding<'a>(
     catalog: &'a [KeybindingInfo],
     request: KeybindingRequest<'_>,
@@ -267,7 +276,10 @@ pub fn authorize_keybinding<'a>(
 ///
 /// `op` is not `Op::Keybinding`, or the same gates as
 /// [`authorize_keybinding`].
-#[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether the app currently holds OS focus")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "one flag: whether the app currently holds OS focus"
+)]
 pub fn authorize_keybinding_op<'a>(
     op: &'a Op,
     catalog: &'a [KeybindingInfo],
@@ -308,7 +320,10 @@ mod tests {
         ]
     }
 
-    #[expect(clippy::fn_params_excessive_bools, reason = "test helper mirroring the wire flags")]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "test helper mirroring the wire flags"
+    )]
     fn fire(
         binding: &str,
         scope: KeybindingScope,

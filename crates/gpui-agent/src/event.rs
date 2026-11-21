@@ -19,7 +19,10 @@ pub const EVENTS_DEFAULT_LIMIT: usize = 256;
 /// Severity of one event; serialized lowercase on the wire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-#[expect(clippy::exhaustive_enums, reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum EventLevel {
     /// `trace`.
     Trace,
@@ -119,7 +122,10 @@ impl EventRing {
         target: impl Into<String>,
         message: impl Into<String>,
     ) -> u64 {
-        let mut inner = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let seq = inner.next;
         inner.next += 1;
         if self.capacity > 0 && inner.buf.len() == self.capacity {
@@ -139,7 +145,10 @@ impl EventRing {
     /// Events with `seq > since` (`None` → all retained), oldest first,
     /// capped at `limit` (clamped to the ring's capacity).
     pub fn since(&self, since: Option<u64>, limit: usize) -> EventPoll {
-        let inner = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let limit = limit.min(self.capacity.max(1));
         let base_seq = inner.next - u64::try_from(inner.buf.len()).unwrap_or(u64::MAX);
         let newest_seq = inner.next.saturating_sub(1);
@@ -159,13 +168,19 @@ impl EventRing {
 
     /// Highest allocated seq (0 when empty).
     pub fn latest(&self) -> u64 {
-        let inner = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.next - 1
     }
 
     /// Whether the ring holds no events.
     pub fn is_empty(&self) -> bool {
-        let inner = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.buf.is_empty()
     }
 }
@@ -178,7 +193,10 @@ impl Default for EventRing {
 
 impl std::fmt::Debug for EventRing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let inner = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         f.debug_struct("EventRing")
             .field("capacity", &self.capacity)
             .field("len", &inner.buf.len())
@@ -220,7 +238,10 @@ mod tests {
         assert_eq!(poll.latest, 5);
         assert!(!poll.lagged);
         // Polling at latest yields nothing new.
-        assert_eq!(ring.since(Some(5), EVENTS_DEFAULT_LIMIT).events, Vec::<AgentEvent>::new());
+        assert_eq!(
+            ring.since(Some(5), EVENTS_DEFAULT_LIMIT).events,
+            Vec::<AgentEvent>::new()
+        );
     }
 
     #[test]

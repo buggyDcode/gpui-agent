@@ -7,7 +7,10 @@ use crate::server::default_addr;
 
 /// Why the control-plane gate refused to run.
 #[derive(Debug, Error)]
-#[expect(clippy::exhaustive_enums, reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum SecurityError {
     /// `GPUI_AGENT` unset or not truthy.
     #[error("automation is disabled (set GPUI_AGENT=1 to opt in)")]
@@ -75,7 +78,10 @@ impl fmt::Debug for AgentConfig {
 /// # Errors
 ///
 /// The [`SecurityError`] variant matching the refused configuration.
-#[expect(clippy::print_stderr, reason = "the insecure-demo banner must reach stderr even where the host has no logger")]
+#[expect(
+    clippy::print_stderr,
+    reason = "the insecure-demo banner must reach stderr even where the host has no logger"
+)]
 pub fn from_env() -> Result<Option<AgentConfig>, SecurityError> {
     if !truthy_env("GPUI_AGENT") {
         return Ok(None);
@@ -118,7 +124,10 @@ Do not use this on a shared machine or an agent VM. Set GPUI_AGENT_TOKEN instead
 /// # Errors
 ///
 /// [`SecurityError::LoopbackRequiresToken`] or the remote-endpoint gates.
-#[expect(clippy::fn_params_excessive_bools, reason = "one flag: the remote opt-in")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "one flag: the remote opt-in"
+)]
 pub fn authorize_bind(
     addr: SocketAddr,
     token: Option<&str>,
@@ -132,7 +141,10 @@ pub fn authorize_bind(
 /// # Errors
 ///
 /// [`SecurityError::LoopbackRequiresToken`] or the remote-endpoint gates.
-#[expect(clippy::fn_params_excessive_bools, reason = "two flags of the bind policy")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "two flags of the bind policy"
+)]
 pub fn authorize_bind_with_insecure(
     addr: SocketAddr,
     token: Option<&str>,
@@ -156,7 +168,10 @@ pub fn authorize_bind_with_insecure(
 /// # Errors
 ///
 /// [`SecurityError::RemoteDisabled`] or [`SecurityError::RemoteRequiresToken`].
-#[expect(clippy::fn_params_excessive_bools, reason = "one flag: the remote opt-in")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "one flag: the remote opt-in"
+)]
 pub fn authorize_client(
     addr: SocketAddr,
     token: Option<&str>,
@@ -168,7 +183,10 @@ pub fn authorize_client(
     authorize_remote_endpoint(addr, token, allow_remote)
 }
 
-#[expect(clippy::fn_params_excessive_bools, reason = "one flag: the remote opt-in")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "one flag: the remote opt-in"
+)]
 fn authorize_remote_endpoint(
     addr: SocketAddr,
     token: Option<&str>,
@@ -186,13 +204,12 @@ fn authorize_remote_endpoint(
 /// Whether `name` is set to a truthy value (`1`, `true`, `yes`, `on`).
 #[must_use]
 pub fn truthy_env(name: &str) -> bool {
-    std::env::var(name)
-        .is_ok_and(|v| {
-            matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
+    std::env::var(name).is_ok_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 /// True for IPv4 `127.0.0.0/8` and IPv6 `::1` only.

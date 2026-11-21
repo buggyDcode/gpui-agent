@@ -850,7 +850,9 @@ mod points {
         finite(&serde_json::Value::deserialize(deserializer)?)
     }
 
-    pub(super) fn optional<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Error> {
+    pub(super) fn optional<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<f64>, D::Error> {
         match serde_json::Value::deserialize(deserializer)? {
             serde_json::Value::Null => Ok(None),
             value => finite(&value).map(Some),
@@ -882,7 +884,9 @@ mod integers {
         }
     }
 
-    pub(super) fn required_u64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    pub(super) fn required_u64<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<u64, D::Error> {
         unsigned(serde_json::Value::deserialize(deserializer)?)
     }
 
@@ -895,7 +899,9 @@ mod integers {
         }
     }
 
-    pub(super) fn required_u32<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+    pub(super) fn required_u32<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<u32, D::Error> {
         u32::try_from(required_u64(deserializer)?)
             .map_err(|_| D::Error::custom("unsigned integer exceeds u32"))
     }

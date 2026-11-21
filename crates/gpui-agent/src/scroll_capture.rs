@@ -148,9 +148,18 @@ pub struct TileSpec {
 /// `max_height_px` of 0, a degenerate viewport or content height,
 /// content taller than `max_height_px`, or more than
 /// [`MAX_SCROLL_TILES`] tiles.
-#[expect(clippy::as_conversions, reason = "pixel counts fit; f32 mantissa covers the allowed height range")]
-#[expect(clippy::cast_precision_loss, reason = "pixel dimensions fit f32's 24-bit mantissa for any allowed height")]
-#[expect(clippy::cast_possible_truncation, reason = "tile count is bounded by MAX_SCROLL_TILES")]
+#[expect(
+    clippy::as_conversions,
+    reason = "pixel counts fit; f32 mantissa covers the allowed height range"
+)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "pixel dimensions fit f32's 24-bit mantissa for any allowed height"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "tile count is bounded by MAX_SCROLL_TILES"
+)]
 pub fn plan_scroll_tiles(
     metrics: &ScrollMetrics,
     max_height_px: u32,
@@ -229,7 +238,7 @@ impl RgbaImage {
     pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Result<Self, String> {
         let need = usize::try_from(width)
             .ok()
-            .and_then(|w| w.checked_mul(usize::try_from(height).ok()?) )
+            .and_then(|w| w.checked_mul(usize::try_from(height).ok()?))
             .and_then(|n| n.checked_mul(4))
             .ok_or_else(|| "rgba image size overflow".to_string())?;
         if pixels.len() != need {
@@ -425,10 +434,22 @@ pub fn stitch_tiles_vertically(tiles: &[RgbaImage]) -> Result<RgbaImage, String>
 /// # Errors
 ///
 /// PNG decode failure, a zero window size, or a clip outside the image.
-#[expect(clippy::as_conversions, reason = "clip coordinates are rounded and clamped into the image bounds")]
-#[expect(clippy::cast_precision_loss, reason = "bitmap dimensions fit f32's 24-bit mantissa")]
-#[expect(clippy::cast_possible_truncation, reason = "rounded clip coordinates are clamped into the image bounds below")]
-#[expect(clippy::cast_sign_loss, reason = "negative values are clamped to 0 before the u32 conversion")]
+#[expect(
+    clippy::as_conversions,
+    reason = "clip coordinates are rounded and clamped into the image bounds"
+)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "bitmap dimensions fit f32's 24-bit mantissa"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "rounded clip coordinates are clamped into the image bounds below"
+)]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "negative values are clamped to 0 before the u32 conversion"
+)]
 pub fn crop_window_png(
     png: &[u8],
     window_w: f32,
@@ -654,12 +675,15 @@ mod tests {
 
     #[test]
     fn plan_fails_closed_on_too_many_tiles() {
-        let err =
-            plan_scroll_tiles(
-                &metrics(1.0, f32::from(u16::try_from(DEFAULT_MAX_HEIGHT_PX).unwrap_or(u16::MAX)), 0.0),
-                16384,
-            )
-            .unwrap_err();
+        let err = plan_scroll_tiles(
+            &metrics(
+                1.0,
+                f32::from(u16::try_from(DEFAULT_MAX_HEIGHT_PX).unwrap_or(u16::MAX)),
+                0.0,
+            ),
+            16384,
+        )
+        .unwrap_err();
         assert!(err.contains("tiles"), "{err}");
     }
 

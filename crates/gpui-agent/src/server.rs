@@ -146,7 +146,10 @@ impl AgentServer {
 
     /// Serve a mutex-protected host on this thread (plus one thread per
     /// accepted connection). Used by `todo-headless` and integration tests.
-    #[expect(clippy::needless_pass_by_value, reason = "the host is shared with per-connection threads, which need owned Arcs")]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the host is shared with per-connection threads, which need owned Arcs"
+    )]
     pub fn serve_host<H: AgentHost + 'static>(self, host: Arc<Mutex<H>>) {
         let _published = match self.local_addr() {
             Ok(addr) => {
@@ -193,7 +196,10 @@ impl AgentServer {
     ///
     /// Like `serve_host`, it writes a discovery record for as long as it serves, so
     /// `--connect` finds a GPUI app that runs the agent this way (#47).
-    #[expect(clippy::needless_pass_by_value, reason = "the mailbox is shared with per-connection threads, which need owned clones")]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the mailbox is shared with per-connection threads, which need owned clones"
+    )]
     pub fn serve_mailbox(self, mailbox: AgentMailbox, timeout: Duration) {
         let _published = match self.local_addr() {
             Ok(addr) => {
@@ -300,7 +306,10 @@ fn begin_session(
     Ok(Some(nonce))
 }
 
-#[expect(clippy::needless_pass_by_value, reason = "the stream is split into the reader and a cloned writer")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the stream is split into the reader and a cloned writer"
+)]
 fn handle_stream_host<H: AgentHost>(
     stream: TcpStream,
     host: Arc<Mutex<H>>,
@@ -350,9 +359,11 @@ fn handle_stream_host<H: AgentHost>(
                 break;
             }
         };
-        if let Err(resp) =
-            authorize_request(&req, token, session_nonce.as_ref().map(<[u8; 32]>::as_slice))
-        {
+        if let Err(resp) = authorize_request(
+            &req,
+            token,
+            session_nonce.as_ref().map(<[u8; 32]>::as_slice),
+        ) {
             write_resp(&mut writer, &mut encode_buf, &resp);
             break;
         }
@@ -396,7 +407,10 @@ fn handle_stream_host<H: AgentHost>(
     }
 }
 
-#[expect(clippy::needless_pass_by_value, reason = "the stream is split into the reader and a cloned writer")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the stream is split into the reader and a cloned writer"
+)]
 fn handle_stream_mailbox(
     stream: TcpStream,
     mailbox: AgentMailbox,
@@ -446,9 +460,11 @@ fn handle_stream_mailbox(
         };
         // Authorize here so virtual ops (which skip handle_request on the
         // UI thread) still get version + token checks.
-        if let Err(resp) =
-            authorize_request(&req, token, session_nonce.as_ref().map(<[u8; 32]>::as_slice))
-        {
+        if let Err(resp) = authorize_request(
+            &req,
+            token,
+            session_nonce.as_ref().map(<[u8; 32]>::as_slice),
+        ) {
             write_resp(&mut writer, &mut encode_buf, &resp);
             break;
         }

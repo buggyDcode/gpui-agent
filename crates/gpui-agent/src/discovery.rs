@@ -93,7 +93,10 @@ pub struct HostIdentity {
 
 /// Why a `--connect` / named-session lookup failed.
 #[derive(Debug, Error, PartialEq, Eq)]
-#[expect(clippy::exhaustive_enums, reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum ResolveError {
     /// No live host record matches the id.
     #[error("no AgentHost is running for '{id}'")]
@@ -206,7 +209,10 @@ fn effective_uid() -> u32 {
 }
 
 #[cfg(unix)]
-#[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether a missing directory is created")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "one flag: whether a missing directory is created"
+)]
 fn ensure_private_directory(path: &Path, create: bool) -> io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 
@@ -287,7 +293,10 @@ fn ensure_private_directory(path: &Path, create: bool) -> io::Result<()> {
 }
 
 #[cfg(not(unix))]
-#[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether a missing directory is created")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "one flag: whether a missing directory is created"
+)]
 fn ensure_private_directory(path: &Path, create: bool) -> io::Result<()> {
     if create {
         fs::create_dir_all(path)?;
@@ -367,7 +376,10 @@ fn named_session_path(root: &Path, name: &str) -> PathBuf {
     named_sessions_dir(root).join(format!("{name}.json"))
 }
 
-#[expect(clippy::fn_params_excessive_bools, reason = "one flag: whether a missing directory is created")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "one flag: whether a missing directory is created"
+)]
 fn checked_named_sessions_dir(root: &Path, create: bool) -> io::Result<PathBuf> {
     ensure_private_directory(root, create)?;
     let dir = named_sessions_dir(root);
