@@ -2,6 +2,8 @@
 //! op, every choice stays on the offered menu, and a `dangerous` offer
 //! is never chosen — over arbitrary trees, goals, and candidate sets.
 
+use std::fmt::Write as _;
+
 use gpui_agent::protocol::PlatformKind;
 use gpui_agent::tree::{Bounds, UiNode, UiTree};
 use gpui_agent_policy::arbitration::{Choice, choose};
@@ -59,7 +61,7 @@ fn goal() -> impl Strategy<Value = UiGoal> {
         .prop_map(|(verb, quote, tail)| {
             let mut g = verb;
             if let Some(q) = quote {
-                g.push_str(&format!(" \"{q}\""));
+                write!(g, " \"{q}\"").expect("String is infallible");
             }
             if let Some(t) = tail {
                 g.push(' ');

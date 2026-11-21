@@ -14,16 +14,19 @@ pub struct UiGoal {
 }
 
 impl UiGoal {
+    /// Wrap the intent text; surrounding whitespace is trimmed.
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into().trim().to_owned(),
         }
     }
 
+    /// The trimmed intent text.
     pub fn as_str(&self) -> &str {
         &self.text
     }
 
+    /// Whether the trimmed intent is empty.
     pub fn is_empty(&self) -> bool {
         self.text.is_empty()
     }
@@ -136,6 +139,6 @@ mod tests {
             split_sequential_clauses("a then b then c"),
             vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]
         );
-        assert!(split_sequential_clauses("   ").is_empty());
+        assert_eq!(split_sequential_clauses("   "), Vec::<String>::new());
     }
 }

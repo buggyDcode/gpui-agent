@@ -22,7 +22,7 @@
 //! surface: `ActionSpace::from_tree` maps a `UiTree` into offered
 //! actions, `UiPolicy`/`InstinctPolicy` is the two-head decide
 //! (operation, then target), `TextResolver` supplies
-//! TYPE/SET_VALUE payloads, and `split_sequential_clauses` cuts
+//! `TYPE/SET_VALUE` payloads, and `split_sequential_clauses` cuts
 //! `then`/`and then` goals into single intents. `escalate` (M7) adds an
 //! optional abstain-only fallback over a closed command wire — the
 //! local policy still decides first and an abstain is never re-scored.

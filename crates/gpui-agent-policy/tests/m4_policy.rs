@@ -169,7 +169,7 @@ fn t08_unknown_target_abstains() {
     let space = space(&todo_tree(2));
     match decide(&space, "click the settings gear") {
         PolicyOutcome::Abstain { reason, .. } => {
-            assert!(!reason.is_empty());
+            assert_ne!(reason, "");
         }
         PolicyOutcome::Choice(d) => {
             panic!("must abstain, chose {} ({})", d.action_id, d.target_label)
@@ -187,7 +187,7 @@ fn t09_duplicate_targets_abstain() {
         ]),
     )]);
     match decide(&space(&t), "click OK") {
-        PolicyOutcome::Abstain { reason, .. } => assert!(!reason.is_empty()),
+        PolicyOutcome::Abstain { reason, .. } => assert_ne!(reason, ""),
         PolicyOutcome::Choice(d) => {
             panic!("must abstain on twins, chose {}", d.action_id)
         }

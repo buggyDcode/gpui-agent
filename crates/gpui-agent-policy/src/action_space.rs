@@ -24,19 +24,28 @@ use crate::evidence::OperationKind;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum ActionKind {
+    /// `CLICK:<id>` — activate a clickable node.
     Click,
+    /// `TYPE:<id>` — append text to a textbox.
     Type,
+    /// `SET_VALUE:<id>` — replace a textbox's value.
     SetValue,
     /// `KEY:<id>:Enter` — submit on a textbox.
     Key,
+    /// `KEYBINDING:<action>` — fire a registered app keybinding.
     Keybinding,
+    /// `INVOKE:<name>` — call an app-registered invoke schema.
     Invoke,
+    /// Control: every requirement is satisfied.
     Done,
+    /// Control: no offered operation can progress.
     Blocked,
+    /// Control: pause briefly for the app to settle.
     Wait,
 }
 
 impl ActionKind {
+    /// The wire vocabulary for the kind (`CLICK`, `TYPE`, …).
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Click => "CLICK",
@@ -51,6 +60,7 @@ impl ActionKind {
         }
     }
 
+    /// Inverse of [`Self::as_str`]; accepts the lowercase forms too.
     pub fn parse(raw: &str) -> Option<Self> {
         Some(match raw {
             "CLICK" | "click" => Self::Click,
@@ -105,6 +115,11 @@ impl fmt::Display for ActionKind {
 pub struct ActionId(String);
 
 impl ActionId {
+    /// Wrap raw id text.
+    ///
+    /// # Errors
+    /// [`ActionSpaceError::EmptyId`] on empty input,
+    /// [`ActionSpaceError::InvalidId`] on whitespace or control chars.
     pub fn try_new(raw: impl AsRef<str>) -> Result<Self, ActionSpaceError> {
         let raw = raw.as_ref();
         if raw.is_empty() {
@@ -116,6 +131,7 @@ impl ActionId {
         Ok(Self(raw.to_owned()))
     }
 
+    /// The id text (`{KIND}:{target}` or a control name).
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -154,6 +170,7 @@ impl AsRef<str> for ActionId {
 /// stays recipe-free.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OfferedInvoke {
+    /// Schema name as the host registered it.
     pub name: String,
     /// Evidence label words — schema description + keywords.
     pub description: String,
@@ -166,8 +183,11 @@ pub struct OfferedInvoke {
 /// fallback sees the same evidence the local policy scored (PRD M7.2).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NodeState {
+    /// Current `value` of the node, when the host reports one.
     pub value: Option<String>,
+    /// Current `checked` state (toggles), when reported.
     pub checked: Option<bool>,
+    /// Host-reported state flags (e.g. `secret`).
     pub states: Vec<String>,
 }
 
@@ -222,9 +242,11 @@ pub struct OfferedAction {
 }
 
 impl OfferedAction {
+    /// The offered action's stable id.
     pub fn id(&self) -> &ActionId {
         &self.id
     }
+    /// The action kind.
     pub fn kind(&self) -> ActionKind {
         self.kind
     }
@@ -232,12 +254,16 @@ impl OfferedAction {
     pub fn target(&self) -> Option<&str> {
         self.target.as_deref()
     }
+    /// Evidence text (node label / exploded entity name).
     pub fn label(&self) -> &str {
         &self.label
     }
+    /// Protocol role of the node target, when node-bound.
     pub fn role(&self) -> Option<&str> {
         self.role.as_deref()
     }
+    /// Destructive per the host; choosing it abstains
+    /// `needs_confirmation`.
     pub fn dangerous(&self) -> bool {
         self.dangerous
     }
@@ -254,8 +280,11 @@ impl OfferedAction {
     }
 
     /// The key name out of a `KEY:<node>:<key>` id triple. `rsplit`
-    /// keeps `:`-bearing node ids working. Errors for non-`KEY` ids
-    /// and `KEY:` ids missing the key segment.
+    /// keeps `:`-bearing node ids working.
+    ///
+    /// # Errors
+    /// A description for non-`KEY` ids and `KEY:` ids missing the key
+    /// segment.
     pub fn key(&self) -> Result<&str, String> {
         let id = self.id.as_str();
         let rest = id
@@ -281,15 +310,24 @@ pub struct ActionSpace {
 /// Tokenized label, value, and role of one viable node.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NodeText {
+    /// Tokenized `name`.
     pub label: Vec<String>,
+    /// Tokenized `value` (empty when the node has none).
     pub value: Vec<String>,
+    /// Protocol role (`page`, `textbox`, …).
     pub role: String,
 }
 
 /// Construction errors — id validity only.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum ActionSpaceError {
+    /// The raw id text was empty.
     EmptyId,
+    /// The raw id text contained whitespace or control chars.
     InvalidId,
 }
 
@@ -321,6 +359,10 @@ impl ActionSpace {
 
     /// Build the offered set, omitting secret-node fingerprints when the
     /// host predates redaction and hashes the raw value.
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "the flag mirrors the negotiated host capability verbatim; a bool is the API"
+    )]
     pub fn from_tree_with_secret_redaction(
         tree: &UiTree,
         keybindings: &[KeybindingInfo],
@@ -457,27 +499,33 @@ impl ActionSpace {
         self.rev
     }
 
+    /// Number of offered actions.
     pub fn len(&self) -> usize {
         self.actions.len()
     }
 
+    /// Whether nothing is offered.
     pub fn is_empty(&self) -> bool {
         self.actions.is_empty()
     }
 
+    /// Look up an action by [`ActionId`].
     pub fn get(&self, id: &ActionId) -> Option<&OfferedAction> {
         self.actions.get(id)
     }
 
+    /// Look up an action by raw id text.
     pub fn get_str(&self, id: &str) -> Option<&OfferedAction> {
         let id = ActionId::try_new(id).ok()?;
         self.actions.get(&id)
     }
 
+    /// All offered actions, in id order.
     pub fn actions(&self) -> impl Iterator<Item = &OfferedAction> {
         self.actions.values()
     }
 
+    /// All offered ids, sorted.
     pub fn ids(&self) -> impl Iterator<Item = &ActionId> {
         self.actions.keys()
     }
@@ -489,6 +537,7 @@ impl ActionSpace {
             .filter(move |a| a.kind == kind && a.target.is_some())
     }
 
+    /// Whether any offered action has `kind`.
     pub fn contains_kind(&self, kind: ActionKind) -> bool {
         self.actions.values().any(|a| a.kind == kind)
     }
@@ -517,6 +566,10 @@ fn contains_run(hay: &[String], needle: &[String]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ancestors_viable is the carried filter state and secret_redaction is the negotiated capability"
+)]
 fn collect_node(
     node: &UiNode,
     parent: Option<&UiNode>,
@@ -617,11 +670,11 @@ mod tests {
     use gpui_agent::{AgentClient, PlatformKind};
 
     fn legacy_fingerprint(node: &UiNode, parent_id: Option<&str>) -> u64 {
-        const OFF: u64 = 0xcbf29ce484222325;
+        const OFF: u64 = 0xcbf2_9ce4_8422_2325;
         fn feed(mut hash: u64, bytes: &[u8]) -> u64 {
             for byte in bytes {
                 hash ^= u64::from(*byte);
-                hash = hash.wrapping_mul(0x100000001b3);
+                hash = hash.wrapping_mul(0x0100_0000_01b3);
             }
             hash
         }
@@ -663,7 +716,7 @@ mod tests {
             UiNode::new("password-field", role::TEXTBOX, "Password").with_value("hunter2");
         raw_secret.states.push("secret".into());
         let raw_fingerprint = legacy_fingerprint(&raw_secret, None);
-        let mut redacted = raw_secret.clone();
+        let mut redacted = raw_secret;
         redacted.redact_secrets();
         let tree = UiTree {
             app: "legacy".into(),
@@ -672,7 +725,7 @@ mod tests {
             nodes: vec![redacted],
             rev: None,
         };
-        let server_tree = tree.clone();
+        let server_tree = tree;
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut reader = BufReader::new(stream.try_clone().unwrap());
