@@ -201,6 +201,33 @@ fn wait_for_returns_the_new_tree_in_compact_form() {
 }
 
 #[test]
+fn failed_keybinding_wait_reports_keybinding_delivery_status() {
+    let todo = Todo::spawn(TOKEN);
+    let runtime = RuntimeRoot::new();
+    let failure = failed_json(&cli(
+        &runtime,
+        &todo.addr,
+        &[
+            "--wait-for",
+            "no-such-node",
+            "--wait-timeout-ms",
+            "100",
+            "keybinding",
+            "--id",
+            todo_core::ids::KEY_GO_SETTINGS,
+            "--scope",
+            "global",
+        ],
+    ));
+    assert_eq!(failure["error_code"], "timeout", "{failure}");
+    assert_eq!(
+        failure["delivery_status"],
+        "delivered_unverified",
+        "{failure}"
+    );
+}
+
+#[test]
 fn outline_snapshots_cut_depth_and_root() {
     let todo = Todo::spawn(TOKEN);
     todo.seed(&["Milk", "Eggs"]);
