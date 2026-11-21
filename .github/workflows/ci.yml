@@ -20,6 +20,30 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  lints:
+    name: clippy + fmt (workspace lints)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      # Lint both feature configurations: --all-features alone never
+      # compiles cfg(not(feature = "instinct")) code and vice versa.
+      # apps/todo is excluded: it links gpui-kit, which needs GUI system
+      # packages no lint job should install.
+      - name: Clippy (default features)
+        run: cargo clippy --workspace --exclude todo --all-targets -- -D warnings
+      - name: Clippy (all features)
+        run: cargo clippy --workspace --exclude todo --all-targets --all-features -- -D warnings
+
   headless:
     name: test + recipe receipt
     runs-on: ubuntu-latest
