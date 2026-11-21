@@ -65,20 +65,23 @@ Run `gpui-agent <command> --help` for the options of each.
 
 - Read part of the tree: `snapshot --depth 2` keeps two levels, and a node
   whose children were cut shows `children_count=N`. `snapshot --root <id|@ref>`
-  keeps one subtree. Both work with `--refs` and the JSON output.
+  keeps one subtree. Both work with `--refs` and the JSON output. Outlined
+  snapshots omit `rev`; use a full snapshot as a `since` baseline.
 - Act and wait in one call: add `--wait-for <id>` (or `--wait-for-gone <id>`)
   to any action. The reply carries the new tree in compact form as `compact`;
   `--wait-timeout-ms` bounds the wait (default 5000).
 - Refuse a stale target: `snapshot --fingerprints` lists each node's
-  fingerprint; `click`, `type`, `set-value`, `key` and `press` take
+  fingerprint; `click`, `type`, `set-value`, `key`, and `press` take
   `--expect-fingerprint <n>` and fail with `stale_target`, before acting, when
   the node changed since. `snapshot --refs` saves each ref's fingerprint, and
-  `--guard` sends it whenever a command names an `@eN` ref. A fingerprint
+  `--guard` sends it only when one of those five commands' action target is an
+  `@eN` ref. A fingerprint
   covers the node's value, so take a new snapshot after changing a node before
   guarding it again.
 - Over MCP the same arguments are `depth`, `root`, `wait_for`,
   `wait_for_gone`, `wait_timeout_ms` and `expect_fingerprint`, and results are
-  compact JSON.
+  compact JSON. MCP accepts `expect_fingerprint` as a number or decimal
+  string; snapshot fingerprint values are decimal strings.
 
 ## What a host supports
 

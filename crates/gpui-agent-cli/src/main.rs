@@ -720,6 +720,17 @@ fn run() -> Result<()> {
     // Say which app discovery picked before acting on it, so a command that lands in the wrong
     // window is visible. Stderr keeps stdout (and `mcp`'s protocol) clean.
     // `@e3` stands for a node of the last `snapshot --refs` of this host.
+    let guard_target_is_ref = match &cli.command {
+        Command::Click { target, .. }
+        | Command::Type { target, .. }
+        | Command::SetValue { target, .. }
+        | Command::Key { target, .. } => refs::is_ref(target),
+        Command::Press {
+            target: Some(target),
+            ..
+        } => refs::is_ref(target),
+        _ => false,
+    };
     let mut args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let mut used_refs = Vec::new();
     if args
@@ -814,7 +825,7 @@ fn run() -> Result<()> {
     // The fingerprint `snapshot --refs` saved for `target`, when `--guard`
     // is on and `target` was given as a ref.
     let guard = |target: Option<&str>, explicit: Option<u64>| -> Result<Option<u64>> {
-        if explicit.is_some() || !guarded {
+        if explicit.is_some() || !guarded || !guard_target_is_ref {
             return Ok(explicit);
         }
         let Some(saved) = target.and_then(|id| used_refs.iter().find(|saved| saved.id == id))
@@ -879,7 +890,7 @@ fn run() -> Result<()> {
                 visible,
                 in_viewport,
             };
-            print_resp(rpc(client.wait_until(spec, timeout_ms))?)
+            print_resp(call(client.call(&Op::WaitUntil { timeout_ms, spec }))?)
         }
         Command::Hello => print_resp(call(client.call(&Op::Hello))?),
         Command::Snapshot {
@@ -909,7 +920,7 @@ fn run() -> Result<()> {
             inline,
         } => {
             if inline {
-                let png = rpc(client.screenshot_bytes(mode, target, max_height_px))?;
+                let png = call(client.screenshot_bytes_call(mode, target, max_height_px))?;
                 std::fs::write(&out, &png)
                     .map_err(|err| anyhow!("write {}: {err}", out.display()))?;
                 println!(
@@ -923,12 +934,13 @@ fn run() -> Result<()> {
                     "screenshot --mode scrolled requires --target <scroll-view-id>"
                 ));
             }
-            print_resp(rpc(client.screenshot_with(
-                out.to_string_lossy().into_owned(),
+            print_resp(call(client.call(&Op::Screenshot {
+                path: Some(out.to_string_lossy().into_owned()),
                 mode,
                 target,
                 max_height_px,
-            ))?)
+                inline: false,
+            }))?)
         }
         Command::Press {
             target,
@@ -1129,7 +1141,13 @@ fn run() -> Result<()> {
             confirm,
             activate,
         } => {
-            let resp = rpc(client.keybinding(id, scope, chord, confirm, activate))?;
+            let resp = call(client.call(&Op::Keybinding {
+                binding: id,
+                chord,
+                scope,
+                confirm,
+                activate,
+            }))?;
             finish(&mut client, resp)?
         }
         Command::Keybindings => print_resp(rpc(client.keybindings())?),
@@ -1282,6 +1300,9 @@ fn print_snapshot(
     if options.is_full() && !refs && !pretty {
         print_resp(resp);
         return Ok(());
+    }
+    if !options.is_full() {
+        resp.rev = None;
     }
     let tree = resp
         .tree

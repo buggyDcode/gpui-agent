@@ -385,8 +385,9 @@ pub(crate) fn tools() -> Vec<Value> {
         let name = name.as_str();
         if FINGERPRINTED_TOOLS.contains(&name) {
             tool["inputSchema"]["properties"]["expect_fingerprint"] = json!({
-                "type": "integer",
+                "type": ["integer", "string"],
                 "minimum": 0,
+                "pattern": "^[0-9]+$",
                 "description": "The target's fingerprint from snapshot fingerprints=true. The host refuses with stale_target, before acting, when the target changed since."
             });
         }
@@ -497,11 +498,29 @@ fn read_back(args: &Value) -> bool {
 fn expect_fingerprint(args: &Value) -> Result<Option<u64>, String> {
     match args.get("expect_fingerprint") {
         None | Some(Value::Null) => Ok(None),
-        Some(value) => value
-            .as_u64()
-            .map(Some)
-            .ok_or_else(|| "`expect_fingerprint` must be a non-negative integer".to_string()),
+        Some(Value::String(value))
+            if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            value
+                .parse()
+                .map(Some)
+                .map_err(|_| "`expect_fingerprint` is outside the u64 range".to_string())
+        }
+        Some(value) => value.as_u64().map(Some).ok_or_else(|| {
+            "`expect_fingerprint` must be a non-negative integer or decimal string".to_string()
+        }),
     }
+}
+
+fn stringify_fingerprints(mut value: Value) -> Value {
+    if let Some(fingerprints) = value.get_mut("fingerprints").and_then(Value::as_object_mut) {
+        for fingerprint in fingerprints.values_mut() {
+            if let Some(number) = fingerprint.as_u64() {
+                *fingerprint = Value::String(number.to_string());
+            }
+        }
+    }
+    value
 }
 
 /// The optional `wait_for` / `wait_for_gone` of an action tool, with its
@@ -564,15 +583,18 @@ fn outline_snapshot(
         ),
     };
     let mut resp = client
-        .expect_ok(Op::Snapshot {
+        .call(&Op::Snapshot {
             since: None,
             format: None,
             fingerprints: fingerprints.then_some(true),
         })
-        .map_err(fail_text)?;
+        .map_err(fail)?;
     let tree = resp.tree.take().ok_or("the reply carried no tree")?;
     let outline = gpui_agent::outline(&tree, &options)
         .map_err(|err| fail(CallFailure::with_code(err, error_code::BAD_REQUEST, None)))?;
+    if !options.is_full() {
+        resp.rev = None;
+    }
     if let Some(fps) = resp.fingerprints.as_mut() {
         outline.retain_fingerprints(fps);
     }
@@ -654,9 +676,9 @@ fn call_tool(
             let reply_timeout = client.timeout();
             let bound_ms = args.get("timeout_ms").and_then(Value::as_u64);
             client.set_timeout(wait_reply_timeout(reply_timeout, bound_ms));
-            let ready = client.wait_ready();
+            let ready = client.call(&Op::Wait { timeout_ms: None });
             client.set_timeout(reply_timeout);
-            ready.map_err(fail_text)?
+            ready.map_err(fail)?
         }
         "wait_until" => {
             let timeout_ms = args
@@ -666,9 +688,9 @@ fn call_tool(
             let spec = parse_assert_spec(&args)?;
             let reply_timeout = client.timeout();
             client.set_timeout(wait_reply_timeout(reply_timeout, Some(timeout_ms)));
-            let ready = client.wait_until(spec, timeout_ms);
+            let ready = client.call(&Op::WaitUntil { timeout_ms, spec });
             client.set_timeout(reply_timeout);
-            ready.map_err(fail_text)?
+            ready.map_err(fail)?
         }
         "hello" => client.call(&Op::Hello).map_err(fail)?,
         "snapshot" => {
@@ -683,17 +705,16 @@ fn call_tool(
             if args.get("depth").is_some() || args.get("root").is_some() {
                 return outline_snapshot(client, &args, since, format, fingerprints == Some(true));
             }
-            if fingerprints == Some(true) {
-                client
-                    .expect_ok(Op::Snapshot {
-                        since,
-                        format,
-                        fingerprints,
-                    })
-                    .map_err(fail_text)?
-            } else {
-                client.snapshot_with(since, format).map_err(fail_text)?
-            }
+            let resp = client
+                .call(&Op::Snapshot {
+                    since,
+                    format,
+                    fingerprints,
+                })
+                .map_err(fail)?;
+            return serde_json::to_value(resp)
+                .map(stringify_fingerprints)
+                .map_err(|err| err.to_string());
         }
         "screenshot" => {
             let path = args.string("path")?;
@@ -707,8 +728,14 @@ fn call_tool(
                 return Err("screenshot mode=scrolled requires target".into());
             }
             client
-                .screenshot_with(path, mode, target, max_height_px)
-                .map_err(fail_text)?
+                .call(&Op::Screenshot {
+                    path: Some(path),
+                    mode,
+                    target,
+                    max_height_px,
+                    inline: false,
+                })
+                .map_err(fail)?
         }
         "click" => {
             let op = Op::Click {
@@ -761,8 +788,14 @@ fn call_tool(
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             client
-                .keybinding(binding, scope, chord, confirm, activate)
-                .map_err(fail_text)?
+                .call(&Op::Keybinding {
+                    binding,
+                    chord,
+                    scope,
+                    confirm,
+                    activate,
+                })
+                .map_err(fail)?
         }
         "keybindings" | "keybinding.list" => client.keybindings().map_err(fail_text)?,
         "events" => {
@@ -836,7 +869,7 @@ fn call_tool(
     })?;
     let mut value = serde_json::to_value(resp).map_err(|err| err.to_string())?;
     value["compact"] = json!(compact);
-    Ok(value)
+    Ok(stringify_fingerprints(value))
 }
 
 fn recipe_text(args: &Value) -> Result<String, String> {
@@ -1663,6 +1696,74 @@ mod tests {
         envelope
     }
 
+    fn coded_error_client() -> (AgentClient, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let request: gpui_agent::protocol::Request = serde_json::from_str(&line).unwrap();
+            let mut response =
+                gpui_agent::protocol::Response::err(&request.id, "opaque host failure");
+            response.error_code = Some("host_specific_code".into());
+            response.hint = Some("host supplied recovery hint".into());
+            writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
+            stream.flush().unwrap();
+        });
+        (
+            AgentClient::connect(addr).with_timeout(Duration::from_secs(3)),
+            server,
+        )
+    }
+
+    #[test]
+    fn legacy_tools_preserve_host_error_metadata() {
+        for (name, arguments) in [
+            ("snapshot", json!({})),
+            ("screenshot", json!({ "path": "ignored.png" })),
+            ("wait", json!({ "timeout_ms": 100 })),
+            (
+                "wait_until",
+                json!({ "target": "missing", "timeout_ms": 100 }),
+            ),
+            (
+                "keybinding",
+                json!({ "id": "custom.binding", "scope": "global" }),
+            ),
+        ] {
+            let (mut client, server) = coded_error_client();
+            let result = tools_call_result(
+                &mut client,
+                &json!({ "name": name, "arguments": arguments }),
+                &[],
+            );
+            let envelope = tool_error_envelope(&result);
+            assert_eq!(
+                envelope["error_code"],
+                json!("host_specific_code"),
+                "{name}: {envelope}"
+            );
+            assert_eq!(
+                envelope["hint"],
+                json!("host supplied recovery hint"),
+                "{name}: {envelope}"
+            );
+            if name == "keybinding" {
+                assert!(
+                    envelope["delivery_status"].is_string(),
+                    "{name}: {envelope}"
+                );
+            }
+            server.join().unwrap();
+        }
+    }
+
     #[test]
     fn failed_request_carries_the_envelope() {
         let (mut client, shutdown) = spawn_todo_client();
@@ -1761,7 +1862,7 @@ mod tests {
         for name in FINGERPRINTED_TOOLS {
             assert_eq!(
                 props(name)["expect_fingerprint"]["type"],
-                "integer",
+                json!(["integer", "string"]),
                 "{name}"
             );
         }
@@ -1786,8 +1887,17 @@ mod tests {
             &[],
         )
         .unwrap();
-        let input = snap["fingerprints"]["todo-input"].as_u64().unwrap();
-        let add = snap["fingerprints"]["todo-add"].as_u64().unwrap();
+        assert!(snap["fingerprints"]["todo-input"].is_string(), "{snap}");
+        let input = snap["fingerprints"]["todo-input"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let add = snap["fingerprints"]["todo-add"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
         for (name, args) in [
             ("type", json!({ "target": "todo-input", "text": "x" })),
             ("set_value", json!({ "target": "todo-input", "value": "x" })),
@@ -1809,7 +1919,7 @@ mod tests {
             &mut client,
             &json!({
                 "name": "type",
-                "arguments": { "target": "todo-input", "text": "Milk", "expect_fingerprint": input }
+                "arguments": { "target": "todo-input", "text": "Milk", "expect_fingerprint": input.to_string() }
             }),
             &[],
         )
@@ -1824,7 +1934,7 @@ mod tests {
         .unwrap();
         let bad = call_tool(
             &mut client,
-            &json!({ "name": "click", "arguments": { "target": "todo-add", "expect_fingerprint": "1" } }),
+            &json!({ "name": "click", "arguments": { "target": "todo-add", "expect_fingerprint": "not-a-number" } }),
             &[],
         )
         .unwrap_err();
@@ -1925,6 +2035,8 @@ mod tests {
             &[],
         )
         .unwrap();
+        assert!(one.get("rev").is_none(), "{one}");
+        assert!(one["tree"].get("rev").is_none(), "{one}");
         let window = &one["tree"]["nodes"][0];
         assert!(window.get("children").is_none(), "{window}");
         assert!(window["children_count"].as_u64().unwrap() > 0, "{window}");
@@ -1954,6 +2066,30 @@ mod tests {
             let envelope = tool_error_envelope(&result);
             assert_eq!(envelope["error_code"], "bad_request", "{args}: {envelope}");
         }
+        shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[test]
+    fn keybinding_reports_delivery_status() {
+        let (mut client, shutdown) = spawn_todo_client();
+        let result = call_tool(
+            &mut client,
+            &json!({
+                "name": "keybinding",
+                "arguments": {
+                    "id": todo_core::ids::KEY_GO_SETTINGS,
+                    "scope": "global"
+                }
+            }),
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(
+            result["delivery_status"],
+            json!("delivered_unverified"),
+            "{result}"
+        );
         shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 

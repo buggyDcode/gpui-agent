@@ -96,7 +96,7 @@ pub fn outline(tree: &UiTree, options: &OutlineOptions) -> Result<Outline, Strin
         platform: tree.platform,
         ready: tree.ready,
         nodes,
-        rev: tree.rev,
+        rev: options.is_full().then_some(tree.rev).flatten(),
     })
 }
 
@@ -213,6 +213,7 @@ mod tests {
     #[test]
     fn depth_cuts_levels_and_counts_the_cut_children() {
         let one = outline(&tree(), &OutlineOptions::new().depth(1)).unwrap();
+        assert_eq!(one.rev, None);
         assert!(one.nodes[0].children.is_empty());
         assert_eq!(one.nodes[0].children_count, Some(2));
 

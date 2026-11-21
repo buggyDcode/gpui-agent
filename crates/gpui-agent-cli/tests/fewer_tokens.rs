@@ -116,6 +116,36 @@ fn guard_sends_the_saved_fingerprint_of_a_ref() {
 }
 
 #[test]
+fn guard_does_not_use_a_wait_ref_for_a_plain_action_target() {
+    let todo = Todo::spawn(TOKEN);
+    let runtime = RuntimeRoot::new();
+    let outline = text(&cli(
+        &runtime,
+        &todo.addr,
+        &["snapshot", "--refs", "--fingerprints"],
+    ));
+    let input = ref_of(&outline, "textbox");
+
+    ok_json(&cli(
+        &runtime,
+        &todo.addr,
+        &["type", "todo-input", "before"],
+    ));
+    let result = ok_json(&cli(
+        &runtime,
+        &todo.addr,
+        &[
+            "--guard",
+            "--wait-for",
+            &input,
+            "click",
+            "todo-input",
+        ],
+    ));
+    assert_eq!(result["delivery_status"], "delivered_verified", "{result}");
+}
+
+#[test]
 fn wait_for_returns_the_new_tree_in_compact_form() {
     let todo = Todo::spawn(TOKEN);
     let runtime = RuntimeRoot::new();
@@ -171,6 +201,33 @@ fn wait_for_returns_the_new_tree_in_compact_form() {
 }
 
 #[test]
+fn failed_keybinding_wait_reports_keybinding_delivery_status() {
+    let todo = Todo::spawn(TOKEN);
+    let runtime = RuntimeRoot::new();
+    let failure = failed_json(&cli(
+        &runtime,
+        &todo.addr,
+        &[
+            "--wait-for",
+            "no-such-node",
+            "--wait-timeout-ms",
+            "100",
+            "keybinding",
+            "--id",
+            todo_core::ids::KEY_GO_SETTINGS,
+            "--scope",
+            "global",
+        ],
+    ));
+    assert_eq!(failure["error_code"], "timeout", "{failure}");
+    assert_eq!(
+        failure["delivery_status"],
+        "delivered_unverified",
+        "{failure}"
+    );
+}
+
+#[test]
 fn outline_snapshots_cut_depth_and_root() {
     let todo = Todo::spawn(TOKEN);
     todo.seed(&["Milk", "Eggs"]);
@@ -184,6 +241,8 @@ fn outline_snapshots_cut_depth_and_root() {
         full.len()
     );
     let one: Value = serde_json::from_str(&one).unwrap();
+    assert!(one.get("rev").is_none(), "{one}");
+    assert!(one["tree"].get("rev").is_none(), "{one}");
     let window = &one["tree"]["nodes"][0];
     assert!(window.get("children").is_none(), "{window}");
     assert!(window["children_count"].as_u64().unwrap() > 0);
@@ -193,6 +252,8 @@ fn outline_snapshots_cut_depth_and_root() {
         &todo.addr,
         &["snapshot", "--root", "todo-item-2"],
     ));
+    assert!(item.get("rev").is_none(), "{item}");
+    assert!(item["tree"].get("rev").is_none(), "{item}");
     assert_eq!(item["tree"]["nodes"].as_array().unwrap().len(), 1);
     assert_eq!(item["tree"]["nodes"][0]["id"], "todo-item-2");
 

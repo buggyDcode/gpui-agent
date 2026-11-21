@@ -3,8 +3,14 @@
 //! its `hint` and, for an action, the `delivery_status`. A target action
 //! reads its target back unless `--no-read-back` is given.
 
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
 use std::process::{Command, Output};
+use std::thread::{self, JoinHandle};
 
+use gpui_agent::protocol::{
+    HelloAuth, HelloInfo, Op, PROTOCOL_VERSION, PlatformKind, Request, Response,
+};
 use serde_json::Value;
 
 mod common;
@@ -19,6 +25,62 @@ fn cli(addr: &str, args: &[&str]) -> Output {
         .env_remove("GPUI_AGENT_TOKEN")
         .output()
         .expect("spawn gpui-agent")
+}
+
+fn cli_without_token(addr: &str, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_gpui-agent"))
+        .args(["--addr", addr])
+        .args(args)
+        .env_remove("GPUI_AGENT_TOKEN")
+        .output()
+        .expect("spawn gpui-agent")
+}
+
+fn coded_error_host() -> (String, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap() == 0 {
+                break;
+            }
+            let request: Request = serde_json::from_str(&line).unwrap();
+            let is_hello = matches!(request.op, Op::Hello);
+            let response = if is_hello {
+                let mut response = Response::ok(&request.id);
+                response.hello = Some(HelloInfo {
+                    protocol: PROTOCOL_VERSION,
+                    app: "coded-error-test".into(),
+                    platform: PlatformKind::Headless,
+                    os: gpui_agent::protocol::host_os(),
+                    ready: true,
+                    deliveries: Vec::new(),
+                    auth: HelloAuth::None,
+                    bundle_id: None,
+                    executable: None,
+                    features: vec!["screenshot_inline".into()],
+                    framework: None,
+                    device: None,
+                });
+                response
+            } else {
+                let mut response = Response::err(&request.id, "opaque host failure");
+                response.error_code = Some("host_specific_code".into());
+                response.hint = Some("host supplied recovery hint".into());
+                response
+            };
+            let response = serde_json::to_string(&response).unwrap();
+            writeln!(stream, "{response}").unwrap();
+            stream.flush().unwrap();
+            if !is_hello {
+                break;
+            }
+        }
+    });
+    (addr, server)
 }
 
 fn failed_envelope(out: &Output) -> Value {
@@ -126,4 +188,70 @@ fn action_reads_back_by_default() {
     let reply: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(reply["delivery_status"], "delivered_unverified", "{reply}");
     assert!(reply.get("after").is_none(), "{reply}");
+}
+
+#[test]
+fn keybinding_reports_delivery_status() {
+    let todo = Todo::spawn(TOKEN);
+    let out = cli(
+        &todo.addr,
+        &[
+            "keybinding",
+            "--id",
+            todo_core::ids::KEY_GO_SETTINGS,
+            "--scope",
+            "global",
+        ],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let reply: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(reply["delivery_status"], "delivered_unverified", "{reply}");
+}
+
+#[test]
+fn cli_preserves_host_error_metadata_for_legacy_operations() {
+    let screenshot = std::env::temp_dir()
+        .join("gpui-agent-host-error.png")
+        .to_string_lossy()
+        .into_owned();
+    let cases = [
+        vec!["snapshot".to_string()],
+        vec!["screenshot".into(), "--out".into(), screenshot.clone()],
+        vec![
+            "screenshot".into(),
+            "--out".into(),
+            screenshot,
+            "--inline".into(),
+        ],
+        vec!["wait".into()],
+        vec![
+            "wait-until".into(),
+            "--id".into(),
+            "missing".into(),
+            "--timeout-ms".into(),
+            "50".into(),
+        ],
+        vec![
+            "keybinding".into(),
+            "--id".into(),
+            "custom.binding".into(),
+            "--scope".into(),
+            "global".into(),
+        ],
+    ];
+
+    for args in cases {
+        let (addr, server) = coded_error_host();
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        let envelope = failed_envelope(&cli_without_token(&addr, &args));
+        assert_eq!(envelope["error_code"], "host_specific_code", "{envelope}");
+        assert_eq!(
+            envelope["hint"], "host supplied recovery hint",
+            "{envelope}"
+        );
+        if args[0] == "keybinding" {
+            assert!(envelope["delivery_status"].is_string(), "{envelope}");
+        }
+        server.join().unwrap();
+    }
 }
