@@ -159,7 +159,7 @@ impl InstinctPolicy {
     }
 }
 
-fn evidence_of<'a>(action: &'a OfferedAction) -> EvidenceTarget<'a> {
+fn evidence_of(action: &OfferedAction) -> EvidenceTarget<'_> {
     EvidenceTarget {
         id: action.id().as_str(),
         label: action.label(),

@@ -216,7 +216,7 @@ impl CommandEscalation {
         // reply cannot deadlock the timeout.
         let (wtx, wrx) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = wtx.send(stdin.write_all(body.as_bytes()).map(|_| stdin));
+            let _ = wtx.send(stdin.write_all(body.as_bytes()).map(|()| stdin));
         });
         let (rtx, rrx) = mpsc::channel();
         std::thread::spawn(move || {

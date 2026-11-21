@@ -5,7 +5,7 @@
 //! Callers supply `(id, evidence-millis)` pairs; [`choose`] returns a
 //! [`Choice`] — `Chosen` names exactly one offered id, `Abstained` can
 //! never be dispatched. Default profile [`Profile::Standard`]
-//! (min_confidence 750 / min_margin 150); never lower it to pass a test.
+//! (`min_confidence` 750 / `min_margin` 150); never lower it to pass a test.
 
 use instinct_core::{
     Affinity, Answer, CandidateId, CandidateSet, Confidence, DriveIndex, Drives, Profile, Scores,
@@ -15,6 +15,7 @@ use instinct_core::{
 /// One ranked candidate as reported by the arbitration trail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RankedCandidate {
+    /// The offered candidate id.
     pub id: String,
     /// Post-arbitration urge in millis (0..=1000).
     pub confidence_millis: i16,
@@ -22,16 +23,24 @@ pub struct RankedCandidate {
 
 /// The gated outcome of [`choose`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum Choice {
     /// Exactly one offered id cleared the profile's thresholds.
     Chosen {
+        /// The winning candidate id.
         id: String,
+        /// All candidates, ranked by descending urge.
         ranked: Vec<RankedCandidate>,
     },
     /// Nothing cleared the gate — the ranked list is for diagnostics /
     /// escalation only and may not be dispatched.
     Abstained {
+        /// Why the gate rejected every candidate.
         why: String,
+        /// All candidates, ranked by descending urge.
         ranked: Vec<RankedCandidate>,
     },
 }
@@ -56,15 +65,26 @@ impl Choice {
 /// Errors are internal invariants only (bad ids, mismatched lengths) —
 /// abstain is a value, not an error.
 #[derive(Debug, thiserror::Error)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "adding #[non_exhaustive] would break 0.3.0 callers' exhaustive matches"
+)]
 pub enum ArbitrationError {
+    /// The candidate list was empty, duplicated, or had a bad id.
     #[error("candidate ids must be unique and non-empty: {0}")]
     Candidates(String),
+    /// The Instinct engine itself rejected the question or answer.
     #[error("instinct arbitration failed: {0}")]
     Instinct(String),
 }
 
 /// `choose(candidates, profile)` — gate `candidates` through Instinct and
 /// return the gated [`Choice`]. `None` profile means [`Profile::Standard`].
+///
+/// # Errors
+/// [`ArbitrationError::Candidates`] for bad ids and
+/// [`ArbitrationError::Instinct`] when the engine fails; abstention is
+/// a [`Choice`], never an error.
 pub fn choose(
     candidates: &[(String, Confidence)],
     profile: Option<Profile>,

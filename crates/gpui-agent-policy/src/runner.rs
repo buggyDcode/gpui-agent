@@ -184,9 +184,7 @@ pub fn top_candidates(space: &ActionSpace, ranked: &[RankedAction], k: usize) ->
                     .and_then(|a| a.role())
                     .unwrap_or_default()
                     .to_owned(),
-                name: offered
-                    .map(|a| a.label().to_owned())
-                    .unwrap_or_else(|| r.label.clone()),
+                name: offered.map_or_else(|| r.label.clone(), |a| a.label().to_owned()),
                 confidence_millis: r.confidence_millis,
             }
         })
