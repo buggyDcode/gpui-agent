@@ -12,16 +12,25 @@ pub struct Registry {
 }
 
 impl Registry {
+    /// An empty registry.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Add a schema after validating it.
+    ///
+    /// # Errors
+    /// [`OpSchema::validate`] violations.
     pub fn insert(&mut self, schema: OpSchema) -> Result<(), String> {
         schema.validate()?;
         self.schemas.insert(schema.name.clone(), schema);
         Ok(())
     }
 
+    /// Merge `other` into self; names must not collide.
+    ///
+    /// # Errors
+    /// A message naming the first duplicate or invalid schema.
     pub fn merge(&mut self, other: Registry) -> Result<(), String> {
         for schema in other.schemas.into_values() {
             if self.schemas.contains_key(&schema.name) {
@@ -32,15 +41,21 @@ impl Registry {
         Ok(())
     }
 
+    /// Look a schema up by name.
     pub fn get(&self, name: &str) -> Option<&OpSchema> {
         self.schemas.get(name)
     }
 
+    /// Every registered schema, name-sorted.
     pub fn iter(&self) -> impl Iterator<Item = &OpSchema> {
         self.schemas.values()
     }
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "`required` is the schema's own flag — a bool is the field"
+)]
 fn arg(ty: &str, required: bool) -> ArgSchema {
     ArgSchema {
         ty: ty.into(),
@@ -48,6 +63,10 @@ fn arg(ty: &str, required: bool) -> ArgSchema {
     }
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "`idempotent` is the schema's own flag — a bool is the field"
+)]
 fn protocol(
     name: &str,
     description: &str,
@@ -71,6 +90,13 @@ fn protocol(
 }
 
 /// Protocol ops only. App invoke/id schemas load from `--schema` / `GPUI_AGENT_SCHEMA`.
+///
+/// # Panics
+/// Unreachable: the built-in schemas are validated at construction.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table entry per protocol op; splitting the table buys nothing"
+)]
 pub fn protocol_registry() -> Registry {
     let mut reg = Registry::new();
     let protocol_ops = [
@@ -201,6 +227,10 @@ pub fn protocol_registry() -> Registry {
     reg
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one entry per todo invoke schema; splitting the table buys nothing"
+)]
 fn todo_app_registry() -> Registry {
     let mut reg = Registry::new();
     let mut add_args = BTreeMap::new();
@@ -223,7 +253,7 @@ fn todo_app_registry() -> Registry {
             "task".into(),
         ],
     })
-    .unwrap();
+    .expect("built-in schema is valid");
 
     let mut id_args = BTreeMap::new();
     id_args.insert("id".into(), arg("number", true));
@@ -244,7 +274,7 @@ fn todo_app_registry() -> Registry {
             "todo".into(),
         ],
     })
-    .unwrap();
+    .expect("built-in schema is valid");
 
     reg.insert(OpSchema {
         name: "todo.delete".into(),
@@ -258,7 +288,7 @@ fn todo_app_registry() -> Registry {
         result: Some(json!({"id": "u64", "title": "string", "done": "bool"})),
         keywords: vec!["delete".into(), "remove".into(), "todo".into()],
     })
-    .unwrap();
+    .expect("built-in schema is valid");
 
     reg.insert(OpSchema {
         name: "todo.list".into(),
@@ -272,7 +302,7 @@ fn todo_app_registry() -> Registry {
         result: Some(json!([{"id": "u64", "title": "string", "done": "bool"}])),
         keywords: vec!["list".into(), "todos".into(), "items".into()],
     })
-    .unwrap();
+    .expect("built-in schema is valid");
 
     reg.insert(OpSchema {
         name: "todo.toggle_sidebar".into(),
@@ -286,7 +316,7 @@ fn todo_app_registry() -> Registry {
         result: Some(json!({"sidebar_open": "bool"})),
         keywords: vec!["sidebar".into(), "nav".into()],
     })
-    .unwrap();
+    .expect("built-in schema is valid");
 
     for (name, description, keywords) in [
         (
@@ -318,7 +348,7 @@ fn todo_app_registry() -> Registry {
             result: None,
             keywords: keywords.iter().map(|s| (*s).to_string()).collect(),
         })
-        .unwrap();
+        .expect("built-in schema is valid");
     }
 
     reg
@@ -328,6 +358,9 @@ fn todo_app_registry() -> Registry {
 ///
 /// Other apps should ship JSON schemas; this in-process copy keeps unit
 /// tests independent of `examples/schemas/todo.json`.
+///
+/// # Panics
+/// Unreachable: the built-in schemas are validated at construction.
 pub fn todo_registry() -> Registry {
     let mut reg = protocol_registry();
     reg.merge(todo_app_registry()).expect("todo schemas");
@@ -338,6 +371,9 @@ pub fn todo_registry() -> Registry {
 ///
 /// Accepts a top-level array or `{ "schemas": [ ... ] }`. Every row is
 /// validated; unknown invoke names stay fail-closed at recipe validate.
+///
+/// # Errors
+/// A message on read, JSON, or schema-validation failure.
 pub fn load_schema_file(path: &Path) -> Result<Registry, String> {
     let text = std::fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))?;
     let value: serde_json::Value =
@@ -362,6 +398,9 @@ pub fn load_schema_file(path: &Path) -> Result<Registry, String> {
 }
 
 /// `protocol_registry()` plus files from `GPUI_AGENT_SCHEMA` and `paths`.
+///
+/// # Errors
+/// A message on schema-file read or validation failure, or duplicates.
 pub fn registry_from_schema_paths(paths: &[PathBuf]) -> Result<Registry, String> {
     let mut reg = protocol_registry();
     let mut all = Vec::new();
@@ -431,7 +470,7 @@ mod tests {
             "x",
             true,
         )
-        .unwrap();
+        .expect("built-in schema is valid");
         let err = crate::recipe::validate_recipe(&recipe, &protocol_registry()).unwrap_err();
         assert!(err.contains("unknown invoke"), "{err}");
         assert!(err.contains("todo.add"), "{err}");
@@ -447,7 +486,7 @@ mod tests {
             "x",
             true,
         )
-        .unwrap();
+        .expect("built-in schema is valid");
         let err = crate::recipe::validate_recipe(&recipe, &Registry::new()).unwrap_err();
         assert!(err.contains("unknown invoke"), "{err}");
         assert!(err.contains("todo.add"), "{err}");
@@ -459,7 +498,7 @@ mod tests {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/schemas/todo.json");
         let mut reg = protocol_registry();
         reg.merge(load_schema_file(&path).expect("todo.json"))
-            .unwrap();
+            .expect("built-in schema is valid");
         let recipe = crate::recipe::parse_recipe_source(
             r#"{
                 "name": "x",
@@ -468,7 +507,7 @@ mod tests {
             "x",
             true,
         )
-        .unwrap();
+        .expect("built-in schema is valid");
         crate::recipe::validate_recipe(&recipe, &reg).expect("schema file should allow todo.add");
         assert!(reg.get("todo.add").unwrap().verified);
     }

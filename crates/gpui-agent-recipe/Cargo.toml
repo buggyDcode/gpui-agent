@@ -32,3 +32,6 @@ criterion = "0.5"
 [[bench]]
 name = "recipe_plan"
 harness = false
+
+[lints]
+workspace = true
