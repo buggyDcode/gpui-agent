@@ -298,9 +298,13 @@ intentionally **not** half-implemented in this patch.
 10. **Default in-process host off in app templates (I3).** This repo’s
     `apps/todo` already defaults `embedded-host` off. Say so in
     INTEGRATING.md as a copy-paste trap if someone still sees `agent`.
-11. **Mailbox + token + virtual integration test.** Needs a GPU/display
-    or a fake `Window`. Until then, keep the unit gates
-    (`authorize_request` on virtual ops, mailbox overflow).
+11. **Mailbox + token + virtual integration test (done).** CI's
+    `virtual-input` job runs `scripts/ci-virtual-input.sh`: the painted
+    `todo --features embedded-host` window on Xvfb with Mesa's software
+    Vulkan. It checks that a virtual click with a wrong token is refused,
+    that virtual clicks toggle a checkbox and the sidebar, and that virtual
+    `type` edits the input. The unit gates (`authorize_request` on virtual
+    ops, mailbox overflow) stay.
 12. **In-app GPUI offscreen PNG (P3).** Protocol `screenshot` writes a
     real PNG on **macOS embedded-host** (`screencapture -l` of this
     window; [#20](https://github.com/hexuria/gpui-agent/pull/20)).

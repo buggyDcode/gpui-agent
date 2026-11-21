@@ -1,5 +1,7 @@
 # P4: headless recipe receipt is the visual-free CI gate.
-# Do not add macOS / GPU / screenshot jobs here.
+# Do not add macOS / GPU / screenshot jobs here. The one windowed job,
+# `virtual-input`, renders on Xvfb with Mesa's software Vulkan (no GPU) and
+# takes no screenshots: virtual delivery can only be checked on a real window.
 name: CI
 
 on:
@@ -106,6 +108,35 @@ jobs:
             pid="$(cat "$pid_file")"
             kill "$pid" 2>/dev/null || true
           fi
+
+  virtual-input:
+    name: virtual input (todo, Xvfb)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GPUI_AGENT_ADDR: "127.0.0.1:17423"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install X11, Wayland and Vulkan packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
+            libvulkan1 mesa-vulkan-drivers xvfb
+      - name: Virtual click, sidebar and type on the painted window
+        run: |
+          token="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+          echo "::add-mask::$token"
+          # No GPU on the runner: use Mesa's lavapipe software Vulkan driver.
+          # Its manifest is lvp_icd.x86_64.json on older Ubuntu releases and
+          # lvp_icd.json on newer ones.
+          icd="$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)"
+          VK_ICD_FILENAMES="$icd" GPUI_AGENT_TOKEN="$token" ./scripts/ci-virtual-input.sh
 
   packages:
     name: cli + daemon artifacts
